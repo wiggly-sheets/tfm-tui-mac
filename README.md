@@ -63,14 +63,14 @@ https://github.com/user-attachments/assets/b47c7136-642c-4c85-8b2a-dcab1bd0b37b
 
 ## Requirements
 
-- Linux.
+- Linux or macOS (Apple Silicon / arm64).
 - Any terminal (need image support for the full experience).
 - Everything below is optional.
-  - `xdg-open` (opening files)
-  - `magick` (extra photo thumbnails)
-  - `gio` (starred files and servers)
-  - `udisksctl` (USB drives)
-  - `wl-clipboard` / `xclip` (copy and paste with other apps)
+  - Linux: `xdg-open` (opening files) · `gio` (starred files and servers) · `udisksctl` (USB drives) · `wl-clipboard` / `xclip` (copy and paste with other apps). macOS covers those with built-in `open`, `diskutil`, `pbcopy` / `pbpaste`.
+  - `magick` (extra photo thumbnails; `brew install imagemagick` on macOS)
+  - `tag` (macOS Finder tags for starred files; `brew install tag`)
+  - `fd` (fast recursive search; `brew install fd` on macOS)
+  - `ffmpeg` (macOS video thumbnails without the sidecar; `brew install ffmpeg`)
   - `tar` / `unzip` / `zip` / `7z` (zip files and archives)
 
 ## Install
@@ -136,6 +136,9 @@ See [docs/plugins.md](docs/plugins.md).
 
 - Cross-app drag & drop is kitty-only.
 - Mouse on the Linux console (TTY) needs `gpm` running.
+- macOS is Apple Silicon only: trash, servers, tags and file opens integrate
+  with Finder natively (`trash`, `open`, `diskutil`); `tty-mode` has no Linux
+  console there, so `auto` only fires for dumb/vt terms.
 - Icons can show a black box behind open menus or while rubber-band selecting.
 - Custom kitty themes can misbehave.
 

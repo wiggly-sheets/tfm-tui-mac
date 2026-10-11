@@ -21,6 +21,11 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 
+// skip on BSD/macOS: installer is a bash script with bashisms
+if (process.platform !== "linux") {
+  describe.skip("installer rendering (linux-only)", () => {});
+}
+
 // FANCY/COLS come AFTER the source on purpose: install.sh derives them from the
 // environment at load time (no tty here → FANCY=0), and the test decides.
 const PRELUDE = `${String.raw`source ./install.sh
@@ -234,22 +239,26 @@ print_result
   // pty, and it must set TERM itself: GitHub Actions exports TERM=dumb, which
   // the installer correctly reads as "draw nothing", and then this test would
   // pass by accident instead of testing the width gate it is about.
-  test.skipIf(!Bun.which("script"))("a terminal narrower than 60 columns gets plain lines", () => {
-    const render = (width: number) => {
-      const inner = `env -u NO_COLOR -u CI TERM=xterm-256color TFM_INSTALL_LIB_ONLY=1 TFM_WIDTH=${width} bash -c 'source install.sh; SMOKE_VER=0.1.1-beta.0; path_action=ready; print_result'`;
-      const res = Bun.spawnSync({
-        cmd: ["script", "-qec", inner, "/dev/null"],
-        cwd: ROOT,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      return res.stdout.toString();
-    };
-    expect(render(80)).toContain("╭");
-    const narrow = render(59);
-    expect(narrow).not.toContain("╭");
-    expect(narrow).toContain("tfm: installed to");
-  });
+  // BSD script (macOS) lacks -c flag; test is Linux-only.
+  test.skipIf(!Bun.which("script") || process.platform !== "linux")(
+    "a terminal narrower than 60 columns gets plain lines",
+    () => {
+      const render = (width: number) => {
+        const inner = `env -u NO_COLOR -u CI TERM=xterm-256color TFM_INSTALL_LIB_ONLY=1 TFM_WIDTH=${width} bash -c 'source install.sh; SMOKE_VER=0.1.1-beta.0; path_action=ready; print_result'`;
+        const res = Bun.spawnSync({
+          cmd: ["script", "-qec", inner, "/dev/null"],
+          cwd: ROOT,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        return res.stdout.toString();
+      };
+      expect(render(80)).toContain("╭");
+      const narrow = render(59);
+      expect(narrow).not.toContain("╭");
+      expect(narrow).toContain("tfm: installed to");
+    },
+  );
 
   test("plain mode prints the same facts without a box", () => {
     const { out } = runLib(result(`\nreload_cmd="source ~/.bashrc"\npath_action=reload\n`), { fancy: false });
@@ -380,9 +389,17 @@ describe("installer packager hint", () => {
       ["plan9", "", ""],
     ];
     for (const [id, like, want] of cases) {
-      const { out } = runLib(`detect_pm\n`, { env: { TFM_OS_RELEASE: osRelease(id, like) } });
+      const { out } = runLib(`detect_pm\n`, { env: { TFM_UNAME_S: "Linux", TFM_OS_RELEASE: osRelease(id, like) } });
       expect(`${id}: ${out}`).toBe(`${id}: ${want}`);
     }
+  });
+
+  test("on macOS the packager is brew when present", () => {
+    const { out } = runLib(`detect_pm\n`, { env: { TFM_UNAME_S: "Darwin" } });
+    // brew is on PATH on the test host when installed; absent → no hint
+    expect(["brew", ""]).toContain(out);
+    const { out: noBrew } = runLib(`have() { return 1; }\ndetect_pm\n`, { env: { TFM_UNAME_S: "Darwin" } });
+    expect(noBrew).toBe("");
   });
 
   test("package names are only suggested where we know them", () => {
@@ -400,11 +417,19 @@ describe("installer packager hint", () => {
     // the exception, not reliably packaged anywhere, and is now unprobed)
     expect(runLib(`pm_pkg apt xdg-open\n`).out).toBe("xdg-utils");
     expect(runLib(`pm_cmd zypper\n`).out).toBe("sudo zypper install");
+    // brew bucket: ships-with-the-OS tools map to nothing, the rest to formulae
+    expect(runLib(`pm_pkg brew magick\n`).out).toBe("imagemagick");
+    expect(runLib(`pm_pkg brew tag\n`).out).toBe("tag");
+    expect(runLib(`pm_pkg brew fd\n`).out).toBe("fd");
+    expect(runLib(`pm_pkg brew ffmpeg\n`).out).toBe("ffmpeg");
+    expect(runLib(`pm_pkg brew 7z\n`).out).toBe("p7zip");
+    expect(runLib(`pm_pkg brew zip\n`).out).toBe("");
+    expect(runLib(`pm_cmd brew\n`).out).toBe("brew install");
   });
 
   test("missing tools print as one optional list, never recommended/resvg", () => {
     // probe fails closed: everything missing
-    const { out } = runLib(`tool_present() { return 1; }\nprint_extras\n`);
+    const { out } = runLib(`tool_present() { return 1; }\nprint_extras\n`, { env: { TFM_UNAME_S: "Linux" } });
     expect(out).toContain("optional");
     expect(out).not.toContain("recommended");
     expect(out).not.toContain("resvg");
@@ -412,6 +437,17 @@ describe("installer packager hint", () => {
     for (const t of ["xdg-open", "magick", "gio", "udisksctl", "wl-clipboard", "zip", "unzip", "7z"]) {
       expect(out).toContain(t);
     }
+  });
+
+  test("on macOS the optional list names the brew bucket, never xdg/gio", () => {
+    const { out } = runLib(`tool_present() { return 1; }\nprint_extras\n`, { env: { TFM_UNAME_S: "Darwin" } });
+    expect(out).toContain("optional");
+    for (const t of ["magick", "tag", "fd", "ffmpeg", "zip", "unzip", "7z"]) {
+      expect(out).toContain(t);
+    }
+    expect(out).not.toContain("xdg-open");
+    expect(out).not.toContain("gio");
+    expect(out).not.toContain("udisksctl");
   });
 
   test("no missing tools prints nothing", () => {

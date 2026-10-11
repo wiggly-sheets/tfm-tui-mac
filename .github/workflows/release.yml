@@ -1,12 +1,14 @@
 name: Release
 
 # Produces the artifacts install.sh downloads: tfm-{x86_64,aarch64}-linux.gz
-# plus a .sha256 sidecar each, AND the bundled video-thumbnail ffmpeg as
-# tfm-ffmpeg-{x86_64,aarch64}-linux.gz plus its own .sha256 (install.sh
+# and tfm-aarch64-macos.gz, plus a .sha256 sidecar each, AND the bundled
+# video-thumbnail ffmpeg as tfm-ffmpeg-{x86_64,aarch64}-linux.gz plus
+# tfm-ffmpeg-aarch64-macos.gz, each with its own .sha256 (install.sh
 # verifies when present and warns-but-continues when absent). Tag a version
 # to ship it:
 #   git tag v1.0.0 && git push origin v1.0.0
 # Version must match package.json (checked below) so --version never lies.
+# macOS is arm64-only (Apple Silicon); Linux covers x64 + arm64.
 
 on:
   push:
@@ -81,8 +83,64 @@ jobs:
             dist/tfm-ffmpeg-${{ matrix.arch }}.gz
             dist/tfm-ffmpeg-${{ matrix.arch }}.gz.sha256
 
+  # macOS arm64 (Apple Silicon only): native runner, bun-darwin-arm64 target.
+  # The ffmpeg sidecar rides ffmpeg-static's pinned darwin-arm64 binary — the
+  # same binary dev/CI runs use (see the BtbN comment above) — instead of a
+  # brew install (brew ffmpeg links Homebrew dylibs and would not run on
+  # machines without them).
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Version matches package.json
+        run: test "v$(bun -e 'console.log(require("./package.json").version)')" = "${{ github.ref_name }}"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check + test
+        run: |
+          bun run check
+          bun run test
+
+      - name: Compile
+        run: bun build --compile --target=bun-darwin-arm64 src/index.ts assets/icons/*.svg --outfile dist/tfm-aarch64-macos
+
+      - name: Package + checksum
+        run: |
+          gzip -kf dist/tfm-aarch64-macos
+          (cd dist && shasum -a 256 tfm-aarch64-macos.gz > tfm-aarch64-macos.gz.sha256)
+
+      - name: Package ffmpeg sidecar
+        run: |
+          test -x node_modules/ffmpeg-static/ffmpeg
+          cp node_modules/ffmpeg-static/ffmpeg dist/tfm-ffmpeg-aarch64-macos
+          dist/tfm-ffmpeg-aarch64-macos -hide_banner -version
+          gzip -kf dist/tfm-ffmpeg-aarch64-macos
+          (cd dist && shasum -a 256 tfm-ffmpeg-aarch64-macos.gz > tfm-ffmpeg-aarch64-macos.gz.sha256)
+
+      - name: Verify code signature
+        run: |
+          codesign --verify --deep --strict --verbose=2 dist/tfm-aarch64-macos
+          codesign --verify --deep --strict --verbose=2 dist/tfm-ffmpeg-aarch64-macos
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfm-aarch64-macos
+          path: |
+            dist/tfm-aarch64-macos.gz
+            dist/tfm-aarch64-macos.gz.sha256
+            dist/tfm-ffmpeg-aarch64-macos.gz
+            dist/tfm-ffmpeg-aarch64-macos.gz.sha256
+
   release:
-    needs: build
+    needs: [build, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -103,7 +161,11 @@ jobs:
             dist/tfm-x86_64-linux.gz.sha256
             dist/tfm-aarch64-linux.gz
             dist/tfm-aarch64-linux.gz.sha256
+            dist/tfm-aarch64-macos.gz
+            dist/tfm-aarch64-macos.gz.sha256
             dist/tfm-ffmpeg-x86_64-linux.gz
             dist/tfm-ffmpeg-x86_64-linux.gz.sha256
             dist/tfm-ffmpeg-aarch64-linux.gz
             dist/tfm-ffmpeg-aarch64-linux.gz.sha256
+            dist/tfm-ffmpeg-aarch64-macos.gz
+            dist/tfm-ffmpeg-aarch64-macos.gz.sha256

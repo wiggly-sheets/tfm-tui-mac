@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "compile": "bun build --compile src/index.ts assets/icons/*.svg --outfile dist/tfm",
+    "compile:macos": "bun build --compile --target=bun-darwin-arm64 src/index.ts assets/icons/*.svg --outfile dist/tfm-aarch64-macos",
     "test": "bun test",
     "test:watch": "bun test --watch",
     "typecheck": "tsgo --noEmit",

@@ -39,6 +39,10 @@ REMOTE="${TFM_REMOTE:-https://github.com/$REPO.git}"
 VERBOSE="${TFM_VERBOSE:-}"
 NO_SMOKE="${TFM_NO_SMOKE:-}"
 
+# OS seam: production reads the real uname; tests force Linux/Darwin through
+# TFM_UNAME_S so the arch bucket + brew hints pin headlessly on any host
+OS_NAME="${TFM_UNAME_S:-$(uname -s)}"
+
 # step label column, panel width bounds, and the narrowest terminal that can
 # hold a step line + a panel (below it everything falls back to plain lines)
 LABEL_W=10
@@ -97,9 +101,11 @@ if [ "$(printf '·' | LC_ALL=C.UTF-8 wc -m 2>/dev/null || true)" = 1 ]; then
 fi
 
 ARCH=""
-case "$(uname -m)" in
-  x86_64) ARCH="x86_64-linux" ;;
-  aarch64 | arm64) ARCH="aarch64-linux" ;;
+case "$OS_NAME-$(uname -m)" in
+  Linux-x86_64) ARCH="x86_64-linux" ;;
+  Linux-aarch64 | Linux-arm64) ARCH="aarch64-linux" ;;
+  # macOS is arm64-only (Apple Silicon); Intel macs get no build
+  Darwin-arm64 | Darwin-aarch64) ARCH="aarch64-macos" ;;
   *) ARCH="" ;;
 esac
 
@@ -121,6 +127,12 @@ FFMPEG_SRC=""
 plain() { printf 'tfm: %s\n' "$*"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# sha256sum (Linux) or shasum -a 256 (macOS, no coreutils): every checksum
+# read in this script goes through here so macOS verifies instead of failing
+sha256sum_() {
+  if have sha256sum; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+}
 
 # bytes → "18.8 MB" (the size column of the download/install steps)
 hsize() {
@@ -368,7 +380,8 @@ now_ms() {
 
 file_size() { # file_size FILE — bytes, 0 while the file doesn't exist yet
   local n=""
-  if [ -e "$1" ]; then n=$(stat -c%s "$1" 2>/dev/null || wc -c <"$1" 2>/dev/null || true); fi
+  # stat -c (GNU) first, stat -f (BSD/macOS) second, wc last
+  if [ -e "$1" ]; then n=$(stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || wc -c <"$1" 2>/dev/null || true); fi
   case "$n" in '' | *[!0-9]*) printf '0' ;; *) printf '%s' "$n" ;; esac
 }
 
@@ -581,18 +594,27 @@ pretty_dollar_home() { # $HOME form for copy-paste export lines (tilde does not 
 # feature), so there is no recommended/optional split. The packager hint is
 # best-effort: a wrong `apt install` is worse than naming the tool alone, so
 # tools without a reliable package name are called out by name.
+# macOS leans on ships-with-the-OS tools (open/diskutil/pbcopy/unzip/zip), so
+# its bucket is the brew-installable remainder.
 TOOLS_OPTIONAL="xdg-open magick gio udisksctl clip zip unzip 7z"
+if [ "$OS_NAME" = "Darwin" ]; then
+  TOOLS_OPTIONAL="magick tag fd ffmpeg clip zip unzip 7z"
+fi
 
 tool_present() {
   case "$1" in
-    clip) have wl-paste || have wl-copy || have xclip ;;
+    clip)
+      if [ "$OS_NAME" = "Darwin" ]; then have pbpaste; else have wl-paste || have wl-copy || have xclip; fi
+      ;;
     *) have "$1" ;;
   esac
 }
 
 tool_name() { # how the tool is presented (the key is the binary we probe)
   case "$1" in
-    clip) printf 'wl-clipboard' ;;
+    clip)
+      if [ "$OS_NAME" = "Darwin" ]; then printf 'pbcopy/pbpaste'; else printf 'wl-clipboard'; fi
+      ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -604,6 +626,9 @@ tool_desc() {
     gio) printf 'starred files and servers' ;;
     udisksctl) printf 'USB drives' ;;
     clip) printf 'copy and paste with other apps' ;;
+    tag) printf 'Finder tags for starred files' ;;
+    fd) printf 'fast recursive search' ;;
+    ffmpeg) printf 'video thumbnails without the sidecar' ;;
     zip) printf 'faster zip creation' ;;
     unzip) printf 'faster zip extraction' ;;
     7z) printf '7z archives' ;;
@@ -615,6 +640,11 @@ tool_desc() {
 OS_RELEASE="${TFM_OS_RELEASE:-/etc/os-release}"
 
 detect_pm() {
+  # macOS first: brew when present, else no hint (no wells to map from)
+  if [ "$OS_NAME" = "Darwin" ]; then
+    if have brew; then printf 'brew'; else printf ''; fi
+    return
+  fi
   local id="" like=""
   if [ -r "$OS_RELEASE" ]; then
     # `|| true` on both: head exits after one line, so sed can be SIGPIPE-killed
@@ -634,6 +664,7 @@ detect_pm() {
 
 pm_cmd() {
   case "$1" in
+    brew) printf 'brew install' ;;
     apt) printf 'sudo apt install' ;;
     pacman) printf 'sudo pacman -S' ;;
     dnf) printf 'sudo dnf install' ;;
@@ -644,6 +675,19 @@ pm_cmd() {
 }
 
 pm_pkg() { # pm_pkg PM TOOL — "" when we don't know a package for that family
+  # brew: only tools that don't ship macOS get a formula (zip/unzip/pbcopy
+  # ship the OS; clip is never missing there, so it maps to nothing)
+  if [ "$1" = "brew" ]; then
+    case "$2" in
+      magick) printf 'imagemagick' ;;
+      tag) printf 'tag' ;;
+      fd) printf 'fd' ;;
+      ffmpeg) printf 'ffmpeg' ;;
+      7z) printf 'p7zip' ;;
+      *) printf '' ;;
+    esac
+    return
+  fi
   case "$2" in
     magick) printf 'imagemagick' ;;
     udisksctl) printf 'udisks2' ;;
@@ -736,8 +780,9 @@ banner() { # banner MODE
     rule
     printf '\n'
   else
-    os=$(uname -s)
-    plain "installer · $desc (${os,,} $(uname -m))"
+    # ${,,} needs bash 4; macOS ships bash 3 — tr is portable
+    os=$(printf '%s' "$OS_NAME" | tr '[:upper:]' '[:lower:]')
+    plain "installer · $desc ($os $(uname -m))"
   fi
 }
 
@@ -751,7 +796,7 @@ step_system() {
   if [ "$MODE" = "release" ]; then
     have curl || fail_at system "no curl" "curl is needed to download tfm." "Install curl and run the same command again."
     have gunzip || fail_at system "no gunzip" "gunzip is needed to unpack tfm." "Install gzip and run the same command again."
-    have sha256sum || fail_at system "no sha256sum" "sha256sum is needed to verify the download." "Install coreutils and run the same command again."
+    { have sha256sum || have shasum; } || fail_at system "no sha256sum" "A sha256 tool is needed to verify the download." "Install coreutils (Linux) or use the shasum that ships macOS, then run the same command again."
   fi
   if [ -e "$DEST" ] && [ ! -d "$DEST" ]; then
     fail_at system "$DEST is not a directory" "Can't install into $DEST — it exists and isn't a directory." "Set TFM_INSTALL_DIR to a directory and try again."
@@ -762,7 +807,7 @@ step_system() {
   if [ ! -w "$DEST" ]; then
     fail_at system "$DEST not writable" "The install directory $DEST isn't writable by you." "Check permissions, or set TFM_INSTALL_DIR to somewhere you can write."
   fi
-  step_ok "$(uname -s | tr '[:upper:]' '[:lower:]') $(uname -m) · installs to $(pretty_home "$DEST")"
+  step_ok "$(printf '%s' "$OS_NAME" | tr '[:upper:]' '[:lower:]') $(uname -m) · installs to $(pretty_home "$DEST")"
 }
 
 # ── steps: release ──────────────────────────────────────────────────────────
@@ -862,7 +907,7 @@ step_verify() {
   if curl -fsSL --retry 3 --proto '=https' "$BASE/tfm-$ARCH.gz.sha256" -o "$WORK/tfm.gz.sha256" >>"$RUN_LOG" 2>&1; then
     local want got
     want=$(cut -d' ' -f1 <"$WORK/tfm.gz.sha256")
-    got=$(sha256sum <"$WORK/tfm.gz" | cut -d' ' -f1)
+    got=$(sha256sum_ <"$WORK/tfm.gz" | cut -d' ' -f1)
     if [ -z "$want" ] || [ "$want" != "$got" ]; then
       fail_at verify "checksum mismatch" \
         "The download didn't match our security checksum." \
@@ -898,7 +943,7 @@ step_download_ffmpeg() {
     local want
     local got
     want=$(cut -d' ' -f1 <"$WORK/ffmpeg.gz.sha256")
-    got=$(sha256sum <"$WORK/ffmpeg.gz" | cut -d' ' -f1)
+    got=$(sha256sum_ <"$WORK/ffmpeg.gz" | cut -d' ' -f1)
     if [ -z "$want" ] || [ "$want" != "$got" ]; then
       step_warn "video thumbnails unavailable (checksum mismatch)"
       return 0
@@ -1353,7 +1398,8 @@ print_tip() {
 
 # ── main ────────────────────────────────────────────────────────────────────
 # TFM_INSTALL_LIB_ONLY=1 exposes the renderers (disp_w / wrap_line / panel /
-# step_*) to tests without doing any work: `source install.sh`.
+# step_*) to tests without doing any work: `source install.sh` (functions
+# defined, returns) or `bash install.sh` with the var (exits).
 if [ "${TFM_INSTALL_LIB_ONLY:-}" = "1" ]; then
   if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
   exit 0
