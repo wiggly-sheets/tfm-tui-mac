@@ -5,8 +5,8 @@
 // naturally and never need explicit invalidation beyond clearIconCaches.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { readFileSync, statSync, unlinkSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { extractImagesAsPng } from "@humanwhocodes/ico-to-png";
@@ -14,6 +14,7 @@ import { PNG } from "pngjs";
 import * as UTIF from "utif2";
 import { atomicWriteFile } from "../fs/fsutil";
 import { extOf } from "../fs/filetype";
+import { isDarwin, qlmanageThumbArgs, sipsThumbArgs } from "../fs/darwin";
 import { resetVideoBin, videoBin } from "../fs/videobin";
 import { errMessage } from "../lib/uiutil";
 import { swallow } from "../app/log";
@@ -392,6 +393,63 @@ export const brandPng = async (name: string, pxW: number, pxH: number, bg?: stri
   return job;
 };
 
+// --- Glyph rendering via the raster pipeline (glyphs as PNGs, bypass terminal font) ---
+// Creates an SVG with the glyph character and renders it through the same pipeline
+// as regular icons. Uses the existing cache infrastructure.
+import { glyphFor } from "./glyphs";
+
+const glyphCache = new Map<string, Uint8Array>();
+const inflightGlyphs = new Map<string, Promise<Uint8Array>>();
+const GLYPH_CACHE_MAX = 200;
+
+const glyphSvgTemplate = (ch: string, fg: string): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><text x="12" y="16" font-size="24" text-anchor="middle" dominant-baseline="central" fill="${fg}">${ch}</text></svg>`;
+
+const glyphCacheKey = (name: string, fg: string, bg: string, pxW: number, pxH: number, transparent = false): string =>
+  transparent ? `glyph:${name}:${fg}:${pxW}x${pxH}|t` : `glyph:${name}:${fg}:${bg}:${pxW}x${pxH}`;
+
+export const glyphPng = async (
+  name: string,
+  fg: string,
+  bg: string,
+  pxW: number,
+  pxH: number,
+  opts?: { transparent?: boolean; style?: IconStyle },
+): Promise<Uint8Array> => {
+  const transparent = opts?.transparent ?? false;
+  const ch = glyphFor(name, opts?.style ?? "filled");
+  if (ch === "\u{FFFD}") throw new Error(`no glyph for ${name}`);
+  const key = glyphCacheKey(name, fg, bg, pxW, pxH, transparent);
+  const hit = lruGet(glyphCache, key);
+  if (hit) return hit;
+  const running = inflightGlyphs.get(key);
+  if (running) return running;
+  const job = (async () => {
+    await acquireRasterSlot();
+    try {
+      if (!svgRenderer()) throw new Error("no SVG rasterizer available (bun add @resvg/resvg-js)");
+      const svg = glyphSvgTemplate(ch, fg);
+      const bytes = renderInproc(svg, pxW, pxH, transparent ? undefined : bg);
+      lruSet(glyphCache, key, bytes, GLYPH_CACHE_MAX);
+      const diskPath = iconDiskPath(key);
+      void ensureIconDir().then(() =>
+        atomicWriteFile(diskPath, bytes).catch((err) => swallow("glyph disk cache write", err)),
+      );
+      return bytes;
+    } finally {
+      releaseRasterSlot();
+    }
+  })();
+  inflightGlyphs.set(key, job);
+  job.finally(() => inflightGlyphs.delete(key)).catch(() => {});
+  return job;
+};
+
+export const clearGlyphCaches = (): void => {
+  glyphCache.clear();
+  inflightGlyphs.clear();
+};
+
 // --- Image thumbnails (vector-crisp via the shared svgRenderer, magick
 // fallback; cached per file version in memory AND on disk so folder revisits
 // are instant instead of re-spawning a renderer per file) ---
@@ -598,32 +656,94 @@ const renderRasterPng = (p: string, pxW: number, pxH: number, bg: string): Promi
       ]),
       "magick",
     );
+  // darwin tail behind magick (brew, optional): sips ships macOS and covers
+  // every format magick would — throws immediately off-darwin so Linux
+  // chains never grow a dead lane
+  const sips = (): Promise<Uint8Array> => renderSipsPng(p, pxW, pxH);
   // Faster lane first (measured, see above): a refusing lane falls through to
   // magick, a missing magick falls through to the lane/glyph. Oversize files
   // skip every in-process decoder straight to magick: a multi-hundred-MB
   // panorama/TIFF fully decodes in-process (same OOM class the archive memory
   // limit guards), while the spawn is out-of-process with its own 30s timeout.
-  if (rasterFileTooLarge(p)) return magick();
+  if (rasterFileTooLarge(p)) return magick().catch(sips);
   switch (rasterLaneFor(p)) {
     case "ico":
-      return renderRasterBunImage(p, pxW, pxH).catch(() => renderIcoPng(p, pxW, pxH).catch(magick));
+      return renderRasterBunImage(p, pxW, pxH).catch(() => renderIcoPng(p, pxW, pxH).catch(magick).catch(sips));
     case "tiff":
-      return renderRasterBunImage(p, pxW, pxH).catch(() => renderTiffPng(p, pxW, pxH).catch(magick));
+      return renderRasterBunImage(p, pxW, pxH).catch(() => renderTiffPng(p, pxW, pxH).catch(magick).catch(sips));
     case "heic":
-      return renderRasterBunImage(p, pxW, pxH).catch(() => magick().catch(() => renderHeicPng(p, pxW, pxH)));
+      return renderRasterBunImage(p, pxW, pxH)
+        .catch(magick)
+        .catch(sips)
+        .catch(() => renderHeicPng(p, pxW, pxH));
     default:
-      return renderRasterBunImage(p, pxW, pxH).catch(magick);
+      return renderRasterBunImage(p, pxW, pxH).catch(magick).catch(sips);
   }
 };
+
+// --- macOS thumbnail fallbacks: file-in/file-out tools (no stdout pipe), so
+// a tmp file carries the bytes. sips ships macOS (~15ms probed); qlmanage
+// covers video with no ffmpeg at all. Both best-effort — failure falls to
+// the glyph sentinel like any refused lane. ---
+
+// run to completion, ignoring output (callers read the sidecar file)
+const runToFile = async (tool: string, args: string[]): Promise<void> => {
+  const proc = Bun.spawn([tool, ...args], { stdout: "ignore", stderr: "ignore", stdin: "ignore", timeout: 30_000 });
+  const code = await proc.exited;
+  if (code !== 0) throw new Error(`${tool} exited ${code}`);
+};
+
+const renderSipsPng = async (p: string, pxW: number, pxH: number): Promise<Uint8Array> => {
+  if (!isDarwin()) throw new Error(`sips fallback is macOS-only: ${p}`);
+  const tmp = path.join(os.tmpdir(), `tfm-sips-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
+  try {
+    // -Z caps the long side; the shared tail re-fits to the exact cell box
+    await runToFile("/usr/bin/sips", sipsThumbArgs(p, tmp, Math.max(pxW, pxH) * 2));
+    return bunResizeBytes(new Uint8Array(readFileSync(tmp)), pxW, pxH);
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+  }
+};
+
+const renderQlmanagePng = async (p: string, pxW: number, pxH: number): Promise<Uint8Array> => {
+  if (!isDarwin()) throw new Error(`qlmanage fallback is macOS-only: ${p}`);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "tfm-ql-"));
+  try {
+    await runToFile("/usr/bin/qlmanage", qlmanageThumbArgs(512, dir, p));
+    const names = (await readdir(dir)).filter((n) => n.toLowerCase().endsWith(".png")).sort();
+    const hit = names[0];
+    if (!hit) throw new Error(`qlmanage produced no thumbnail: ${p}`);
+    return bunResizeBytes(new Uint8Array(readFileSync(path.join(dir, hit))), pxW, pxH);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+};
+
+// qlmanage ships macOS — memoized like videoBin (canThumbVideo runs per row)
+let qlmanageAvail: boolean | undefined;
+const hasQlmanage = (): boolean =>
+  (qlmanageAvail ??= (() => {
+    try {
+      return Bun.which("qlmanage") !== null;
+    } catch {
+      return false;
+    }
+  })());
 
 // video thumbs: one representative frame via the bundled ffmpeg sidecar
 // (src/fs/videobin — never the system PATH), cover-cropped like the raster
 // path so tiles keep a uniform look. Input-seek ~1s in to skip the black
 // lead-in (fast keyframe seek); clips shorter than that retry at 0.
-export const canThumbVideo = (): boolean => videoBin() !== null;
+// Darwin with no ffmpeg at all: qlmanage stills (sidecar/brew both absent).
+export const canThumbVideo = (): boolean => videoBin() !== null || (isDarwin() && hasQlmanage());
 const renderVideoPng = async (p: string, pxW: number, pxH: number): Promise<Uint8Array> => {
   const vb = videoBin();
-  if (!vb) throw new Error(`no video ffmpeg available: ${p}`);
+  if (!vb) {
+    if (isDarwin() && hasQlmanage()) return renderQlmanagePng(p, pxW, pxH);
+    throw new Error(`no video ffmpeg available: ${p}`);
+  }
   const vf = `scale=${pxW}:${pxH}:force_original_aspect_ratio=increase,crop=${pxW}:${pxH}`;
   const attempt = (ss: string) =>
     pngFromProc(
@@ -814,6 +934,7 @@ export const thumbPng = (
 export const clearIconCaches = (): void => {
   iconCache.clear();
   brandCache.clear();
+  glyphCache.clear();
   thumbCache.clear();
   failedThumbs.clear();
 };
