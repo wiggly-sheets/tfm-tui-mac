@@ -35,10 +35,13 @@ import {
 import {
   defaultSudoExec,
   isPrivilegeError,
+  parseSudoStat,
   runSudoTool,
   sudoCpArgv,
   sudoMvArgv,
+  sudoMvNoClobberArgv,
   sudoRmArgv,
+  sudoStatArgv,
   type SudoExecFn,
 } from "./elevate";
 import { copyTreeProgress, scanTree, type TransferSink } from "./transfer";
@@ -108,6 +111,9 @@ export type FileOpsCtx = {
   // sudoExec runs one sudo argv and reports its exit (default = runSudo)
   ensureSudo?: (opLabel: string) => Promise<boolean>;
   sudoExec?: SudoExecFn;
+  // platform override for the trash lane (tests pin "linux" so sandbox trashes
+  // stay xdg-style on darwin hosts); defaults to the live platform
+  platform?: string;
   // /tmp/tfm-dnd.log debug sink
   log(msg: string): void;
   // plugin event fan-out (optional; never throws into the transfer).
@@ -118,6 +124,9 @@ export type FileOpsCtx = {
 
 export const makeFileOps = (ctx: FileOpsCtx) => {
   const { prog, conflict } = ctx;
+  // trash-lane platform (darwin = native Finder trash, hermetic xdg-style in
+  // tests via ctx.platform)
+  const platform = ctx.platform ?? process.platform;
   const queue = sharedOpQueue();
   const runArchive: ArchiveRun = ctx.runArchive ?? runArchiveTool;
   const archiveWhich = ctx.archiveWhich ?? Bun.which;
@@ -313,7 +322,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
     (async (victimDest, units, dUnits, onStashFailed) => {
       try {
         if (!existsSync(victimDest)) return false;
-        const trashLoc = await xdgTrashMove(victimDest);
+        const trashLoc = await xdgTrashMove(victimDest, platform);
         units.push(async () => {
           await safeRestoreMove(trashLoc, victimDest);
           await rmTrashInfoForPath(trashLoc, ctx.log);
@@ -359,19 +368,9 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
   // same end-state as the normal path via cp -a / mv so undo units below can
   // be reused untouched. Throws the tool's first stderr line on failure.
   const sudoFileIdOf = async (p: string): Promise<FileId | null> => {
-    const r = await sudoExec(["sudo", "-n", "stat", "-c", "%d:%i:%w", "--", p]);
+    const r = await sudoExec(sudoStatArgv(p, platform));
     if (r.status !== 0) return null;
-    const match = /^(\d+):(\d+):(.+)$/.exec(r.stdout?.trim() ?? "");
-    if (!match) return null;
-    const when = match[3] ?? "";
-    const parsed = Date.parse(when);
-    const fraction = /\.(\d+)/.exec(when)?.[1] ?? "";
-    const born = parsed + (fraction.length > 3 ? Number(`0.${fraction.slice(3)}`) : 0);
-    return {
-      dev: Number(match[1]),
-      ino: Number(match[2]),
-      ...(Number.isFinite(born) ? { born } : {}),
-    };
+    return parseSudoStat(r.stdout?.trim() ?? "", platform);
   };
   const sudoCopy = async (src: string, target: string): Promise<FileId> => {
     const stage = tmpName(target);
@@ -381,7 +380,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
       const staged = path.join(stage, path.basename(src));
       const id = fileIdOf(staged) ?? (await sudoFileIdOf(staged));
       if (!id) throw new Error("cannot identify staged copy");
-      await runSudoTool(sudoExec, ["sudo", "-n", "mv", "-nT", "--", staged, target]);
+      await runSudoTool(sudoExec, sudoMvNoClobberArgv(staged, target, platform));
       const remains = await sudoExec(["sudo", "-n", "test", "-e", staged]);
       if (remains.status === 0) throw new Error(`already exists: ${path.basename(target)}`);
       if (remains.status !== 1 || remains.stderr.trim())
@@ -650,7 +649,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
             s = src;
           if (op === "copy") {
             const tid = copyId;
-            units.push(() => trashIfSameFile(t, tid, ctx.log));
+            units.push(() => trashIfSameFile(t, tid, ctx.log, platform));
             dUnits.push({ op: "trash", path: t, ...(tid ?? {}) });
             redos.push(async () => {
               try {
@@ -1322,7 +1321,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
         for (const name of afterDest) {
           if (name === stageBase || beforeDest.has(name)) continue;
           try {
-            await xdgTrashMove(path.join(destDir, name));
+            await xdgTrashMove(path.join(destDir, name), platform);
             escaped++;
           } catch (err) {
             ctx.log(`escape cleanup failed ${name}: ${fsErrText(err)}`);
@@ -1334,7 +1333,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
           for (const name of afterParent) {
             if (name === destBase || beforeParent.has(name)) continue;
             try {
-              await xdgTrashMove(path.join(parentDir, name));
+              await xdgTrashMove(path.join(parentDir, name), platform);
               escaped++;
             } catch (err) {
               ctx.log(`escape cleanup failed ${name}: ${fsErrText(err)}`);
@@ -1390,7 +1389,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
           try {
             await fsMove(src, target);
             const tid = fileIdOf(target);
-            units.push(() => trashIfSameFile(target, tid, ctx.log));
+            units.push(() => trashIfSameFile(target, tid, ctx.log, platform));
             dUnits.push({ op: "trash", path: target, ...(tid ?? {}) });
             movedHere++;
           } catch (err) {
@@ -1535,7 +1534,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
       } else {
         await fsRename(tmp, out);
         const oid = fileIdOf(out);
-        units.push(() => trashIfSameFile(out, oid, ctx.log));
+        units.push(() => trashIfSameFile(out, oid, ctx.log, platform));
         dUnits.push({ op: "trash", path: out, ...(oid ?? {}) });
         const n = loss.exec + loss.links;
         if (n > 0) warns.push(`${n} stored without exec/symlink (no tar)`);
