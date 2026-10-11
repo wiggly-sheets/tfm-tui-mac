@@ -84,11 +84,11 @@ describe("detectArchiveFormat", () => {
 
 describe("extractPlan", () => {
   test("tar carries -v (progress) and the filter (auto-detect is not enough for -I lz4/brotli)", () => {
-    expect(extractPlan("tar.gz", "/x/a.tar.gz", "/stage", which("tar", "gzip"))).toEqual({
+    expect(extractPlan("tar.gz", "/x/a.tar.gz", "/stage", which("tar", "gzip"), "linux")).toEqual({
       tool: "tar",
       args: ["-x", "-v", "-z", "-f", "/x/a.tar.gz", "-C", "/stage", "--no-same-owner"],
     });
-    expect(extractPlan("tar.lz4", "/x/a.tar.lz4", "/stage", which("tar", "lz4"))).toEqual({
+    expect(extractPlan("tar.lz4", "/x/a.tar.lz4", "/stage", which("tar", "lz4"), "linux")).toEqual({
       tool: "tar",
       args: ["-x", "-v", "-I", "lz4", "-f", "/x/a.tar.lz4", "-C", "/stage", "--no-same-owner"],
     });
@@ -163,7 +163,11 @@ describe("compressPlan / compressionExt / compressionHint", () => {
       "-v",
       "-f",
     ]);
-    expect(compressPlan("tar.lz4", "/out/a.tar.lz4", ["foo"], "/src").args.slice(0, 3)).toEqual(["-c", "-I", "lz4"]);
+    expect(compressPlan("tar.lz4", "/out/a.tar.lz4", ["foo"], "/src", Bun.which, "linux").args.slice(0, 3)).toEqual([
+      "-c",
+      "-I",
+      "lz4",
+    ]);
     expect(compressPlan("tar", "/out/a.tar", ["foo"], "/src").args.slice(0, 2)).toEqual(["-c", "-v"]);
   });
 
@@ -1186,5 +1190,41 @@ describe("7z / zip integration", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("darwin bsdtar", () => {
+  test("extract and list drop GNU -I filters (bsdtar auto-detects)", async () => {
+    const { extractPlan, listArgs } = await import("./archive");
+    expect(extractPlan("tar.lz4", "/x/a.tar.lz4", "/stage", () => null, "darwin")).toEqual({
+      tool: "tar",
+      args: ["-x", "-v", "-f", "/x/a.tar.lz4", "-C", "/stage", "--no-same-owner"],
+    });
+    expect(listArgs("tar.br", "/x/a.tar.br", () => null, "darwin")).toEqual(["-t", "-f", "/x/a.tar.br"]);
+  });
+  test("create maps -I filters to -a (codec from suffix)", async () => {
+    const { compressPlan } = await import("./archive");
+    expect(compressPlan("tar.lz4", "/o/a.tar.lz4", ["f"], "/src", () => null, "darwin").args.slice(0, 3)).toEqual([
+      "-c",
+      "-a",
+      "-v",
+    ]);
+    // GNU flags bsdtar shares stay untouched
+    expect(compressPlan("tar.gz", "/o/a.tar.gz", ["f"], "/src", () => null, "darwin").args.slice(0, 3)).toEqual([
+      "-c",
+      "-z",
+      "-v",
+    ]);
+  });
+  test("zip extract falls back to ditto when unzip and 7z are missing", async () => {
+    const { extractPlan, canExtract } = await import("./archive");
+    const none = () => null;
+    const dittoOnly = (b: string): string | null => (b === "ditto" ? "/usr/bin/ditto" : null);
+    expect(extractPlan("zip", "/x/a.zip", "/stage", dittoOnly, "darwin")).toEqual({
+      tool: "ditto",
+      args: ["-x", "-k", "/x/a.zip", "/stage"],
+    });
+    expect(canExtract("/x/a.zip", none, "darwin")).toBe(true); // js fallback covers zip regardless
+    expect(canExtract("/x/a.zip", (b: string) => (b === "ditto" ? "/usr/bin/ditto" : null), "darwin")).toBe(true);
   });
 });

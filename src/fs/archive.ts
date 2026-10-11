@@ -5,6 +5,7 @@ import { lstat, readdir, readlink } from "node:fs/promises";
 import { errMessage } from "../lib/uiutil";
 import path from "node:path";
 import { spawnSafe } from "./spawn-safe";
+import { isDarwin } from "./darwin";
 
 // --- Archive engine: extension -> format detection, exact argv for tar/unzip/
 // zip/7z, listing for a total count, and a line-streaming child runner. Pure
@@ -131,30 +132,42 @@ export const detectArchiveFormat = (file: string): ArchiveFormat | null => {
 };
 
 // create and extract prefer different zip tools: `zip` writes, `unzip` reads,
-// 7z does both as the fallback
+// 7z does both as the fallback. Darwin: ditto extracts when neither unzip
+// nor 7z exists (ditto ships macOS; it can't list, so listing still needs
+// unzip/7z — a ditto-only machine extracts with a 0 total, honestly).
 const zipCreateTool = (which: WhichFn): "zip" | "7z" => (which("zip") ? "zip" : "7z");
-const zipExtractTool = (which: WhichFn): "unzip" | "7z" => (which("unzip") ? "unzip" : "7z");
+const zipExtractTool = (which: WhichFn, platform: string = process.platform): "unzip" | "ditto" | "7z" =>
+  which("unzip") ? "unzip" : isDarwin(platform) && which("ditto") ? "ditto" : "7z";
 
 const canCreate = (def: CompressionDef, which: WhichFn): boolean =>
   def.kind === "zip" ? !!which("zip") || !!which("7z") : def.need.every((b) => !!which(b));
 
-const canExtractFmt = (def: CompressionDef, which: WhichFn): boolean =>
-  def.kind === "zip" ? !!which("unzip") || !!which("7z") : def.need.every((b) => !!which(b));
+const canExtractFmt = (def: CompressionDef, which: WhichFn, platform: string = process.platform): boolean =>
+  def.kind === "zip"
+    ? !!which("unzip") || (isDarwin(platform) && !!which("ditto")) || !!which("7z")
+    : def.need.every((b) => !!which(b));
 
-const listTool = (fmt: ArchiveFormat, which: WhichFn): string => {
+const listTool = (fmt: ArchiveFormat, which: WhichFn, platform: string = process.platform): string => {
   const def = defOf(fmt);
   if (def.kind === "tar") return "tar";
   if (def.kind === "7z") return "7z";
-  return zipExtractTool(which);
+  return zipExtractTool(which, platform);
 };
+
+// bsdtar (macOS) rejects GNU `-I prog` filters and needs no filter on read
+// (auto-detects — probed); `-a` picks the codec from the output suffix on
+// create. --zstd/--lzma/--lzip/-z/-j/-J/-Z are real bsdtar flags (probed).
+const darwinTarFilter = (filter: string[]): string[] => (filter[0] === "-I" ? ["-a"] : filter);
 
 export const extractPlan = (
   fmt: ArchiveFormat,
   file: string,
   destDir: string,
   which: WhichFn = Bun.which,
+  platform: string = process.platform,
 ): ToolSpec => {
   const def = defOf(fmt);
+  const darwin = isDarwin(platform);
   if (def.kind === "tar")
     // -v: emit entry names so the file-count progress bar advances
     // --no-same-owner: extracting as non-root otherwise warns/fails on ownership
@@ -162,7 +175,7 @@ export const extractPlan = (
     // the escape snapshot below catches any tool that doesn't)
     return {
       tool: "tar",
-      args: ["-x", "-v", ...def.filter, "-f", file, "-C", destDir, "--no-same-owner"],
+      args: ["-x", "-v", ...(darwin ? [] : def.filter), "-f", file, "-C", destDir, "--no-same-owner"],
     };
   // -bb1: one line per entry — plain `7z x` emits a fixed header no matter
   // the entry count, freezing the file-count bar at 0 (same class as tar -v).
@@ -170,16 +183,25 @@ export const extractPlan = (
   // stdout, so without it every line arrives at exit and the bar sits at 0/N
   // then jumps to done (probed; tar -v and unzip flush per entry and need nothing)
   if (def.kind === "7z") return { tool: "7z", args: ["x", "-bb1", "-bso2", "-y", `-o${destDir}`, file] };
-  return zipExtractTool(which) === "unzip"
+  const tool = zipExtractTool(which, platform);
+  // ditto (darwin fallback): extract-only, no list/progress lines — the op
+  // proceeds with a 0 total instead of failing a machine that can do the work
+  if (tool === "ditto") return { tool: "ditto", args: ["-x", "-k", file, destDir] };
+  return tool === "unzip"
     ? { tool: "unzip", args: ["-o", file, "-d", destDir] }
     : { tool: "7z", args: ["x", "-bb1", "-bso2", "-y", `-o${destDir}`, file] };
 };
 
-export const listArgs = (fmt: ArchiveFormat, file: string, which: WhichFn = Bun.which): string[] => {
+export const listArgs = (
+  fmt: ArchiveFormat,
+  file: string,
+  which: WhichFn = Bun.which,
+  platform: string = process.platform,
+): string[] => {
   const def = defOf(fmt);
-  if (def.kind === "tar") return ["-t", ...def.filter, "-f", file];
+  if (def.kind === "tar") return ["-t", ...(isDarwin(platform) ? [] : def.filter), "-f", file];
   if (def.kind === "7z") return ["l", "-ba", file];
-  return zipExtractTool(which) === "unzip" ? ["-Z1", file] : ["l", "-ba", file];
+  return zipExtractTool(which, platform) === "unzip" ? ["-Z1", file] : ["l", "-ba", file];
 };
 
 export const compressionExt = (fmt: CompressionFormat): string => defOf(fmt).ext;
@@ -193,12 +215,15 @@ export const compressPlan = (
   names: string[],
   parent: string,
   which: WhichFn = Bun.which,
+  platform: string = process.platform,
 ): ToolSpec => {
   const def = defOf(fmt);
   // a name starting with "-" would otherwise be parsed as an option (tar -v,
   // --files-from=…): tar/7z get an explicit `--`, zip an escaped "./" operand
-  if (def.kind === "tar")
-    return { tool: "tar", args: ["-c", ...def.filter, "-v", "-f", outFile, "-C", parent, "--", ...names] };
+  if (def.kind === "tar") {
+    const filter = isDarwin(platform) ? darwinTarFilter(def.filter) : def.filter;
+    return { tool: "tar", args: ["-c", ...filter, "-v", "-f", outFile, "-C", parent, "--", ...names] };
+  }
   // -bb1: one `+ name` line per added file — `zip -r` is chatty by default
   // but 7z is not, and without it the file-count bar never advances.
   // -bso2: same piped-stdout freeze as extract (entry log to stderr, live).
@@ -220,10 +245,10 @@ export const availableCompressionFormats = (which: WhichFn = Bun.which): Compres
   // (7z and exotic tar filters still need their binaries and hide without)
   COMPRESSIONS.filter((d) => canCreate(d, which) || JS_FORMATS.has(d.fmt)).map((d) => d.fmt);
 
-export const canExtract = (file: string, which: WhichFn = Bun.which): boolean => {
+export const canExtract = (file: string, which: WhichFn = Bun.which, platform: string = process.platform): boolean => {
   const fmt = detectArchiveFormat(file);
   if (!fmt) return false;
-  return canExtractFmt(defOf(fmt), which) || JS_FORMATS.has(fmt);
+  return canExtractFmt(defOf(fmt), which, platform) || JS_FORMATS.has(fmt);
 };
 
 // --- fallback lanes: tar/tar.gz/zip work with no system tools (Bun.Archive
@@ -240,9 +265,10 @@ export const selectArchiveLane = (
   fmt: ArchiveFormat,
   mode: "create" | "extract",
   which: WhichFn = Bun.which,
+  platform: string = process.platform,
 ): ArchiveLane => {
   const def = defOf(fmt);
-  if (mode === "create" ? canCreate(def, which) : canExtractFmt(def, which)) return "spawn";
+  if (mode === "create" ? canCreate(def, which) : canExtractFmt(def, which, platform)) return "spawn";
   return JS_FORMATS.has(fmt) ? "js" : "unavailable";
 };
 
@@ -435,9 +461,13 @@ export const listArchiveEntries = async (
   file: string,
   run: ArchiveRun = runArchiveTool,
   which: WhichFn = Bun.which,
+  platform: string = process.platform,
 ): Promise<number> => {
   let n = 0;
-  const res = await run({ tool: listTool(fmt, which), args: listArgs(fmt, file, which) }, { onLine: () => n++ });
+  const res = await run(
+    { tool: listTool(fmt, which, platform), args: listArgs(fmt, file, which, platform) },
+    { onLine: () => n++ },
+  );
   if (res.code !== 0 && res.code !== 1) return 0;
   return n;
 };
@@ -461,7 +491,7 @@ export type ArchiveTask =
   | { op: "compress"; fmt: CompressionFormat; outFile: string; names: string[]; parent: string };
 export type ArchiveTaskRun = (
   task: ArchiveTask,
-  opts?: ArchiveRunOpts & { run?: ArchiveRun; which?: WhichFn },
+  opts?: ArchiveRunOpts & { run?: ArchiveRun; which?: WhichFn; platform?: string },
 ) => Promise<ArchiveRunResult>;
 
 // tool-aware entry count: native listing when tools exist, header walks when
@@ -471,8 +501,10 @@ export const countArchiveEntries = async (
   file: string,
   run: ArchiveRun = runArchiveTool,
   which: WhichFn = Bun.which,
+  platform: string = process.platform,
 ): Promise<number> => {
-  if (selectArchiveLane(fmt, "extract", which) !== "js") return listArchiveEntries(fmt, file, run, which);
+  if (selectArchiveLane(fmt, "extract", which, platform) !== "js")
+    return listArchiveEntries(fmt, file, run, which, platform);
   try {
     // stat first: a total must never OOM the renderer to compute itself
     const st = statSync(file, { throwIfNoEntry: false });
@@ -866,12 +898,13 @@ const runJsArchive = (task: ArchiveTask, opts: ArchiveRunOpts): Promise<ArchiveR
 // ctx seam + archiveWhich through.
 export const runArchiveTask: ArchiveTaskRun = async (task, opts = {}) => {
   const which = opts.which ?? Bun.which;
-  const lane = selectArchiveLane(task.fmt, task.op === "extract" ? "extract" : "create", which);
+  const platform = opts.platform ?? process.platform;
+  const lane = selectArchiveLane(task.fmt, task.op === "extract" ? "extract" : "create", which, platform);
   if (lane === "spawn") {
     const spec =
       task.op === "extract"
-        ? extractPlan(task.fmt, task.file, task.destDir, which)
-        : compressPlan(task.fmt, task.outFile, task.names, task.parent, which);
+        ? extractPlan(task.fmt, task.file, task.destDir, which, platform)
+        : compressPlan(task.fmt, task.outFile, task.names, task.parent, which, platform);
     // count entry lines only — the raw tool log carries banners/summaries that
     // would otherwise advance the file-count bar (isArchiveEntryLine)
     const inner = opts.onLine;
