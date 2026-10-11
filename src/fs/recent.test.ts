@@ -34,7 +34,7 @@ const writeXbel = (body: string) =>
 
 describe("readRecentXbel", () => {
   test("missing file yields empty list", () => {
-    expect(readRecentXbel()).toEqual([]);
+    expect(readRecentXbel("linux")).toEqual([]);
   });
 
   test("extracts file:// bookmarks newest-first, deduped, dropping foreign schemes", () => {
@@ -42,7 +42,7 @@ describe("readRecentXbel", () => {
   <bookmark href="http://example.com" added="2026-01-02T00:00:00Z" modified="2026-01-04T00:00:00Z" visited="2026-01-02T00:00:00Z"/>
   <bookmark href="file:///b%20c.txt" added="2026-01-02T00:00:00Z" modified="2026-01-02T00:00:00Z" visited="2026-01-02T00:00:00Z"/>
   <bookmark href="file:///a.txt" added="2026-01-01T00:00:00Z" modified="2026-01-01T00:00:00Z" visited="2026-01-01T00:00:00Z"/>`);
-    const items = readRecentXbel();
+    const items = readRecentXbel("linux");
     expect(items.map((i) => i.path)).toEqual(["/a.txt", "/b c.txt"]);
     expect(items[0]!.modified).toBe(Date.parse("2026-01-03T00:00:00Z"));
     expect(items[1]!.modified).toBe(Date.parse("2026-01-02T00:00:00Z"));
@@ -51,7 +51,7 @@ describe("readRecentXbel", () => {
   test("unparseable timestamps fall back to 0 and sort last", () => {
     writeXbel(`  <bookmark href="file:///x.txt" added="x" modified="garbage" visited="x"/>
   <bookmark href="file:///y.txt" added="x" modified="2026-01-01T00:00:00Z" visited="x"/>`);
-    const items = readRecentXbel();
+    const items = readRecentXbel("linux");
     expect(items[0]!.path).toBe("/y.txt");
     expect(items[1]!.path).toBe("/x.txt");
     expect(items[1]!.modified).toBe(0);
@@ -96,5 +96,22 @@ describe("starred registry", () => {
     await writeStarredList(["/a", "/b"]);
     await writeStarredList([...readStarredList(), "/b", "/c"]);
     expect(readStarredList()).toEqual(["/a", "/b", "/c"]);
+  });
+});
+
+describe("darwin Spotlight supplement", () => {
+  test("readDarwinRecent caps, absolutizes and existence-checks", async () => {
+    const { readDarwinRecent } = await import("./recent");
+    const out = readDarwinRecent(
+      () => "/tmp\nrelative/x\n\n/tmp\n",
+      (p) => p === "/tmp",
+      10,
+    );
+    expect(out).toEqual([{ path: "/tmp", modified: 0 }]);
+    expect(
+      readDarwinRecent(() => {
+        throw new Error("spotlight off");
+      }),
+    ).toEqual([]);
   });
 });

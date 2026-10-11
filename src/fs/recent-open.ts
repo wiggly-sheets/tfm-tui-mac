@@ -1,5 +1,6 @@
-// --- Default-open pipeline: spawn xdg-open, record the path in the
-// freedesktop recent list, toast what launched. Opens are batched + deduped
+// --- Default-open pipeline: spawn the platform opener (`open` on darwin,
+// xdg-open on Linux), record the path in the freedesktop recent list, toast
+// what launched. Opens are batched + deduped
 // into one xbel rewrite (opening a selection of N files fires N times).
 // Pure orchestration — the xbel write, the spawn and the app probe arrive
 // via ctx. ---

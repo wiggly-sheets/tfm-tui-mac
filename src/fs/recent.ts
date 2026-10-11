@@ -1,8 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { mimeForExt } from "./filetype";
 import { parseIso, pathToUri, uriToPath, xdgDataHome, xdgStateHome } from "./uri";
+import { isDarwin } from "./darwin";
 import { swallow } from "../app/log";
 
 // --- Recent files (freedesktop recently-used.xbel) + tfm's starred registry.
@@ -13,12 +16,61 @@ type XbelItem = { path: string; modified: number };
 
 const xbelPath = (): string => path.join(xdgDataHome(), "recently-used.xbel");
 
-export const readRecentXbel = (): XbelItem[] => {
+// darwin best-effort supplement: files OTHER apps opened recently
+// (kMDItemLastUsedDate). tfm's own opens still land in xbel via
+// upsertRecentXbel, so Recent works with zero Spotlight dependence —
+// this only widens it. Undated (modified 0 sorts after dated), capped,
+// existence-checked; mdfind failure (disabled Spotlight) → [] silently.
+export const readDarwinRecent = (
+  run: () => string = () =>
+    execFileSync("mdfind", ["-onlyin", os.homedir(), "kMDItemLastUsedDate >= $time.today(-30)"], {
+      timeout: 10_000,
+    }).toString(),
+  exists: (p: string) => boolean = existsSync,
+  limit = 200,
+): XbelItem[] => {
+  try {
+    const out: XbelItem[] = [];
+    const seen = new Set<string>();
+    for (const line of run().split("\n")) {
+      const p = line.trim();
+      if (!p || !path.isAbsolute(p) || seen.has(p)) continue;
+      try {
+        if (!exists(p)) continue;
+      } catch {
+        continue;
+      }
+      seen.add(p);
+      out.push({ path: p, modified: 0 });
+      if (out.length >= limit) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
+const mergeRecent = (dated: XbelItem[], undated: XbelItem[]): XbelItem[] => {
+  const seen = new Set<string>();
+  const uniq: XbelItem[] = [];
+  for (const it of [...dated.sort((a, b) => b.modified - a.modified), ...undated]) {
+    if (seen.has(it.path)) continue;
+    seen.add(it.path);
+    uniq.push(it);
+  }
+  return uniq;
+};
+
+export const readRecentXbel = (platform: string = process.platform): XbelItem[] => {
+  // sandboxed tree (XDG_DATA_HOME set: tests, secondary profiles): the xbel
+  // is that context's whole truth — merging the host's global Spotlight
+  // recents would leak another profile's files into this one
+  const darwin = isDarwin(platform) && !process.env.XDG_DATA_HOME;
   let xml = "";
   try {
     xml = readFileSync(xbelPath(), "utf8");
   } catch {
-    return [];
+    return darwin ? mergeRecent([], readDarwinRecent()) : [];
   }
   const out: XbelItem[] = [];
   const bmRe = /<bookmark\b[^>]*href="([^"]+)"[^>]*>/g;
@@ -34,15 +86,8 @@ export const readRecentXbel = (): XbelItem[] => {
     const mod = tag.match(/modified="([^"]+)"/)?.[1];
     out.push({ path: p, modified: mod ? parseIso(mod) : 0 });
   }
-  // newest first, one row per file
-  const seen = new Set<string>();
-  const uniq: XbelItem[] = [];
-  for (const it of out.sort((a, b) => b.modified - a.modified)) {
-    if (seen.has(it.path)) continue;
-    seen.add(it.path);
-    uniq.push(it);
-  }
-  return uniq;
+  // newest first, one row per file (+ darwin Spotlight supplement, deduped)
+  return darwin ? mergeRecent(out, readDarwinRecent()) : mergeRecent(out, []);
 };
 
 export const upsertRecentXbel = async (paths: string[]): Promise<void> => {
