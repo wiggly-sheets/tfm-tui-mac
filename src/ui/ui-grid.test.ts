@@ -8,6 +8,7 @@ import { loadingLabel, loadingLine, makeGridRenderer, SPIN_FRAMES_ASCII, SPIN_FR
 import { hookScrollerScroll } from "./ui-grid-window";
 import type { GridState } from "./ui-grid-types";
 import { fmtBytes } from "../fs/propsinfo";
+import { trashFilesDir } from "../fs/fsutil";
 import { linkRowLabel, loadingNodeId } from "./ui-grid-rows";
 import type { ScrollerLike } from "../lib/node-like";
 import { RECENT_URI, STARRED_URI } from "../fs/uri";
@@ -1015,13 +1016,13 @@ describe("renderGrid (panes)", () => {
   });
 
   test("empty virtual places paint their own icon, not the folder", async () => {
-    // sandbox the XDG homes so recent/starred read empty; trashDir() follows
-    // XDG_DATA_HOME, so the empty trash files dir is a real empty folder
+    // sandbox the XDG homes so recent/starred read empty; trashFilesDir()
+    // follows XDG_DATA_HOME, so the empty trash files dir is a real folder
     const prevData = process.env.XDG_DATA_HOME;
     const prevState = process.env.XDG_STATE_HOME;
     process.env.XDG_DATA_HOME = path.join(tmp, "xdg-data");
     process.env.XDG_STATE_HOME = path.join(tmp, "xdg-state");
-    const trashFiles = path.join(tmp, "xdg-data", "Trash", "files");
+    const trashFiles = trashFilesDir();
     mkdirSync(trashFiles, { recursive: true });
     const prevCwd = gridState.cwd;
     const prevQuery = searchQuery;
