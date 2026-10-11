@@ -5,8 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileUriToPath, pathToUri } from "./uri";
-import { trashDir } from "./fsutil";
+import { trashFilesDir } from "./fsutil";
 import { parseServerInput } from "./network";
+import { darwinMountEntries, diskutilBin, isDarwin, parseDiskutilListPlist, parseMountTable } from "./darwin";
 import { listNetworkMounts, type NetworkMount } from "./netmount";
 
 // --- System places sources, Nautilus-style: XDG user dirs, GTK bookmarks,
@@ -103,9 +104,54 @@ async function readUserDirs(): Promise<UserDir[]> {
     }
     return out.sort((a, b) => (a.key < b.key ? -1 : 1));
   } catch {
-    return [];
+    // darwin has no user-dirs.dirs: fall back to the standard mac folders
+    // (Movies, not Videos) so the Folders section isn't empty by default
+    if (!isDarwin()) return [];
+    const out: UserDir[] = [];
+    for (const [dir, label] of [
+      ["Desktop", "Desktop"],
+      ["Downloads", "Downloads"],
+      ["Documents", "Documents"],
+      ["Music", "Music"],
+      ["Pictures", "Pictures"],
+      ["Movies", "Movies"],
+      ["Public", "Public"],
+    ] as Array<[string, string]>) {
+      const p = path.join(home, dir);
+      try {
+        if (!statSync(p).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      out.push({ key: dir, label, p });
+    }
+    return out;
   }
 }
+
+// one gtk-bookmarks line → entry (file:// dir, or a remote connection URI
+// kept so saved servers persist across sessions). Shared by the Linux read
+// and the darwin best-effort read (a synced gtk file still parses there).
+export const parseBookmarkLine = (line: string): BookmarkEntry | null => {
+  if (!line.trim()) return null;
+  const sp = line.indexOf(" ");
+  const uri = sp === -1 ? line : line.slice(0, sp);
+  const label = sp === -1 ? "" : line.slice(sp + 1).trim();
+  if (uri.startsWith("file://")) {
+    const p = fileUriToPath(uri);
+    try {
+      if (!statSync(p).isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    return { p, label: label || path.basename(p) };
+  }
+  // remote gvfs bookmark (sftp://, smb://, …) — kept so saved connections
+  // persist across sessions and Nautilus shares the same list
+  const parsed = parseServerInput(uri);
+  if (!parsed) return null;
+  return { p: "", label: label || parsed.label, remote: true, uri: parsed.uri };
+};
 
 async function readBookmarks(): Promise<BookmarkEntry[]> {
   try {
@@ -113,28 +159,14 @@ async function readBookmarks(): Promise<BookmarkEntry[]> {
     const text = await readFile(file, "utf8");
     const out: BookmarkEntry[] = [];
     for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
-      const sp = line.indexOf(" ");
-      const uri = sp === -1 ? line : line.slice(0, sp);
-      const label = sp === -1 ? "" : line.slice(sp + 1).trim();
-      if (uri.startsWith("file://")) {
-        const p = fileUriToPath(uri);
-        try {
-          if (!statSync(p).isDirectory()) continue;
-        } catch {
-          continue;
-        }
-        out.push({ p, label: label || path.basename(p) });
-        continue;
-      }
-      // remote gvfs bookmark (sftp://, smb://, …) — kept so saved connections
-      // persist across sessions and Nautilus shares the same list
-      const parsed = parseServerInput(uri);
-      if (!parsed) continue;
-      out.push({ p: "", label: label || parsed.label, remote: true, uri: parsed.uri });
+      const b = parseBookmarkLine(line);
+      if (b) out.push(b);
     }
     return out;
   } catch {
+    // darwin: Finder favorites live in an opaque sfl store (sfltool exposes
+    // no plain URLs — probed), so there is nothing to import; the gtk file
+    // above is the only best-effort source and it is usually absent
     return [];
   }
 }
@@ -232,6 +264,28 @@ export function parseLsblk(json: unknown): MountEntry[] {
 }
 
 async function listMounts(): Promise<MountEntry[]> {
+  // darwin: diskutil labels first, `mount` fallback (lsblk/udisksctl are
+  // Linux-only). Either may fail (wedged diskutil) → sidebar shows no devices
+  if (isDarwin()) {
+    const dutil = diskutilBin();
+    try {
+      const { stdout } = await execFileP(dutil, ["list", "-plist"], { timeout: 10_000 });
+      const volumes = parseDiskutilListPlist(String(stdout ?? ""));
+      let mounts: ReturnType<typeof parseMountTable> = [];
+      try {
+        const r = await execFileP("mount", [], { timeout: 10_000 });
+        mounts = parseMountTable(String(r.stdout ?? ""));
+      } catch {}
+      const entries = darwinMountEntries(volumes, mounts);
+      if (entries.length) return entries;
+    } catch {}
+    try {
+      const { stdout } = await execFileP("mount", [], { timeout: 10_000 });
+      return darwinMountEntries([], parseMountTable(String(stdout ?? "")));
+    } catch {
+      return [];
+    }
+  }
   try {
     // timeout: a wedged lsblk must not stall the sidebar load forever
     const { stdout } = await execFileP("lsblk", ["-J", "-o", "NAME,PATH,RM,LABEL,FSTYPE,MOUNTPOINTS,MOUNTPOINT"], {
@@ -256,10 +310,10 @@ export type SidebarVisibility = {
 export function buildSections(vis: SidebarVisibility = {}): SidebarSection[] {
   const { showRecent = true, showStarred = true, showTrash = true } = vis;
   const { showUserDirs = true, showBookmarks = true, showDevices = true, showNetwork = true } = vis;
-  const trashFilesDir = path.join(trashDir(), "files");
+  const trashFilesDirPath = trashFilesDir();
   const hasTrash = (() => {
     try {
-      return statSync(trashFilesDir).isDirectory();
+      return statSync(trashFilesDirPath).isDirectory();
     } catch {
       return false;
     }
@@ -269,7 +323,7 @@ export function buildSections(vis: SidebarVisibility = {}): SidebarSection[] {
   if (showRecent) defaults.push({ icon: "clock", label: "Recent", path: null, ejectable: false, scheme: "recent" });
   if (showStarred) defaults.push({ icon: "star", label: "Starred", path: null, ejectable: false, scheme: "starred" });
   if (showTrash && hasTrash)
-    defaults.push({ icon: "trash-can", label: "Trash", path: trashFilesDir, ejectable: false });
+    defaults.push({ icon: "trash-can", label: "Trash", path: trashFilesDirPath, ejectable: false });
 
   const dirs: Place[] = showUserDirs
     ? sysUserDirs.map((d) => ({ icon: "folder", label: d.label, path: d.p, ejectable: false }))
