@@ -76,9 +76,9 @@ describe("makeRecentOpen", () => {
   test("unreadable file escalates through openAsRoot, never spawns or records", async () => {
     const { calls, ctx } = mkCtx({ canRead: () => false });
     const { openFileDefault } = makeRecentOpen(ctx);
-    openFileDefault("/etc/shadow");
+    openFileDefault("/etc/sudoers");
     await settleUntil(() => calls.some((c) => c.startsWith("escalate:")));
-    expect(calls).toContain("escalate:/etc/shadow");
+    expect(calls).toContain("escalate:/etc/sudoers");
     expect(calls.some((c) => c.startsWith("spawn:"))).toBe(false);
     await new Promise((r) => setTimeout(r, 300));
     expect(calls.some((c) => c.startsWith("upsert:"))).toBe(false);

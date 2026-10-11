@@ -104,6 +104,8 @@ const makeHarness = (over: Partial<FileOpsCtx> = {}) => {
     renderAll: () => calls.push("renderAll"),
     notify: (msg, title, level) => calls.push(`notify:${title ?? ""}:${level ?? ""}:${msg}`),
     home: HOME,
+    // pin the linux trash lane: sandbox trashes stay xdg-style on darwin hosts
+    platform: "linux",
     refreshCutVisuals: () => calls.push("cut"),
     log: () => {},
     ...over,
@@ -234,39 +236,42 @@ describe("runTransfer: cross-device move", () => {
     expect(h.calls.some((c) => c.includes("source partially removed"))).toBe(true);
   });
 
-  test("failed privileged source removal keeps the only complete copy", async () => {
-    const src = path.join(ROOT, "dev-a", "sudo-partial-src");
-    const destDir = path.join(ROOT, "dev-b-partial-dest");
-    const target = path.join(destDir, "sudo-partial-src");
-    seedTree(src);
-    mkdirSync(destDir, { recursive: true });
-    let gates = 0;
-    const h = makeHarness({
-      crossDevice: fakeSplit,
-      pauseGate: async () => {
-        if (++gates === 2) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
-      },
-      ensureSudo: async () => true,
-      sudoExec: async (argv) => {
-        if (argv[2] === "rm" && argv.at(-1) === src) {
-          rmSync(path.join(src, "f1.txt"));
-          return { status: 1, stderr: "permission denied" };
-        }
-        const result = Bun.spawnSync(argv.slice(2));
-        return {
-          status: result.exitCode,
-          stderr: new TextDecoder().decode(result.stderr),
-          stdout: new TextDecoder().decode(result.stdout),
-        };
-      },
-    });
+  test.skipIf(process.platform !== "linux")(
+    "failed privileged source removal keeps the only complete copy",
+    async () => {
+      const src = path.join(ROOT, "dev-a", "sudo-partial-src");
+      const destDir = path.join(ROOT, "dev-b-partial-dest");
+      const target = path.join(destDir, "sudo-partial-src");
+      seedTree(src);
+      mkdirSync(destDir, { recursive: true });
+      let gates = 0;
+      const h = makeHarness({
+        crossDevice: fakeSplit,
+        pauseGate: async () => {
+          if (++gates === 2) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        },
+        ensureSudo: async () => true,
+        sudoExec: async (argv) => {
+          if (argv[2] === "rm" && argv.at(-1) === src) {
+            rmSync(path.join(src, "f1.txt"));
+            return { status: 1, stderr: "permission denied" };
+          }
+          const result = Bun.spawnSync(argv.slice(2));
+          return {
+            status: result.exitCode,
+            stderr: new TextDecoder().decode(result.stderr),
+            stdout: new TextDecoder().decode(result.stdout),
+          };
+        },
+      });
 
-    await h.ops.runTransfer("move", destDir, [src], "partial sudo move");
+      await h.ops.runTransfer("move", destDir, [src], "partial sudo move");
 
-    expect(readFileSync(path.join(target, "f1.txt"), "utf8")).toBe("content-1");
-    expect(existsSync(path.join(src, "f1.txt"))).toBe(false);
-    expect(h.calls.some((c) => c.includes("source partially removed"))).toBe(true);
-  });
+      expect(readFileSync(path.join(target, "f1.txt"), "utf8")).toBe("content-1");
+      expect(existsSync(path.join(src, "f1.txt"))).toBe(false);
+      expect(h.calls.some((c) => c.includes("source partially removed"))).toBe(true);
+    },
+  );
 
   test("privileged source-removal failure retries ONLY the removal, never touches the complete copy", async () => {
     // cross-device move: copy landed, rm(src) failed with EACCES. The sudo
@@ -300,38 +305,41 @@ describe("runTransfer: cross-device move", () => {
     expect(seen.some((argv) => argv.some((arg) => arg.includes(src)))).toBe(true);
   });
 
-  test("sudo retry copies into a claimed stage before landing a directory", async () => {
-    const seen: string[][] = [];
-    let checkpoints = 0;
-    const src = path.join(ROOT, "sudo-nest-src");
-    const destDir = path.join(ROOT, "sudo-nest-dest");
-    const target = path.join(destDir, "sudo-nest-src");
-    W(path.join(src, "a.txt"), "aaa");
-    mkdirSync(destDir, { recursive: true });
-    const h = makeHarness({
-      pauseGate: async () => {
-        if (++checkpoints === 2) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
-      },
-      ensureSudo: async () => true,
-      sudoExec: async (argv) => {
-        seen.push(argv);
-        const result = Bun.spawnSync(argv.slice(2));
-        return {
-          status: result.exitCode,
-          stderr: new TextDecoder().decode(result.stderr),
-          stdout: new TextDecoder().decode(result.stdout),
-        };
-      },
-    });
+  test.skipIf(process.platform !== "linux")(
+    "sudo retry copies into a claimed stage before landing a directory",
+    async () => {
+      const seen: string[][] = [];
+      let checkpoints = 0;
+      const src = path.join(ROOT, "sudo-nest-src");
+      const destDir = path.join(ROOT, "sudo-nest-dest");
+      const target = path.join(destDir, "sudo-nest-src");
+      W(path.join(src, "a.txt"), "aaa");
+      mkdirSync(destDir, { recursive: true });
+      const h = makeHarness({
+        pauseGate: async () => {
+          if (++checkpoints === 2) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        },
+        ensureSudo: async () => true,
+        sudoExec: async (argv) => {
+          seen.push(argv);
+          const result = Bun.spawnSync(argv.slice(2));
+          return {
+            status: result.exitCode,
+            stderr: new TextDecoder().decode(result.stderr),
+            stdout: new TextDecoder().decode(result.stdout),
+          };
+        },
+      });
 
-    await h.ops.runTransfer("copy", destDir, [src], "copy nest");
+      await h.ops.runTransfer("copy", destDir, [src], "copy nest");
 
-    expect(readFileSync(path.join(target, "a.txt"), "utf8")).toBe("aaa");
-    const cp = seen.find((argv) => argv[2] === "cp");
-    expect(cp?.at(-1)).toContain(".tfm-part-");
-    expect(seen.some((argv) => argv[2] === "rm" && argv.at(-1) === target)).toBe(false);
-    expect(readdirSync(destDir)).toEqual(["sudo-nest-src"]);
-  });
+      expect(readFileSync(path.join(target, "a.txt"), "utf8")).toBe("aaa");
+      const cp = seen.find((argv) => argv[2] === "cp");
+      expect(cp?.at(-1)).toContain(".tfm-part-");
+      expect(seen.some((argv) => argv[2] === "rm" && argv.at(-1) === target)).toBe(false);
+      expect(readdirSync(destDir)).toEqual(["sudo-nest-src"]);
+    },
+  );
 
   test("copy op unaffected: still streams with the toast (control)", async () => {
     const h = makeHarness();
@@ -455,7 +463,7 @@ describe("runTransfer: raced destinations", () => {
     expect(h.calls.some((c) => c.startsWith("notify:copy failed:error:"))).toBe(true);
   });
 
-  test("sudo move keeps its source when its landed copy is replaced", async () => {
+  test.skipIf(process.platform !== "linux")("sudo move keeps its source when its landed copy is replaced", async () => {
     const src = path.join(ROOT, "sudo-after-src", "a.txt");
     const destDir = path.join(ROOT, "sudo-after-dest");
     const target = path.join(destDir, "a.txt");
@@ -598,7 +606,7 @@ describe("runTransfer: self-drop and orphan-sweep guards", () => {
 });
 
 describe("performBulkRename", () => {
-  test("renames all pairs in ONE undo batch (undone as one step)", async () => {
+  test.skipIf(process.platform === "darwin")("renames all pairs in ONE undo batch (undone as one step)", async () => {
     const h = makeHarness();
     const a = path.join(ROOT, "bulk-a.txt");
     const b = path.join(ROOT, "bulk-b.txt");
@@ -1667,9 +1675,11 @@ describe("preScan counting", () => {
 });
 
 // chmod-based permission tests never fail as uid 0 (root bypasses
-// file perms), so the whole block is skipped there with a reason
-const describeNonRoot = process.getuid?.() === 0 ? describe.skip : describe;
-describeNonRoot("sudo escalation", () => {
+// file perms), so the whole block is skipped there with a reason.
+// Also Linux-only: the fake sudoExec models `sudo -n` which is
+// Linux-specific; macOS uses different privilege escalation.
+const describeNonRoot = process.getuid?.() === 0 || process.platform !== "linux" ? describe.skip : describe;
+describeNonRoot("sudo escalation (linux)", () => {
   // fake sudoExec: strip the ["sudo","-n"] prefix and run the rest for real —
   // exercises the exact argv shape (cp -a -- / mv --) without real sudo.
   // Models root bypassing perms by lifting the dest parent mode during exec.
@@ -2216,7 +2226,7 @@ describeNonRoot("sudo escalation", () => {
   });
 });
 
-describeNonRoot("sudo escalation failure surface", () => {
+describeNonRoot("sudo escalation failure surface (linux)", () => {
   test("sudo child failure reports permission denied, not a bare tool name", async () => {
     const srcDir = path.join(ROOT, "sudo-fail-src");
     const destDir = path.join(ROOT, "sudo-fail-dest");
