@@ -5,7 +5,6 @@
 // everything renderer-coupled (hit-testing, tile visuals, place hover)
 // arrives via ctx. ---
 
-import path from "node:path";
 import { statSync } from "node:fs";
 import {
   agreeDragFrame,
@@ -24,7 +23,7 @@ import {
   uriListPayload,
 } from "./osc72";
 import { gridDrag, TileVisual, type ClipItem, type GridTileRef, type TileVisualMode } from "../input/grid-input";
-import { trashDir } from "../fs/fsutil";
+import { trashFilesDir } from "../fs/fsutil";
 import type { NotifyLevel } from "../lib/notify-level";
 
 // terminal-provided error text can be long or binary — keep one short line
@@ -193,7 +192,7 @@ export const makeDnd72 = (ctx: Dnd72Ctx) => {
     // same routing as tile/place drops: conflict prompt, undo units, honest counts —
     // never silently skip collisions; the trash place must go through
     // trashPaths (own .trashinfo writer), not raw-move
-    if (destDir === path.join(trashDir(), "files")) {
+    if (destDir === trashFilesDir()) {
       void ctx.trashPaths(paths);
       return;
     }

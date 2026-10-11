@@ -64,10 +64,12 @@ describe("paths", () => {
     expect(p.DND_LOG).toBe(path.join(dir, "paths-dnd.log"));
   });
 
-  test("without the env, the documented /tmp paths are used", () => {
+  test("without the env, the documented tmp paths are used", () => {
+    // default tmp dir ($TMPDIR on macOS, /tmp elsewhere) + fixed basenames
+    const tmp = process.env.TMPDIR || os.tmpdir();
     const p = JSON.parse(run("defaults", "paths", [], false).text);
-    expect(p.DEBUG_LOG).toBe("/tmp/tfm-debug.log");
-    expect(p.DND_LOG).toBe("/tmp/tfm-dnd.log");
+    expect(p.DEBUG_LOG).toBe(path.join(tmp, "tfm-debug.log"));
+    expect(p.DND_LOG).toBe(path.join(tmp, "tfm-dnd.log"));
   });
 });
 

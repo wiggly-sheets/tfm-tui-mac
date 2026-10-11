@@ -80,7 +80,11 @@ export const MAX_UNDO_BATCHES = 30;
 
 // interpret one journal step back into a live closure. `log` mirrors the
 // catch-and-log the original inline closures carry (redos especially).
-export const stepToUnit = (step: UndoStep, log: (msg: string) => void = () => {}): UndoUnit => {
+export const stepToUnit = (
+  step: UndoStep,
+  log: (msg: string) => void = () => {},
+  platform: string = process.platform,
+): UndoUnit => {
   switch (step.op) {
     case "trash":
       // idempotent: undoing a copy whose target the user already deleted is
@@ -95,11 +99,12 @@ export const stepToUnit = (step: UndoStep, log: (msg: string) => void = () => {}
             ? { dev: step.dev, ino: step.ino, ...(step.born !== undefined ? { born: step.born } : {}) }
             : null,
           log,
+          platform,
         );
     case "trash-if-exists":
       return async () => {
         try {
-          if (existsSync(step.path)) await xdgTrashMove(step.path);
+          if (existsSync(step.path)) await xdgTrashMove(step.path, platform);
         } catch (err) {
           log(`redo trash ${step.path}: ${fsErrText(err)}`);
         }
@@ -147,10 +152,14 @@ export const stepToUnit = (step: UndoStep, log: (msg: string) => void = () => {}
   }
 };
 
-const dataToBatch = (data: UndoBatchData, log: (msg: string) => void = () => {}): OpBatch => ({
+const dataToBatch = (
+  data: UndoBatchData,
+  log: (msg: string) => void = () => {},
+  platform: string = process.platform,
+): OpBatch => ({
   label: data.label,
-  units: data.units.map((s) => stepToUnit(s, log)),
-  redos: data.redos.map((s) => stepToUnit(s, log)),
+  units: data.units.map((s) => stepToUnit(s, log, platform)),
+  redos: data.redos.map((s) => stepToUnit(s, log, platform)),
 });
 
 type UndoOpts = {
@@ -158,11 +167,14 @@ type UndoOpts = {
   log?: (msg: string) => void;
   /** fired on push/undo/redo so the wiring can persist the journal */
   onChange?: () => void;
+  /** trash-lane platform for rehydrated steps (tests pin "linux" for hermetic sandboxes) */
+  platform?: string;
 };
 
 export const makeUndo = (sink: UndoSink, opts: UndoOpts = {}) => {
   const log = opts.log ?? (() => {});
   const onChange = opts.onChange ?? (() => {});
+  const platform = opts.platform ?? process.platform;
   let running = false; // in-flight undo/redo guard: no interleaved batches
   // undo/redo entries with their journal data alongside (null = session-only,
   // pushed without data — fully undoable in memory, skipped by snapshotData)
@@ -278,7 +290,7 @@ export const makeUndo = (sink: UndoSink, opts: UndoOpts = {}) => {
   const adoptBatches = (datas: UndoBatchData[]): number => {
     const fresh = datas.slice(-MAX_UNDO_BATCHES);
     for (const d of fresh) {
-      undoStack.push({ batch: dataToBatch(d, log), data: d });
+      undoStack.push({ batch: dataToBatch(d, log, platform), data: d });
     }
     if (undoStack.length > MAX_UNDO_BATCHES) undoStack.splice(0, undoStack.length - MAX_UNDO_BATCHES);
     redoStack.length = 0;

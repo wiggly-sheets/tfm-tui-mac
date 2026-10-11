@@ -475,7 +475,8 @@ describe("journal trash identity", () => {
       rmSync(p);
       writeFileSync(p, "stranger");
       const sink = recordingSink();
-      const undo = makeUndo(sink);
+      // pin linux: path semantics really trash, into the sandboxed xdg tree
+      const undo = makeUndo(sink, { platform: "linux" });
       // old journals carry no dev/ino — path semantics trash the occupant
       // (restorable from the sandboxed trash, not deleted)
       const data: UndoBatchData = {
