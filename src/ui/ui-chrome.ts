@@ -4,7 +4,8 @@ import path from "node:path";
 import { destroyChildren } from "../lib/uiutil";
 import { applySurface, btnSurface, rowSurface, slotBg, tileSurface, type UiStyle } from "./style";
 import { buildSections, loadSystemPlaces, type Place, type SidebarVisibility } from "../fs/places";
-import { trashDir } from "../fs/fsutil";
+import { diskutilBin, diskutilEjectArgv, diskutilMountArgv, isDarwin } from "../fs/darwin";
+import { trashFilesDir } from "../fs/fsutil";
 import { RECENT_URI, STARRED_URI } from "../fs/uri";
 import { tabTitle, type Tab } from "../app/tabs";
 import { gridDrag, type ClipItem } from "../input/grid-input";
@@ -149,7 +150,11 @@ export const makeChrome = (ctx: ChromeCtx) => {
   };
 
   const mountDevice = (device: string) => {
-    const child = spawnSafe("udisksctl", ["mount", "-b", device], { stdio: "ignore", timeoutMs: 10_000 }, (err) =>
+    // darwin: diskutil mountDisk (udisksctl is Linux-only)
+    const [bin, ...args] = isDarwin()
+      ? ([diskutilBin(), ...diskutilMountArgv(device)] as [string, ...string[]])
+      : (["udisksctl", "mount", "-b", device] as [string, ...string[]]);
+    const child = spawnSafe(bin, args, { stdio: "ignore", timeoutMs: 10_000 }, (err) =>
       ctx.dlog(`mount ${device}: ${err.message}`),
     );
     // a failing mount (bad device, policy) used to be silent — the reload
@@ -220,10 +225,10 @@ export const makeChrome = (ctx: ChromeCtx) => {
           if (!keys || !target || place.scheme) return;
           const rest = keys.filter((k) => k.path !== target);
           if (!rest.length) return;
-          // trashDir() honors $XDG_DATA_HOME (like places.ts's Trash row) — a
-          // hardcoded ~/.local/share path diverges under a relocated trash
+          // trashFilesDir() honors $XDG_DATA_HOME (like places.ts's Trash row) —
+          // a hardcoded ~/.local/share path diverges under a relocated trash
           // root and the drop would plain-move without a .trashinfo
-          if (target === path.join(trashDir(), "files")) {
+          if (target === trashFilesDir()) {
             // dropping onto the trash place must go through trashPaths (own
             // .trashinfo writer), not plain-move — otherwise no .trashinfo is
             // written and items can't be restored
@@ -266,7 +271,11 @@ export const makeChrome = (ctx: ChromeCtx) => {
   };
 
   const ejectDevice = (device: string) => {
-    const child = spawnSafe("udisksctl", ["unmount", "-b", device], { stdio: "ignore", timeoutMs: 10_000 }, (err) =>
+    // darwin: diskutil eject (unmounts + ejects the media)
+    const [bin, ...args] = isDarwin()
+      ? ([diskutilBin(), ...diskutilEjectArgv(device)] as [string, ...string[]])
+      : (["udisksctl", "unmount", "-b", device] as [string, ...string[]]);
+    const child = spawnSafe(bin, args, { stdio: "ignore", timeoutMs: 10_000 }, (err) =>
       ctx.dlog(`eject ${device}: ${err.message}`),
     );
     child.on("close", (code) => {

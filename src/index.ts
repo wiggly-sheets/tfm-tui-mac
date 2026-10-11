@@ -140,6 +140,24 @@ const chrome = await wireChrome({
   finishDrag: () => grid.finishDrag(),
 });
 
+// graceful shutdown on SIGTERM/SIGINT (e.g. terminal close, system shutdown)
+const { saveConfig } = await import("./config/config");
+const shutdown = async (signal: string) => {
+  if (isDebug) appendLog(`shutdown: ${signal}`);
+  try {
+    await saveConfig(core.config);
+  } catch {}
+  try {
+    chrome.stopChromeTimers?.();
+  } catch {}
+  try {
+    chrome.stopGpm?.();
+  } catch {}
+  process.exit(signal === "SIGTERM" ? 143 : 130);
+};
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+
 // --- grid foundation: selection + inline rename (before fileops — its ctx
 // takes refreshCutVisuals directly) ---
 const gridFoundation = wireGridFoundation({

@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import path from "node:path";
 import { makeMenuEntries, pasteLabel, type MenuEntriesCtx } from "./menu-entries";
 import type { SortMode } from "../lib/sort";
-import { trashDir } from "../fs/fsutil";
+import { trashFilesDir } from "../fs/fsutil";
 import type { ClipItem, GridTileRef } from "../input/grid-input";
 import type { Place } from "../fs/places";
 import type { LoadedPlugin } from "../plugins/plugin-api";
@@ -28,7 +27,7 @@ const fakePlugin = (over: Partial<LoadedPlugin> & { name: string }): LoadedPlugi
   ...over,
 });
 
-const TRASH_FILES = path.join(trashDir(), "files");
+const TRASH_FILES = trashFilesDir();
 
 const baseCtx = (): MenuEntriesCtx & {
   calls: string[];

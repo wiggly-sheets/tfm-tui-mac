@@ -542,7 +542,8 @@ export const makeTerminal = (ctx: TermCtx) => {
     host.add(header);
     host.add(term);
     ctx.stripSelectable();
-    const shell = process.env.SHELL || "/bin/bash";
+    // macOS login shell is zsh ($SHELL usually set — this is the unset fallback)
+    const shell = process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/bash");
     try {
       termChild = spawnPty({
         argv: [shell],

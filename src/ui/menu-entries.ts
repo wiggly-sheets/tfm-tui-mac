@@ -2,8 +2,7 @@
 // menus contain, as a factory with injected action callbacks (same seam as
 // grid-input.ts). The floating menu widget itself lives in ./ui-menu. ---
 
-import path from "node:path";
-import { trashDir } from "../fs/fsutil";
+import { trashFilesDir } from "../fs/fsutil";
 import { setBookmarked, loadSystemPlaces, type Place } from "../fs/places";
 import { RECENT_URI, STARRED_URI, isVirtualUri } from "../fs/uri";
 import type { CompressionFormat } from "../fs/archive";
@@ -77,7 +76,7 @@ export const pasteLabel = (n: number, into = ""): string =>
   n > 0 ? `Paste ${n} item${n === 1 ? "" : "s"}${into}` : `Paste${into}`;
 
 export const makeMenuEntries = (ctx: MenuEntriesCtx) => {
-  const trashFiles = (): string => path.join(trashDir(), "files");
+  const trashFiles = (): string => trashFilesDir();
 
   // plugin menu sections: one entry list per installed plugin. A throwing
   // builder or a malformed entry drops that plugin's section — never the menu

@@ -13,6 +13,8 @@ import { readdir } from "node:fs/promises";
 import { spawnSafe } from "../fs/spawn-safe";
 import { loadSystemPlaces } from "../fs/places";
 import { buildMountArgs, buildUnmountArgs, gvfsRoot, takeGioPrompt, type GioPrompt } from "../fs/network";
+import { diskutilBin, diskutilUnmountArgv, isDarwin, parseMountTable, parseSmbMounts } from "../fs/darwin";
+import { spawnOpenTarget } from "../fs/open-url";
 import { makeNetworkActions, type GioResult } from "../fs/netmount";
 import { makeMenu, MENU_W } from "../ui/ui-menu";
 import { makeChrome } from "../ui/ui-chrome";
@@ -401,21 +403,26 @@ export const wireChrome = async (deps: {
   });
 
   // --- Recent-files recording + default open: batching/toast logic lives in
-  // ./recent-open (tested); xbel write, xdg-open spawn and the app probe are
-  // injected here. Unreadable files escalate through openAsRoot above — the
-  // open is adaptive, there is no separate elevated row. Executables fork to
-  // grid's Run prompt (lazy via getGrid — pick wires last) instead of xdg-open,
-  // which would land them in the browser/editor. ---
+  // ./recent-open (tested); xbel write, open/xdg-open spawn and the app probe
+  // are injected here. Unreadable files escalate through openAsRoot above —
+  // the open is adaptive, there is no separate elevated row. Executables fork
+  // to grid's Run prompt (lazy via getGrid — pick wires last) instead of the
+  // opener, which would land them in the browser/editor. ---
   const { openFileDefault } = makeRecentOpen({
     inTrashView: core.inTrashView,
     notify,
     upsertRecent: upsertRecentXbel,
     spawnOpen: (p, onFailed) => {
-      spawnSafe("xdg-open", [p], { stdio: "ignore", detached: true }, (err) => {
-        onFailed();
-        dlog(`open ${p}: ${err.message}`);
-        notify(`Can't open ${path.basename(p)} · ${err.message}`, "open", "error");
-      }).unref?.();
+      spawnOpenTarget(
+        spawnSafe,
+        p,
+        (err) => {
+          onFailed();
+          dlog(`open ${p}: ${err.message}`);
+          notify(`Can't open ${path.basename(p)} · ${err.message}`, "open", "error");
+        },
+        { detached: true },
+      );
     },
     appForFile,
     openAsRoot,
@@ -435,10 +442,13 @@ export const wireChrome = async (deps: {
   });
 
   // --- Network location actions (impls for the deferred wrappers above):
-  // connect through gvfs, driving credential prompts through the shared text
-  // overlay, then refresh places and navigate the FUSE path. `gio` is spawned
-  // argv-array (never shelled) with stdin/stdout pipes the app scripts, so
-  // gio's own terminal prompt never touches the TUI. ---
+  // Linux: connect through gvfs, driving credential prompts through the
+  // shared text overlay, then refresh places and navigate the FUSE path.
+  // `gio` is spawned argv-array (never shelled) with stdin/stdout pipes the
+  // app scripts, so gio's own terminal prompt never touches the TUI.
+  // Darwin: `open <uri>` hands auth to Finder and the volume lands under
+  // /Volumes (polled on a longer budget — Finder auth takes seconds);
+  // disconnect is `diskutil unmount` on the resolved mount path. ---
   const GIO_TIMEOUT_MS = 120_000;
 
   const runGio = async (args: string[], interactive: boolean): Promise<GioResult> => {
@@ -534,24 +544,70 @@ export const wireChrome = async (deps: {
     return { code, stdout: "", stderr: timedOut ? stderr || "timed out" : stderr };
   };
 
-  const network = makeNetworkActions({
-    gvfsRoot,
-    // mount can prompt for credentials; unmount never does
-    mount: (uri) => runGio(buildMountArgs(uri), true),
-    unmount: (uri) => runGio(buildUnmountArgs(uri), false),
-    readdir: readdir,
-    notify: (m, t, l) => {
-      try {
-        notify(m, t, l);
-      } catch {}
+  // darwin `open <uri>`: fire-and-wait exit (Finder owns auth UI from here)
+  const runDarwinOpenMount = async (uri: string): Promise<GioResult> => {
+    try {
+      const proc = Bun.spawn(["open", uri], {
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+        timeout: 30_000,
+      });
+      const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      return { code: await proc.exited, stdout: out, stderr: err };
+    } catch (err) {
+      return { code: 127, stdout: "", stderr: errMessage(err) };
+    }
+  };
+
+  // darwin unmount by URI: resolve the /Volumes path through the mount table
+  // (the sink only carries URIs), then diskutil unmount
+  const runDarwinUnmountUri = async (uri: string): Promise<GioResult> => {
+    try {
+      const proc = Bun.spawn(["mount"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 10_000 });
+      const text = await new Response(proc.stdout).text();
+      await proc.exited;
+      const norm = uri.replace(/\/+$/, "").toLowerCase();
+      const hit = parseSmbMounts(parseMountTable(text)).find((m) => m.uri.replace(/\/+$/, "").toLowerCase() === norm);
+      if (!hit) return { code: 1, stdout: "", stderr: `not mounted: ${uri}` };
+      const dutil = diskutilBin();
+      const up = Bun.spawn([dutil, ...diskutilUnmountArgv(hit.target)], {
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+        timeout: 30_000,
+      });
+      const [out, err] = await Promise.all([new Response(up.stdout).text(), new Response(up.stderr).text()]);
+      return { code: await up.exited, stdout: out, stderr: err };
+    } catch (err) {
+      return { code: 127, stdout: "", stderr: errMessage(err) };
+    }
+  };
+
+  const network = makeNetworkActions(
+    {
+      gvfsRoot,
+      // mount can prompt for credentials; unmount never does
+      mount: (uri) => (isDarwin() ? runDarwinOpenMount(uri) : runGio(buildMountArgs(uri), true)),
+      unmount: (uri) => (isDarwin() ? runDarwinUnmountUri(uri) : runGio(buildUnmountArgs(uri), false)),
+      readdir: readdir,
+      notify: (m, t, l) => {
+        try {
+          notify(m, t, l);
+        } catch {}
+      },
+      log: (m) => dlog(m),
     },
-    log: (m) => dlog(m),
-  });
+    // `open smb://` returns once Finder takes over, well before the volume
+    // lands — poll ~10s instead of the gvfs ~1s
+    { resolveAttempts: isDarwin() ? 40 : 4 },
+  );
 
   connectServerImpl = async (raw?: string): Promise<void> => {
-    // fail fast when gio is absent (minimal/container distros) — otherwise
-    // the URL prompt opens first and only the mount spawn fails afterwards
-    if (!Bun.which("gio")) {
+    // fail fast when the mounter is absent (minimal/container distros) —
+    // otherwise the URL prompt opens first and only the mount spawn fails
+    // afterwards. `open`/diskutil ship macOS, so darwin skips the probe.
+    if (!isDarwin() && !Bun.which("gio")) {
       notify("Can't connect: gio not installed", "network", "error");
       return;
     }
@@ -573,7 +629,7 @@ export const wireChrome = async (deps: {
   };
 
   disconnectServerImpl = async (mountPath: string): Promise<void> => {
-    if (!Bun.which("gio")) {
+    if (!isDarwin() && !Bun.which("gio")) {
       notify("Can't disconnect: gio not installed", "network", "error");
       return;
     }
