@@ -1,7 +1,11 @@
 import path from "node:path";
 import { readdir } from "node:fs/promises";
+import { watch } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { errMessage } from "../lib/uiutil";
 import { gvfsRoot, parseGvfsName, parseServerInput } from "./network";
+import { isDarwin, parseMountTable, parseSmbMounts } from "./darwin";
 import type { NotifyLevel } from "../lib/notify-level";
 
 // --- Network location orchestration: connect/disconnect through `gio mount`
@@ -32,12 +36,32 @@ const lastLine = (s: string): string =>
     .filter(Boolean)
     .pop() ?? "";
 
-// active gvfs mounts under the runtime dir; unreadable/missing root = none
+// active network mounts. Linux: gvfs FUSE dirs under the runtime dir.
+// Darwin: smbfs rows of the mount table (Finder mounts under /Volumes;
+// mountText injectable so tests never shell out). Unreadable/missing = none.
 export const listNetworkMounts = async (
   readdirImpl: (dir: string) => Promise<string[]> = (d) => readdir(d),
+  platform: string = process.platform,
+  mountText?: string,
 ): Promise<NetworkMount[]> => {
+  if (isDarwin(platform)) {
+    try {
+      let text = mountText;
+      if (text === undefined) {
+        text = await promisify(execFile)("mount", [], { timeout: 10_000 }).then((r) => String(r.stdout ?? ""));
+      }
+      return parseSmbMounts(parseMountTable(text ?? "")).map((m) => ({
+        path: m.target,
+        uri: m.uri,
+        label: m.label,
+        scheme: "smb",
+      }));
+    } catch {
+      return [];
+    }
+  }
   try {
-    const dir = gvfsRoot();
+    const dir = gvfsRoot(platform);
     const names = await readdirImpl(dir);
     const out: NetworkMount[] = [];
     for (const name of names) {
@@ -51,6 +75,14 @@ export const listNetworkMounts = async (
   }
 };
 
+// watch /Volumes on darwin for network mount changes (no gvfs watcher)
+export const watchDarwinVolumes = (onChange: () => void, platform: string = process.platform): (() => void) | null => {
+  if (!isDarwin(platform)) return null;
+  const watcher = watch("/Volumes", { persistent: false }, () => onChange());
+  watcher.unref?.();
+  return () => watcher.close();
+};
+
 const nameMatchesUri = (name: string, uri: string): boolean => {
   const n = parseGvfsName(name);
   if (!n) return false;
@@ -62,10 +94,13 @@ const nameMatchesUri = (name: string, uri: string): boolean => {
   }
 };
 
-export const makeNetworkActions = (sink: NetworkSink) => {
+export const makeNetworkActions = (sink: NetworkSink, opts?: { resolveAttempts?: number }) => {
   // in-session uri per mount path (a gvfs dir name can be ambiguous to
   // reverse); falls back to reconstructing from the dir name
   const uriByPath = new Map<string, string>();
+  // `open smb://` hands auth to Finder and returns before the volume lands —
+  // darwin callers pass a longer poll budget (default stays gvfs-fast)
+  const attempts = opts?.resolveAttempts ?? 4;
 
   const readNames = async (): Promise<string[]> => {
     try {
@@ -80,7 +115,7 @@ export const makeNetworkActions = (sink: NetworkSink) => {
     // poll with a delay (back-to-back readdirs all fire within milliseconds
     // and a slow FUSE arrival deterministically reads "mount path not found"
     // after a SUCCESSFUL mount, orphaning it)
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, 250));
       const names = await readNames();
       const fresh = names.filter((n) => !before.has(n));

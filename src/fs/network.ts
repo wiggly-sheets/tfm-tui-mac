@@ -1,5 +1,6 @@
 import path from "node:path";
 import { isWithinOrEqual } from "./fsutil";
+import { DARWIN_NETWORK_ROOT, isDarwin } from "./darwin";
 
 // --- Network locations: pure primitives for the gvfs bridge. tfm does not
 // implement a remote VFS — `gio mount` mounts the share through GVFS and the
@@ -21,7 +22,9 @@ export type GvfsMountName = {
   label: string;
 };
 
-export const gvfsRoot = (): string => {
+export const gvfsRoot = (platform: string = process.platform): string => {
+  // darwin: Finder mounts network shares under /Volumes (no gvfs FUSE tree)
+  if (isDarwin(platform)) return DARWIN_NETWORK_ROOT;
   const runtime = process.env.XDG_RUNTIME_DIR;
   if (runtime) return path.join(runtime, "gvfs");
   // process.getuid is undefined on Windows; tfm is Linux-only but keep tsc happy
@@ -29,7 +32,11 @@ export const gvfsRoot = (): string => {
   return `/run/user/${uid}/gvfs`;
 };
 
-export const isNetworkPath = (p: string): boolean => isWithinOrEqual(p, gvfsRoot());
+// darwin always false: /Volumes mixes local USB + smb shares (indistinguishable
+// by path), and both deserve live watchers + volume-trash behavior — the smb
+// share list comes from the mount table (parseSmbMounts), not the path gate
+export const isNetworkPath = (p: string, platform: string = process.platform): boolean =>
+  isDarwin(platform) ? false : isWithinOrEqual(p, gvfsRoot(platform));
 
 const prettify = (uri: string): string => {
   const withoutScheme = uri.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");

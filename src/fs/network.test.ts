@@ -52,11 +52,11 @@ describe("gio argv builders", () => {
 describe("gvfsRoot / isNetworkPath", () => {
   test("honors $XDG_RUNTIME_DIR", () => {
     process.env.XDG_RUNTIME_DIR = "/run/user/4242";
-    expect(gvfsRoot()).toBe("/run/user/4242/gvfs");
-    expect(isNetworkPath("/run/user/4242/gvfs/sftp:host=a/foo")).toBe(true);
-    expect(isNetworkPath("/run/user/4242/gvfs")).toBe(true);
-    expect(isNetworkPath("/run/user/4242/gvfs-other")).toBe(false);
-    expect(isNetworkPath("/home/bob")).toBe(false);
+    expect(gvfsRoot("linux")).toBe("/run/user/4242/gvfs");
+    expect(isNetworkPath("/run/user/4242/gvfs/sftp:host=a/foo", "linux")).toBe(true);
+    expect(isNetworkPath("/run/user/4242/gvfs", "linux")).toBe(true);
+    expect(isNetworkPath("/run/user/4242/gvfs-other", "linux")).toBe(false);
+    expect(isNetworkPath("/home/bob", "linux")).toBe(false);
   });
 });
 
@@ -114,5 +114,14 @@ describe("takeGioPrompt", () => {
     expect(takeGioPrompt("")).toBeNull();
     expect(takeGioPrompt("Mounting...\n")).toBeNull();
     expect(takeGioPrompt("User: notatail")).toBeNull();
+  });
+});
+
+describe("darwin network root", () => {
+  test("gvfsRoot is /Volumes and the path gate stays off", async () => {
+    const { gvfsRoot: root, isNetworkPath: isNet } = await import("./network");
+    expect(root("darwin")).toBe("/Volumes");
+    expect(isNet("/Volumes/share/file", "darwin")).toBe(false);
+    expect(isNet("/Volumes/USB/file", "darwin")).toBe(false);
   });
 });

@@ -35,17 +35,16 @@ const makeSink = (opts: {
 
 describe("listNetworkMounts", () => {
   test("parses gvfs dirs, skips unparseable names, tolerates a missing root", async () => {
-    const mounts = await listNetworkMounts(async () => [
-      "sftp:host=example.com,user=bob",
-      "junk",
-      "smb-share:server=nas,share=pub",
-    ]);
+    const mounts = await listNetworkMounts(
+      async () => ["sftp:host=example.com,user=bob", "junk", "smb-share:server=nas,share=pub"],
+      "linux",
+    );
     expect(mounts.map((m) => m.path)).toEqual([
       "/run/user/4242/gvfs/sftp:host=example.com,user=bob",
       "/run/user/4242/gvfs/smb-share:server=nas,share=pub",
     ]);
     expect(mounts[0]!.uri).toBe("sftp://bob@example.com/");
-    await expect(listNetworkMounts(async () => Promise.reject(new Error("ENOENT")))).resolves.toEqual([]);
+    await expect(listNetworkMounts(async () => Promise.reject(new Error("ENOENT")), "linux")).resolves.toEqual([]);
   });
 });
 
@@ -115,5 +114,17 @@ describe("makeNetworkActions.disconnect", () => {
     expect(await actions.disconnect(p)).toBe(false);
     expect(actions.uriForPath(p)).toBe("sftp://bob@example.com/");
     expect(calls.notify.at(-1)).toEqual(["Disconnect failed: Error: busy", "network", "error"]);
+  });
+});
+
+describe("listNetworkMounts darwin", () => {
+  test("smbfs mount-table rows become smb mounts, others skip", async () => {
+    const { listNetworkMounts } = await import("./netmount");
+    const text = [
+      "/dev/disk7s1 on /Volumes/USB (apfs, local, journaled)",
+      "//bob@nas/pub on /Volumes/pub (smbfs, nobrowse)",
+    ].join("\n");
+    const mounts = await listNetworkMounts(async () => [], "darwin", text);
+    expect(mounts).toEqual([{ path: "/Volumes/pub", uri: "smb://nas/pub", label: "nas/pub", scheme: "smb" }]);
   });
 });
