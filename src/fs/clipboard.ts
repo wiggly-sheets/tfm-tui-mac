@@ -1,8 +1,18 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { spawnSafe } from "./spawn-safe";
 import { fileUriToPath } from "./uri";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  clipboardInfoArgs,
+  hasFinderFileRefs,
+  isDarwin,
+  parseDarwinFileUrls,
+  parseDarwinPosixList,
+  pbpasteFileUrlArgs,
+  posixPathOfClipboardArgs,
+  type CopiedFiles,
+} from "./darwin";
 
 // --- System clipboard bridge (Nautilus-style copied-files). Nautilus
 // publishes files on the CLIPBOARD selection as MIME
@@ -27,7 +37,13 @@ type ClipTool = {
   getTextArgs: string[];
 };
 
-export const sysClipTool = (): ClipTool | null => {
+export const sysClipTool = (platform: string = process.platform): ClipTool | null => {
+  // macOS: pbcopy/pbpaste text path (paste-anywhere, like the Linux text
+  // publish). No x-special/gnome type on darwin — Finder file refs arrive via
+  // the osascript lane in readCopiedFilesFromSystemClipboard, never as a MIME.
+  if (isDarwin(platform)) {
+    return { get: "pbpaste", put: "pbcopy", putBase: [], getArgs: [], getTextArgs: [] };
+  }
   if (process.env.WAYLAND_DISPLAY) {
     return {
       get: "wl-paste",
@@ -51,7 +67,7 @@ export const sysClipTool = (): ClipTool | null => {
   return null;
 };
 
-type CopiedFiles = { op: "copy" | "move"; paths: string[] };
+export type { CopiedFiles };
 
 // internal-clipboard cut check (tile dimming): the pressed path is "cut" when
 // the pending clipboard is a cut containing it. null clipboard = nothing cut.
@@ -92,15 +108,28 @@ type ClipLog = (msg: string) => void;
 // terminals/editors/browsers; fails silently with a log line when no tool is
 // available. spawnFn is injectable so tests pin the exact argv + payload a
 // text/plain client receives (the contract a gnome-MIME publish broke once).
+// Darwin resolves symlinks (realpath absolute) so a pasted path survives the
+// link's later move; Finder paste-as-files stays drag-out's job (same split
+// as Nautilus).
 export const publishPathsToSystemClipboard = (
   mode: string,
   items: { path: string }[],
   log: ClipLog = () => {},
   spawnFn: typeof spawnSafe = spawnSafe,
+  platform: string = process.platform,
 ): void => {
-  const t = sysClipTool();
+  const t = sysClipTool(platform);
   if (!t || !items.length) return;
-  const payload = items.map((i) => i.path).join("\n");
+  const payload = items
+    .map((i) => {
+      if (!isDarwin(platform)) return i.path;
+      try {
+        return realpathSync(i.path);
+      } catch {
+        return i.path;
+      }
+    })
+    .join("\n");
   try {
     const p = spawnFn(t.put, [...t.putBase], { stdio: ["pipe", "ignore", "ignore"] }, (err) =>
       log(`system clipboard FAILED: ${err.message}`),
@@ -116,8 +145,14 @@ export const publishPathsToSystemClipboard = (
 // read a file payload from the system clipboard: Nautilus's gnome-copied-files
 // first, then tfm's own bare-path text publish (a second instance's clipboard
 // carries text/plain, not the gnome MIME). null when neither yields paths.
-export const readCopiedFilesFromSystemClipboard = async (log: ClipLog = () => {}): Promise<CopiedFiles | null> => {
-  const t = sysClipTool();
+// Darwin: `clipboard info` furl detect → osascript POSIX paths (verified;
+// multi-file degrades to the first) → pbpaste -Prefer file-url → pbpaste text.
+export const readCopiedFilesFromSystemClipboard = async (
+  log: ClipLog = () => {},
+  platform: string = process.platform,
+): Promise<CopiedFiles | null> => {
+  if (isDarwin(platform)) return readDarwinClipboard(log);
+  const t = sysClipTool(platform);
   if (!t) {
     log("paste: no system clipboard tool");
     return null;
@@ -144,6 +179,62 @@ export const readCopiedFilesFromSystemClipboard = async (log: ClipLog = () => {}
   }
   // gnome MIME not offered (a text-only clipboard): re-read without the filter
   const text = await read(t.getTextArgs);
+  const plain = text ? parsePlainPaths(text) : null;
+  if (!plain) log("paste: no usable file paths in system clip");
+  return plain;
+};
+
+// darwin read lane (exec runner injectable so tests fake osascript/pbpaste)
+export const readDarwinClipboard = async (
+  log: ClipLog = () => {},
+  run: (bin: string, args: string[]) => Promise<string | null> = async (bin, args) => {
+    try {
+      const { stdout } = await execFileP(bin, args, { timeout: 10_000 });
+      return String(stdout ?? "");
+    } catch (err) {
+      log(`paste: clipboard read failed (${[bin, ...args].join(" ")}): ${err}`);
+      return null;
+    }
+  },
+): Promise<CopiedFiles | null> => {
+  log("paste: reading system clipboard via osascript+pbpaste");
+  const resolveExisting = (paths: string[]): string[] | null => {
+    if (!paths.length) return null;
+    const resolved = paths.map((p) => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    });
+    return resolved.every((p) => existsSync(p)) ? resolved : null;
+  };
+  // Finder file refs: osascript POSIX paths AND the file-url paste both
+  // parse ALL paths — the wider hit wins so a multi-file copy never
+  // collapses to its first entry (the old single-path degrade).
+  if (hasFinderFileRefs((await run("/usr/bin/osascript", clipboardInfoArgs())) ?? "")) {
+    const posixPaths = resolveExisting(
+      parseDarwinPosixList((await run("/usr/bin/osascript", posixPathOfClipboardArgs())) ?? ""),
+    );
+    const furlRaw = await run("pbpaste", pbpasteFileUrlArgs());
+    let furl: CopiedFiles | null = null;
+    if (furlRaw) {
+      const darwinUrls = parseDarwinFileUrls(furlRaw, fileUriToPath);
+      const resolvedDarwin = darwinUrls ? resolveExisting(darwinUrls.paths) : null;
+      furl = resolvedDarwin
+        ? { op: "copy", paths: resolvedDarwin }
+        : (parseCopiedFiles(furlRaw) ?? parsePlainPaths(furlRaw));
+    }
+    const furlPaths = furl?.paths ?? [];
+    const best =
+      posixPaths && furl
+        ? furlPaths.length >= posixPaths.length
+          ? furl
+          : { op: "copy" as const, paths: posixPaths }
+        : (furl ?? (posixPaths ? { op: "copy" as const, paths: posixPaths } : null));
+    if (best) return best;
+  }
+  const text = await run("pbpaste", []);
   const plain = text ? parsePlainPaths(text) : null;
   if (!plain) log("paste: no usable file paths in system clip");
   return plain;

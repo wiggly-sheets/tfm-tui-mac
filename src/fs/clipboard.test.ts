@@ -93,7 +93,13 @@ describe("publishPathsToSystemClipboard", () => {
         unref: () => {},
       };
     }) as unknown as Parameters<typeof publishPathsToSystemClipboard>[3];
-    publishPathsToSystemClipboard("copy", [{ path: "/home/me/a b.txt" }, { path: "/tmp/x" }], () => {}, fakeSpawn);
+    publishPathsToSystemClipboard(
+      "copy",
+      [{ path: "/home/me/a b.txt" }, { path: "/tmp/x" }],
+      () => {},
+      fakeSpawn,
+      "linux",
+    );
     expect(argv).toEqual([]); // no -t: wl-copy advertises text/plain + UTF8_STRING
     expect(payload).toBe("/home/me/a b.txt\n/tmp/x");
   });
@@ -110,7 +116,7 @@ describe("publishPathsToSystemClipboard", () => {
         unref: () => {},
       };
     }) as unknown as Parameters<typeof publishPathsToSystemClipboard>[3];
-    publishPathsToSystemClipboard("cut", [{ path: "/tmp/x" }], () => {}, fakeSpawn);
+    publishPathsToSystemClipboard("cut", [{ path: "/tmp/x" }], () => {}, fakeSpawn, "linux");
     expect(argv).toEqual(["-selection", "clipboard", "-l", "10"]);
     expect(payload).toBe("/tmp/x");
   });
@@ -120,7 +126,7 @@ describe("sysClipTool", () => {
   test("Wayland wins when both displays are set", () => {
     process.env.WAYLAND_DISPLAY = "wayland-0";
     process.env.DISPLAY = ":0";
-    const t = sysClipTool();
+    const t = sysClipTool("linux");
     expect(t!.put).toBe("wl-copy");
     expect(t!.getArgs).toEqual(["-t", "x-special/gnome-copied-files"]);
     expect(t!.getTextArgs).toEqual([]);
@@ -129,7 +135,7 @@ describe("sysClipTool", () => {
   test("X11 xclip serves enough requests then exits (probes + fetch, no mid-paste expiry)", () => {
     delete process.env.WAYLAND_DISPLAY;
     process.env.DISPLAY = ":0";
-    const t = sysClipTool();
+    const t = sysClipTool("linux");
     expect(t!.put).toBe("xclip");
     expect(t!.putBase).toEqual(["-selection", "clipboard", "-l", "10"]);
     expect(t!.getTextArgs).toEqual(["-selection", "clipboard", "-o"]);
@@ -138,7 +144,7 @@ describe("sysClipTool", () => {
   test("no display at all → null", () => {
     delete process.env.WAYLAND_DISPLAY;
     delete process.env.DISPLAY;
-    expect(sysClipTool()).toBeNull();
+    expect(sysClipTool("linux")).toBeNull();
   });
 });
 
@@ -163,5 +169,65 @@ describe("isCutKeyFor", () => {
 
   test("empty cut items match nothing", () => {
     expect(isCutKeyFor(clip("cut", []), "/a")).toBe(false);
+  });
+});
+
+describe("darwin clipboard", () => {
+  test("sysClipTool is pbcopy/pbpaste with no gnome type", async () => {
+    const { sysClipTool: tool, readDarwinClipboard } = await import("./clipboard");
+    expect(tool("darwin")).toEqual({ get: "pbpaste", put: "pbcopy", putBase: [], getArgs: [], getTextArgs: [] });
+    expect(tool("linux") === null || tool("linux")?.put !== "pbcopy").toBe(true);
+    void readDarwinClipboard;
+  });
+
+  test("Finder furl clipboard resolves POSIX paths, realpathed", async () => {
+    const { readDarwinClipboard } = await import("./clipboard");
+    const run = async (bin: string, args: string[]): Promise<string | null> => {
+      if (bin === "/usr/bin/osascript" && args[1] === "clipboard info") return "«class furl», 30";
+      if (bin === "/usr/bin/osascript") return "/tmp\n";
+      return null;
+    };
+    // /tmp exists everywhere incl. CI; the bare dir resolves through realpath
+    const got = await readDarwinClipboard(() => {}, run);
+    expect(got?.paths).toEqual([await import("node:fs").then((fs) => fs.realpathSync("/tmp"))]);
+  });
+
+  test("text clipboard falls back to pbpaste plain paths", async () => {
+    const { readDarwinClipboard } = await import("./clipboard");
+    const run = async (bin: string, _args: string[]): Promise<string | null> =>
+      bin === "pbpaste" ? "/tmp\nhello\n" : "string, 5";
+    const got = await readDarwinClipboard(() => {}, run);
+    expect(got?.paths.length).toBe(1);
+  });
+
+  test("garbage clipboard yields null", async () => {
+    const { readDarwinClipboard } = await import("./clipboard");
+    expect(
+      await readDarwinClipboard(
+        () => {},
+        async () => "hello\n",
+      ),
+    ).toBeNull();
+    expect(
+      await readDarwinClipboard(
+        () => {},
+        async () => null,
+      ),
+    ).toBeNull();
+  });
+
+  test("publish sends bare payload through pbcopy", async () => {
+    const { publishPathsToSystemClipboard } = await import("./clipboard");
+    let cmd = "";
+    let payload = "";
+    const fakeSpawn = ((_c: string, _a: string[]) => {
+      cmd = _c;
+      return { stdin: { end: (s: string) => (payload = s) }, unref: () => {} };
+    }) as unknown as Parameters<typeof publishPathsToSystemClipboard>[3];
+    publishPathsToSystemClipboard("copy", [{ path: "/tmp" }], () => {}, fakeSpawn, "darwin");
+    expect(cmd).toBe("pbcopy");
+    // darwin publishes the realpath (macOS symlinks /tmp → /private/tmp)
+    const { realpathSync } = await import("node:fs");
+    expect(payload).toBe(realpathSync("/tmp"));
   });
 });
