@@ -8,6 +8,8 @@ import {
   loadGlobs2,
   mimeCategory,
   mimeForExt,
+  mimeForPath,
+  utiToMime,
 } from "./filetype";
 
 describe("extOf", () => {
@@ -225,5 +227,37 @@ describe("loadGlobs2 + mimeForExt (integration, needs shared-mime-info)", () => 
     expect(mimeForExt("PNG")).toMatch(/^image\//);
     expect(mimeForExt("mp4")).toMatch(/^video\//);
     expect(mimeForExt("no-such-ext-xyzzy")).toBeUndefined();
+  });
+});
+
+describe("darwin UTI probe", () => {
+  test("utiToMime covers the common tree, unknown UTIs miss", () => {
+    expect(utiToMime("public.plain-text")).toBe("text/plain");
+    expect(utiToMime("public.png")).toBe("image/png");
+    expect(utiToMime("public.mpeg-4")).toBe("video/mp4");
+    expect(utiToMime("com.adobe.pdf")).toBe("application/pdf");
+    expect(utiToMime("public.zip-archive")).toBe("application/zip");
+    expect(utiToMime("dyn.abcdef")).toBeUndefined();
+    expect(utiToMime("  public.html  ")).toBe("text/html");
+  });
+
+  test("mimeForPath prefers mdls UTI, then file(1), then ext map", async () => {
+    // mdls hit: file(1) must never run
+    const seen: string[][] = [];
+    expect(
+      await mimeForPath("/x/a.txt", async (cmd) => {
+        seen.push(cmd);
+        return cmd[0] === "mdls" ? "public.plain-text" : "FAIL";
+      }),
+    ).toBe("text/plain");
+    expect(seen.map((c) => c[0])).toEqual(["mdls"]);
+    // unknown UTI: falls to file(1), parameters stripped
+    expect(
+      await mimeForPath("/x/a.bin", async (cmd) =>
+        cmd[0] === "mdls" ? "dyn.xyz" : "application/x-foo; charset=binary",
+      ),
+    ).toBe("application/x-foo");
+    // both tools dead: ext map (empty here — globs2 may be absent on mac)
+    expect(await mimeForPath("/x/a.txt", async () => "")).toBe(mimeForExt("txt"));
   });
 });

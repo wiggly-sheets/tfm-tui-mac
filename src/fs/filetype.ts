@@ -197,6 +197,81 @@ export async function loadGlobs2(): Promise<void> {
 
 export const mimeForExt = (ext: string): string | undefined => globs2ByExt?.get(ext.toLowerCase());
 
+// --- macOS UTI → MIME (Spotlight `mdls kMDItemContentType` reports UTIs,
+// not MIME types). Hand table for the common tree; unknown UTIs fall through
+// to `file --mime-type` + the ext map in mimeForPath below. ---
+const UTI_TO_MIME: Record<string, string> = {
+  "public.plain-text": "text/plain",
+  "public.utf8-plain-text": "text/plain",
+  "public.utf16-plain-text": "text/plain",
+  "public.text": "text/plain",
+  "public.html": "text/html",
+  "public.xml": "application/xml",
+  "public.yaml": "application/yaml",
+  "public.json": "application/json",
+  "public.source-code": "text/plain",
+  "public.script": "text/plain",
+  "public.shell-script": "application/x-sh",
+  "com.apple.property-list": "application/x-plist",
+  "public.png": "image/png",
+  "public.jpeg": "image/jpeg",
+  "public.tiff": "image/tiff",
+  "public.gif": "image/gif",
+  "public.svg-image": "image/svg+xml",
+  "public.heic": "image/heic",
+  "public.heif": "image/heif",
+  "public.avif": "image/avif",
+  "com.microsoft.bmp": "image/bmp",
+  "com.truevision.tga-image": "image/x-tga",
+  "public.mpeg-4": "video/mp4",
+  "public.avi": "video/x-msvideo",
+  "public.mpeg": "video/mpeg",
+  "public.mov": "video/quicktime",
+  "public.mp3": "audio/mpeg",
+  "public.aiff-audio": "audio/aiff",
+  "public.wav": "audio/wav",
+  "public.mpeg-4-audio": "audio/mp4",
+  "com.adobe.pdf": "application/pdf",
+  "public.zip-archive": "application/zip",
+  "public.tar-archive": "application/x-tar",
+  "public.archive": "application/octet-stream",
+  "public.disk-image": "application/x-apple-diskimage",
+  "public.folder": "public.folder",
+  "public.data": "application/octet-stream",
+  "public.executable": "application/octet-stream",
+  "public.unix-executable": "application/octet-stream",
+  "com.apple.application-bundle": "application/octet-stream",
+  "com.microsoft.word.doc": "application/msword",
+  "org.openxmlformats.wordprocessingml.document":
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "public.rtf": "application/rtf",
+  "public.epub": "application/epub+zip",
+  "public.font": "font/collection",
+  "public.truetype-font": "font/ttf",
+  "public.opentype-font": "font/otf",
+};
+
+export const utiToMime = (uti: string): string | undefined => UTI_TO_MIME[uti.trim()];
+
+// content-type probe for a path: mdls UTI → table, else `file --mime-type`,
+// else the shared-mime-info ext map. `run` injectable so tests never shell
+// out. Linux callers keep xdg-mime (see apps.ts); this is the darwin lane.
+export const mimeForPath = async (
+  p: string,
+  run: (cmd: string[]) => Promise<string> = async () => "",
+): Promise<string | undefined> => {
+  try {
+    const uti = (await run(["mdls", "-raw", "-name", "kMDItemContentType", p])).trim();
+    const mapped = uti ? utiToMime(uti) : undefined;
+    if (mapped) return mapped;
+  } catch {}
+  try {
+    const out = (await run(["file", "-b", "--mime-type", p])).trim().split(";")[0]?.trim();
+    if (out) return out;
+  } catch {}
+  return mimeForExt(extOf(p));
+};
+
 const ARCHIVE_MIMES = new Set([
   "application/zip",
   "application/gzip",

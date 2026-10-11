@@ -1,19 +1,24 @@
 // Locates the ffmpeg binary tfm uses for video thumbnails. Bundled-only by
-// design: the shipped sidecar first, never the system PATH — distro ffmpeg
-// is absent by default everywhere (Ubuntu universe, Fedora third-party,
-// Arch extra) and varies wildly in version and startup cost.
+// design on Linux: the shipped sidecar first, never the system PATH — distro
+// ffmpeg is absent by default everywhere (Ubuntu universe, Fedora
+// third-party, Arch extra) and varies wildly in version and startup cost.
+// Darwin additionally probes the arch sidecar name, then brew ffmpeg (stable,
+// versioned, the documented macOS install path).
 import { accessSync, constants } from "node:fs";
 import path from "node:path";
+import { isDarwin, MACOS_FFMPEG_SIDECARS } from "./darwin";
 
 export const SIDECAR_NAME = "tfm-ffmpeg";
 
-export type VideoBinSource = "override" | "sidecar" | "dev";
+export type VideoBinSource = "override" | "sidecar" | "dev" | "brew";
 export type VideoBin = { bin: string; source: VideoBinSource };
 
 export type VideoBinEnv = {
   override?: string | undefined; // $TFM_FFMPEG (test/ops seam, not a GUI knob)
   execDir?: string; // defaults to the running executable's directory
   devBin?: string | null; // require("ffmpeg-static") result, null when uninstalled
+  brewBin?: string | null; // brew ffmpeg path (darwin fallback; injectable for tests)
+  platform?: string; // platform override so tests pin the darwin branch on Linux CI
 };
 
 const isRunnable = (p: string): boolean => {
@@ -37,11 +42,25 @@ const loadDevBin = (): string | null => {
 };
 
 export const resolveVideoBin = (env: VideoBinEnv = {}): VideoBin | null => {
-  const { override = process.env.TFM_FFMPEG, execDir = path.dirname(process.execPath), devBin = loadDevBin() } = env;
+  const {
+    override = process.env.TFM_FFMPEG,
+    execDir = path.dirname(process.execPath),
+    devBin = loadDevBin(),
+    brewBin = null,
+    platform = process.platform,
+  } = env;
   if (override && isRunnable(override)) return { bin: override, source: "override" };
-  const sidecar = path.join(execDir, SIDECAR_NAME);
-  if (isRunnable(sidecar)) return { bin: sidecar, source: "sidecar" };
+  const names = isDarwin(platform) ? [...MACOS_FFMPEG_SIDECARS, SIDECAR_NAME] : [SIDECAR_NAME];
+  for (const name of names) {
+    const sidecar = path.join(execDir, name);
+    if (isRunnable(sidecar)) return { bin: sidecar, source: "sidecar" };
+  }
   if (devBin && isRunnable(devBin)) return { bin: devBin, source: "dev" };
+  // darwin last resort: brew ffmpeg (never PATH on Linux — see header)
+  if (isDarwin(platform)) {
+    const brew = brewBin ?? Bun.which("ffmpeg");
+    if (brew && isRunnable(brew)) return { bin: brew, source: "brew" };
+  }
   return null;
 };
 

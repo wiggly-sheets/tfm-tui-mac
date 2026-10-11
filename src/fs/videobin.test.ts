@@ -22,7 +22,10 @@ describe("resolveVideoBin lookup order", () => {
       try {
         mkBin(execDir, SIDECAR_NAME);
         const dev = mkBin(tmp, "dev-ffmpeg");
-        expect(resolveVideoBin({ override, execDir, devBin: dev })).toEqual({ bin: override, source: "override" });
+        expect(resolveVideoBin({ platform: "linux", override, execDir, devBin: dev })).toEqual({
+          bin: override,
+          source: "override",
+        });
       } finally {
         rmSync(execDir, { recursive: true, force: true });
       }
@@ -37,7 +40,7 @@ describe("resolveVideoBin lookup order", () => {
     try {
       const sidecar = mkBin(execDir, SIDECAR_NAME);
       const dev = mkBin(tmp, "dev-ffmpeg");
-      expect(resolveVideoBin({ execDir, devBin: dev })).toEqual({ bin: sidecar, source: "sidecar" });
+      expect(resolveVideoBin({ platform: "linux", execDir, devBin: dev })).toEqual({ bin: sidecar, source: "sidecar" });
     } finally {
       rmSync(execDir, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
@@ -49,7 +52,7 @@ describe("resolveVideoBin lookup order", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "tfm-videobin-"));
     try {
       const dev = mkBin(tmp, "dev-ffmpeg");
-      expect(resolveVideoBin({ execDir, devBin: dev })).toEqual({ bin: dev, source: "dev" });
+      expect(resolveVideoBin({ platform: "linux", execDir, devBin: dev })).toEqual({ bin: dev, source: "dev" });
     } finally {
       rmSync(execDir, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
@@ -59,7 +62,7 @@ describe("resolveVideoBin lookup order", () => {
   test("null when nothing is runnable", () => {
     const execDir = mkdtempSync(path.join(tmpdir(), "tfm-videobin-exec-"));
     try {
-      expect(resolveVideoBin({ execDir, devBin: null })).toBeNull();
+      expect(resolveVideoBin({ platform: "linux", execDir, devBin: null })).toBeNull();
     } finally {
       rmSync(execDir, { recursive: true, force: true });
     }
@@ -72,7 +75,7 @@ describe("resolveVideoBin lookup order", () => {
       const dead = path.join(tmp, "not-executable");
       writeFileSync(dead, "nope");
       const sidecar = mkBin(execDir, SIDECAR_NAME);
-      expect(resolveVideoBin({ override: dead, execDir, devBin: null })).toEqual({
+      expect(resolveVideoBin({ platform: "linux", override: dead, execDir, devBin: null })).toEqual({
         bin: sidecar,
         source: "sidecar",
       });
@@ -87,7 +90,7 @@ describe("resolveVideoBin lookup order", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "tfm-videobin-"));
     try {
       const dev = mkBin(tmp, "dev-ffmpeg");
-      expect(resolveVideoBin({ override: path.join(tmp, "ghost"), execDir, devBin: dev })).toEqual({
+      expect(resolveVideoBin({ platform: "linux", override: path.join(tmp, "ghost"), execDir, devBin: dev })).toEqual({
         bin: dev,
         source: "dev",
       });
@@ -106,6 +109,48 @@ describe("videoBin memoization", () => {
       expect(videoBin()).toBe(first);
     } finally {
       resetVideoBin();
+    }
+  });
+});
+
+describe("darwin sidecar and brew fallback", () => {
+  test("arch sidecar name wins over the plain name", async () => {
+    const { resolveVideoBin, SIDECAR_NAME } = await import("./videobin");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { default: path } = await import("node:path");
+    const { default: fs } = await import("node:fs");
+    const dir = mkdtempSync(path.join(tmpdir(), "tfm-vb-dar-"));
+    try {
+      const arch = path.join(dir, "tfm-ffmpeg-macos-arm64");
+      const plain = path.join(dir, SIDECAR_NAME);
+      fs.writeFileSync(arch, "x");
+      fs.writeFileSync(plain, "x");
+      fs.chmodSync(arch, 0o755);
+      fs.chmodSync(plain, 0o755);
+      expect(resolveVideoBin({ execDir: dir, devBin: null, platform: "darwin" })).toEqual({
+        bin: arch,
+        source: "sidecar",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("brew ffmpeg is the last resort on darwin only", async () => {
+    const { resolveVideoBin } = await import("./videobin");
+    const { mkdtempSync, rmSync, writeFileSync, chmodSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { default: path } = await import("node:path");
+    const dir = mkdtempSync(path.join(tmpdir(), "tfm-vb-brew-"));
+    try {
+      const fake = path.join(dir, "ffmpeg");
+      writeFileSync(fake, "x");
+      chmodSync(fake, 0o755);
+      expect(resolveVideoBin({ execDir: dir, devBin: null, platform: "darwin", brewBin: fake })?.source).toBe("brew");
+      expect(resolveVideoBin({ execDir: dir, devBin: null, platform: "linux", brewBin: fake })).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
