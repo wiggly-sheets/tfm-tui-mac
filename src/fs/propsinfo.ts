@@ -1,7 +1,9 @@
 import { readFileSync, type Dirent } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { lstat, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { FILE_ICON_BY_EXT, extOf, mimeForExt } from "./filetype";
+import { isDarwin } from "./darwin";
 
 // --- Pure display formatters + fs walkers for the properties dialog and
 // status rows. No renderer, no app state. ---
@@ -31,7 +33,28 @@ export const permWords = (mode: number, shift: number, isDir: boolean): string =
 };
 
 let idNameCache: Map<number, string> | null = null;
+// darwin single-uid lookup via id(1) (covers local + directory users;
+// /etc/passwd holds system users only there). Best-effort + memoized —
+// a wedged DirectoryService must not stall the properties dialog.
+const darwinIdName = (uid: number): string | null => {
+  try {
+    const name = execFileSync("id", ["-nu", String(uid)], { timeout: 3000 })
+      .toString()
+      .trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+};
 export const idName = (uid: number): string => {
+  const cached = idNameCache?.get(uid);
+  if (cached !== undefined) return cached;
+  if (isDarwin()) {
+    const name = darwinIdName(uid) ?? String(uid);
+    idNameCache ??= new Map();
+    idNameCache.set(uid, name);
+    return name;
+  }
   idNameCache ??= (() => {
     const m = new Map<number, string>();
     try {

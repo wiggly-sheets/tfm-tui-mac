@@ -216,6 +216,8 @@ const startReader = (over: Partial<Parameters<typeof startGpmInput>[0]> = {}) =>
   const logs: string[] = [];
   const input = startGpmInput({
     term: "linux",
+    // pin linux: the darwin branch is inert before any probe (own test below)
+    platform: "linux",
     env: {},
     envExists: () => true,
     ttyName: () => "/dev/tty1",
@@ -337,5 +339,23 @@ describe("makeGpmTranslator", () => {
     const t = makeGpmTranslator();
     expect(t({ ...parsedDown(), buttons: GPM_B_RIGHT })).toBe("\x1b[<2;5;3M");
     expect(t({ ...parsedDown(), buttons: 0, type: GPM_UP })).toBe("\x1b[<2;5;3m");
+  });
+});
+
+describe("darwin", () => {
+  test("startGpmInput is inert before any probe on macOS", () => {
+    const logs: string[] = [];
+    expect(
+      startGpmInput({
+        platform: "darwin",
+        term: "linux",
+        envExists: () => {
+          throw new Error("must not probe");
+        },
+        onBytes: () => {},
+        log: (m) => logs.push(m),
+      }),
+    ).toBeNull();
+    expect(logs.some((l) => l.includes("macOS"))).toBe(true);
   });
 });

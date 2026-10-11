@@ -17,6 +17,7 @@
 
 import { connect as netConnect, type Socket } from "node:net";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
+import { isDarwin } from "./darwin";
 
 export const GPM_EVENT_SIZE = 28;
 export const GPM_CONNECT_SIZE = 16;
@@ -194,22 +195,27 @@ export type GpmSocket = {
 };
 
 // node:tty has no ttyname; /proc/self/fd/N resolves it everywhere Linux gpm
-// exists. Returns console (/dev/ttyN) or pty (/dev/pts/N) paths — callers
-// decide which is usable (vcFromTty for the direct path, pty pattern for the
-// recorder fallback). Falls back null when no fd is a tty at all, so piped
-// non-console stdio stays a clean no-op.
+// exists (/dev/fd/N covers macOS/BSD, where /proc is absent). Returns console
+// (/dev/ttyN) or pty (/dev/pts/N) paths — callers decide which is usable
+// (vcFromTty for the direct path, pty pattern for the recorder fallback).
+// Falls back null when no fd is a tty at all, so piped non-console stdio
+// stays a clean no-op.
 const procTtyName = (): string | null => {
   for (const fd of [0, 1, 2]) {
-    try {
-      const p = readlinkSync(`/proc/self/fd/${fd}`);
-      if (/^\/dev\/(tty\d+|pts\/\d+)$/.test(p)) return p;
-    } catch {}
+    for (const base of ["/proc/self/fd", "/dev/fd"]) {
+      try {
+        const p = readlinkSync(`${base}/${fd}`);
+        if (/^\/dev\/(tty\d+|pts\/\d+)$/.test(p)) return p;
+      } catch {}
+    }
   }
   return null;
 };
 
 export type GpmInputOptions = {
   term?: string | undefined;
+  /** platform override so tests pin the darwin branch on Linux CI */
+  platform?: string;
   /** environment — injectable so tests control SSH/asciinema markers */
   env?: Record<string, string | undefined>;
   /** probe for /dev/gpmctl — injectable so tests stay fs-free */
@@ -231,6 +237,14 @@ export type GpmInputOptions = {
 // log alone (TERM, socket, tty resolution, fallback outcome).
 export const startGpmInput = (opts: GpmInputOptions): { stop(): void } | null => {
   const log = opts.log ?? (() => {});
+  // darwin first: the terminal is never a Linux console there (no /dev/ttyN
+  // VTs, no gpm daemon) — inert before any fs probe. The sysfs active-console
+  // fallback below is Linux-only the same way (`stat -f %Su /dev/console`
+  // yields a username, not a vc, so there is nothing best-effort to read).
+  if (isDarwin(opts.platform ?? process.platform)) {
+    log("gpm: inert (macOS has no Linux console)");
+    return null;
+  }
   const term = opts.term ?? process.env.TERM ?? "";
   const exists = opts.envExists ?? existsSync;
   const hasCtl = exists(GPM_NODE_CTL);
