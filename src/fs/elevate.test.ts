@@ -92,10 +92,10 @@ describe("ensureSudoAuth", () => {
 
 describe("sudo argv shapes", () => {
   test("open carries -n -E but no -- (sudo strips the HYPHEN var that makes -- legal)", () => {
-    expect(sudoOpenArgv("/a/-dash.txt")).toEqual(["sudo", "-n", "-E", "xdg-open", "/a/-dash.txt"]);
+    expect(sudoOpenArgv("/a/-dash.txt", "linux")).toEqual(["sudo", "-n", "-E", "xdg-open", "/a/-dash.txt"]);
   });
   test("launch carries desktop file + target, no --", () => {
-    expect(sudoLaunchArgv("/x/micro.desktop", "/root/f")).toEqual([
+    expect(sudoLaunchArgv("/x/micro.desktop", "/root/f", "linux")).toEqual([
       "sudo",
       "-n",
       "-E",
@@ -107,6 +107,18 @@ describe("sudo argv shapes", () => {
   });
   test("rm carries --", () => {
     expect(sudoRmArgv("/a/-dash")).toEqual(["sudo", "-n", "rm", "-rf", "--", "/a/-dash"]);
+  });
+  test("darwin opens through `open` and launches via `open -a`", () => {
+    expect(sudoOpenArgv("/a/-dash.txt", "darwin")).toEqual(["sudo", "-n", "-E", "open", "/a/-dash.txt"]);
+    expect(sudoLaunchArgv("/Applications/TextEdit.app", "/root/f", "darwin")).toEqual([
+      "sudo",
+      "-n",
+      "-E",
+      "open",
+      "-a",
+      "/Applications/TextEdit.app",
+      "/root/f",
+    ]);
   });
 });
 

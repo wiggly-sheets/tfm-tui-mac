@@ -192,7 +192,7 @@ describe("xdgTrashMove", () => {
     const files = mktmp("tfm-trash-src-");
     try {
       W(path.join(files, "gone.txt"), "bye");
-      const loc = await xdgTrashMove(path.join(files, "gone.txt"));
+      const loc = await xdgTrashMove(path.join(files, "gone.txt"), "linux");
       expect(loc).toBe(path.join(trashDir(), "files", "gone.txt"));
       expect(existsSync(path.join(files, "gone.txt"))).toBe(false);
       const info = readFileSync(path.join(trashDir(), "info", "gone.txt.trashinfo"), "utf8");
@@ -211,9 +211,9 @@ describe("xdgTrashMove", () => {
       W(path.join(d1, "same.txt"));
       W(path.join(d2, "same.txt"));
       W(path.join(d2, "other.txt"));
-      const l1 = await xdgTrashMove(path.join(d1, "same.txt"));
-      const l2 = await xdgTrashMove(path.join(d2, "same.txt"));
-      const l3 = await xdgTrashMove(path.join(d2, "other.txt"));
+      const l1 = await xdgTrashMove(path.join(d1, "same.txt"), "linux");
+      const l2 = await xdgTrashMove(path.join(d2, "same.txt"), "linux");
+      const l3 = await xdgTrashMove(path.join(d2, "other.txt"), "linux");
       expect(l1).toBe(path.join(trashDir(), "files", "same.txt"));
       expect(l2).toBe(path.join(trashDir(), "files", "same.txt.2"));
       expect(l3).toBe(path.join(trashDir(), "files", "other.txt")); // distinct name: no suffix
@@ -230,7 +230,7 @@ describe("xdgTrashMove", () => {
     const files = mktmp("tfm-trash-src3-");
     try {
       W(path.join(files, "c.txt"));
-      const loc = await xdgTrashMove(path.join(files, "c.txt"));
+      const loc = await xdgTrashMove(path.join(files, "c.txt"), "linux");
       expect(loc).toBe(path.join(trashDir(), "files", "c.txt"));
     } finally {
       rmSync(files, { recursive: true, force: true });
@@ -239,7 +239,7 @@ describe("xdgTrashMove", () => {
 
   test("failed move leaves NO orphan .trashinfo (info is written after the move)", async () => {
     rmSync(path.join(SANDBOX, "Trash"), { recursive: true, force: true });
-    await expect(xdgTrashMove("/nonexistent/tfm-orphan.txt")).rejects.toThrow();
+    await expect(xdgTrashMove("/nonexistent/tfm-orphan.txt", "linux")).rejects.toThrow();
     expect(existsSync(path.join(trashDir(), "info", "tfm-orphan.txt.trashinfo"))).toBe(false);
     expect(existsSync(path.join(trashDir(), "files", "tfm-orphan.txt"))).toBe(false);
   });
@@ -255,7 +255,7 @@ describe("xdgTrashMove", () => {
       W(path.join(files, "rb.txt"), "still mine");
       mkdirSync(infoDir, { recursive: true });
       chmodSync(infoDir, 0o555); // writeFile into info/ fails with EACCES
-      await expect(xdgTrashMove(path.join(files, "rb.txt"))).rejects.toThrow();
+      await expect(xdgTrashMove(path.join(files, "rb.txt"), "linux")).rejects.toThrow();
       // rolled back: file back where it was, nothing left in Trash
       expect(readFileSync(path.join(files, "rb.txt"), "utf8")).toBe("still mine");
       expect(existsSync(path.join(trashDir(), "files", "rb.txt"))).toBe(false);
@@ -286,7 +286,7 @@ describe("xdgTrashMove encoding", () => {
     try {
       const src = path.join(files, "sp ace.txt");
       W(src, "data");
-      const loc = await xdgTrashMove(src);
+      const loc = await xdgTrashMove(src, "linux");
       const info = readFileSync(path.join(trashDir(), "info", `${path.basename(loc)}.trashinfo`), "utf8");
       expect(info).toContain(`Path=${encodeTrashPath(src)}`);
       expect(info).toContain("%20");
@@ -337,24 +337,24 @@ describe("failSuffix", () => {
 
 describe("isTrashFilesDir", () => {
   test("the sandboxed trash files dir matches (XDG_DATA_HOME honored)", () => {
-    expect(isTrashFilesDir(path.join(SANDBOX, "Trash", "files"))).toBe(true);
+    expect(isTrashFilesDir(path.join(SANDBOX, "Trash", "files"), "linux")).toBe(true);
   });
 
   test("relative spellings of the same dir match", () => {
     const abs = path.join(SANDBOX, "Trash", "files");
     const rel = path.relative(process.cwd(), abs);
-    expect(isTrashFilesDir(rel)).toBe(path.resolve(rel) === abs);
+    expect(isTrashFilesDir(rel, "linux")).toBe(path.resolve(rel) === abs);
   });
 
   test("the trash info dir and unrelated paths do NOT match", () => {
-    expect(isTrashFilesDir(path.join(SANDBOX, "Trash", "info"))).toBe(false);
-    expect(isTrashFilesDir(SANDBOX)).toBe(false);
-    expect(isTrashFilesDir("/")).toBe(false);
+    expect(isTrashFilesDir(path.join(SANDBOX, "Trash", "info"), "linux")).toBe(false);
+    expect(isTrashFilesDir(SANDBOX, "linux")).toBe(false);
+    expect(isTrashFilesDir("/", "linux")).toBe(false);
   });
 
   test("virtual place URIs never match", () => {
-    expect(isTrashFilesDir("recent://")).toBe(false);
-    expect(isTrashFilesDir("starred://")).toBe(false);
+    expect(isTrashFilesDir("recent://", "linux")).toBe(false);
+    expect(isTrashFilesDir("starred://", "linux")).toBe(false);
   });
 });
 
@@ -381,7 +381,7 @@ describe("rmTrashInfoForPath per-mount isolation", () => {
     // the same basename has NO sibling sidecar — cleanup must leave home alone
     const homeFile = path.join(SANDBOX, "home-orig-same.txt");
     writeFileSync(homeFile, "home-data");
-    await xdgTrashMove(homeFile);
+    await xdgTrashMove(homeFile, "linux");
     expect(existsSync(path.join(trashDir(), "info", "home-orig-same.txt.trashinfo"))).toBe(true);
     const mnt = path.join(SANDBOX, "mnt");
     mkdirSync(path.join(mnt, "files"), { recursive: true });
@@ -409,7 +409,7 @@ describe("allTrashFilesDirs", () => {
       "dev3 /mnt/usb ext4 rw 0 0",
       "dev4 /mnt/odd\\040name ext4 rw 0 0",
     ].join("\n");
-    expect(allTrashFilesDirs(mounts)).toEqual([
+    expect(allTrashFilesDirs(mounts, "linux")).toEqual([
       path.join(trashDir(), "files"),
       path.join("/mnt/usb", `.Trash-${uid}`, "files"),
       path.join("/mnt/odd name", `.Trash-${uid}`, "files"),
@@ -425,7 +425,7 @@ describe("allTrashFilesDirs", () => {
       "gvfs /run/user/1000/gvfs fuse.gvfsd-fuse rw 0 0",
       "dev5 /mnt/disk ext4 rw 0 0",
     ].join("\n");
-    expect(allTrashFilesDirs(mounts)).toEqual([
+    expect(allTrashFilesDirs(mounts, "linux")).toEqual([
       path.join(trashDir(), "files"),
       path.join("/mnt/disk", `.Trash-${uid}`, "files"),
     ]);
@@ -434,11 +434,11 @@ describe("allTrashFilesDirs", () => {
   test("malformed lines are skipped, never throw", () => {
     // "garbage" (one field) and blank lines skip; "dev /x ext4" is a
     // well-formed (if odd) entry and is honored
-    expect(allTrashFilesDirs("garbage\n\n  \ndev /x ext4")).toEqual([
+    expect(allTrashFilesDirs("garbage\n\n  \ndev /x ext4", "linux")).toEqual([
       path.join(trashDir(), "files"),
       path.join("/x", `.Trash-${uid}`, "files"),
     ]);
-    expect(allTrashFilesDirs("")).toEqual([path.join(trashDir(), "files")]);
+    expect(allTrashFilesDirs("", "linux")).toEqual([path.join(trashDir(), "files")]);
   });
 });
 
@@ -458,7 +458,7 @@ describe("countTrashItems", () => {
       }
     })();
     if (before < 0) return; // home unreadable — covered by the -1 test below
-    expect(countTrashItems(`dev ${mnt} ext4 rw 0 0`)).toBe(before + 2);
+    expect(countTrashItems(`dev ${mnt} ext4 rw 0 0`, "linux")).toBe(before + 2);
   });
 });
 
@@ -493,25 +493,25 @@ describe("fileIdOf / fileIdMatches / trashIfSameFile", () => {
     const p = path.join(SANDBOX, "same-trashed.txt");
     writeFileSync(p, "v1");
     const id = fileIdOf(p);
-    await trashIfSameFile(p, id, log);
+    await trashIfSameFile(p, id, log, "linux");
     expect(existsSync(p)).toBe(false);
     expect(logs).toEqual([]);
 
     // reoccupied path: the stranger survives, skip is logged
     writeFileSync(p, "stranger");
-    await trashIfSameFile(p, id, log);
+    await trashIfSameFile(p, id, log, "linux");
     expect(readFileSync(p, "utf8")).toBe("stranger");
     expect(logs.some((m) => m.includes("replaced since op"))).toBe(true);
 
     // gone path: silent success
     rmSync(p);
-    await trashIfSameFile(p, id, log);
+    await trashIfSameFile(p, id, log, "linux");
   });
 
   test("null id falls back to path semantics", async () => {
     const p = path.join(SANDBOX, "null-id.txt");
     writeFileSync(p, "x");
-    await trashIfSameFile(p, null);
+    await trashIfSameFile(p, null, undefined, "linux");
     expect(existsSync(p)).toBe(false);
   });
 });

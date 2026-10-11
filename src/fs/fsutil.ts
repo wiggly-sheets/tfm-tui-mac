@@ -4,28 +4,41 @@ import os from "node:os";
 import path from "node:path";
 import { pathToUri } from "./uri";
 import { swallow } from "../app/log";
+import { darwinTrashMove, darwinVolumeTrash, isDarwin, parseMountTable } from "./darwin";
+import { execSync } from "node:child_process";
 
 // --- Deterministic fs+path operations: the primitives runTransfer, trash and
 // undo sit on. No prompts, no UI, no state — callers own decisions; these own
 // correctness (never overwrite silently, EXDEV fallback, XDG trash spec). ---
 
-// XDG trash root (spec: $XDG_DATA_HOME/Trash, default ~/.local/share/Trash —
-// which is where the monolith hardcoded it). Resolved per call, not at import,
-// so env redirection works.
-export const trashDir = (): string =>
-  path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local/share"), "Trash");
+// Trash root (spec: $XDG_DATA_HOME/Trash, default ~/.local/share/Trash —
+// which is where the monolith hardcoded it). Darwin: ~/.Trash (the Finder's
+// own root, so emptied/listed entries match what Finder shows). The XDG
+// override is honored on both (test sandboxes redirect through it).
+// Resolved per call, not at import, so env redirection works.
+export const trashDir = (): string => {
+  if (process.env.XDG_DATA_HOME) return path.join(process.env.XDG_DATA_HOME, "Trash");
+  if (isDarwin()) return path.join(os.homedir(), ".Trash");
+  return path.join(os.homedir(), ".local/share", "Trash");
+};
+
+// trash FILES dir: the xdg files/ subdir on Linux, the root itself on darwin
+// (native trash lands entries at the root — a files/ subdir would hide them
+// from Finder and from the empty/count/listing passes below)
+export const trashFilesDir = (platform: string = process.platform): string =>
+  isDarwin(platform) ? trashDir() : path.join(trashDir(), "files");
 
 // is a cwd the trash FILES dir? (virtual URIs like recent:// resolve to junk
 // paths, never the trash root, so no guard needed at the call site)
-export const isTrashFilesDir = (p: string): boolean => {
-  const homeFiles = path.join(trashDir(), "files");
+export const isTrashFilesDir = (p: string, platform: string = process.platform): boolean => {
+  const homeFiles = trashFilesDir(platform);
   try {
     if (path.resolve(p) === homeFiles) return true;
   } catch {}
   // topdir trashes (removable media) also count — check the target's own root
   try {
-    const roots = trashRootsFor(p);
-    return roots.some((r) => path.resolve(p) === path.join(r, "files"));
+    const roots = trashRootsFor(p, platform);
+    return roots.some((r) => path.resolve(p) === trashFilesSubdir(r, platform));
   } catch {
     return false;
   }
@@ -34,10 +47,10 @@ export const isTrashFilesDir = (p: string): boolean => {
 // is a path the trash FILES dir or anything under it? Files landing there
 // without .trashinfo are unrestorable, so paste/move targets must check the
 // SUBTREE (unlike isTrashFilesDir, which matches the dir itself exactly).
-export const isInTrashFiles = (p: string): boolean => {
+export const isInTrashFiles = (p: string, platform: string = process.platform): boolean => {
   try {
     const target = path.resolve(p);
-    const roots = [path.join(trashDir(), "files"), ...trashRootsFor(p).map((r) => path.join(r, "files"))];
+    const roots = [trashFilesDir(platform), ...trashRootsFor(p, platform).map((r) => trashFilesSubdir(r, platform))];
     return roots.some((root) => target === path.resolve(root) || target.startsWith(path.resolve(root) + path.sep));
   } catch {
     return false;
@@ -57,21 +70,26 @@ export const isWithinOrEqual = (inner: string, outer: string): boolean => {
   }
 };
 
+// files dir under a trash ROOT (per-mount or home): files/ subdir on Linux,
+// the root itself on darwin (native trash lands entries at the root)
+export const trashFilesSubdir = (root: string, platform: string = process.platform): string =>
+  isDarwin(platform) ? root : path.join(root, "files");
+
 // best-effort count of home-trash entries for the empty-trash confirm
 // prompt. -1 when the trash is unreadable (prompt omits the count then).
-export const countTrashItems = (mountsText?: string): number => {
+export const countTrashItems = (mountsText?: string, platform: string = process.platform): number => {
   let home: string[];
   try {
-    home = readdirSync(path.join(trashDir(), "files"));
+    home = readdirSync(trashFilesDir(platform));
   } catch {
     return -1;
   }
   let n = home.length;
-  // per-mount trashes ($topdir/.Trash-$uid) hold real entries too — the
-  // confirm count must not under-report them
-  for (const dir of allTrashFilesDirs(mountsText)) {
+  // per-mount trashes hold real entries too — the confirm count must not
+  // under-report them ($topdir/.Trash-$uid on Linux, /Volumes/.Trashes on mac)
+  for (const dir of allTrashFilesDirs(mountsText, platform)) {
     try {
-      if (path.resolve(dir) === path.resolve(path.join(trashDir(), "files"))) continue;
+      if (path.resolve(dir) === path.resolve(trashFilesDir(platform))) continue;
     } catch {
       continue;
     }
@@ -84,19 +102,43 @@ export const countTrashItems = (mountsText?: string): number => {
   return n;
 };
 
-// every trash FILES dir currently mounted: home first, then one
-// `<mountpoint>/.Trash-<uid>/files` per /proc/mounts entry. Unreadable or
+// every trash FILES dir currently mounted: home first, then one per mount
+// (<mountpoint>/.Trash-<uid>/files per /proc/mounts entry on Linux;
+// /Volumes/<vol>/.Trashes/<uid> per `mount` on darwin). Unreadable or
 // missing dirs are still listed (callers readdir best-effort) — only the
 // parse itself must never throw. mountsText is an injectable seam (tests pass
-// a fake table; production reads /proc/mounts).
-export const allTrashFilesDirs = (mountsText?: string): string[] => {
-  const home = path.join(trashDir(), "files");
+// a fake table; production reads /proc/mounts or runs `mount`).
+export const allTrashFilesDirs = (mountsText?: string, platform: string = process.platform): string[] => {
+  const home = trashFilesDir(platform);
   const out = [home];
   const seen = new Set<string>();
   try {
     seen.add(path.resolve(home));
   } catch {}
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  if (isDarwin(platform)) {
+    let text = mountsText;
+    if (text === undefined) {
+      try {
+        text = execSync("mount", { timeout: 10_000 }).toString();
+      } catch {
+        return out;
+      }
+    }
+    for (const m of parseMountTable(text)) {
+      // user volumes only — system/private mounts never hold user trash
+      if (m.target !== "/Volumes" && !m.target.startsWith("/Volumes/")) continue;
+      const dir = darwinVolumeTrash(m.target, uid);
+      try {
+        const r = path.resolve(dir);
+        if (!seen.has(r)) {
+          seen.add(r);
+          out.push(dir);
+        }
+      } catch {}
+    }
+    return out;
+  }
   let text: string;
   if (mountsText !== undefined) {
     text = mountsText;
@@ -334,9 +376,11 @@ export const rmTrashInfoForPath = async (trashFilePath: string, log?: (msg: stri
 export const encodeTrashPath = (p: string): string => pathToUri(path.resolve(p)).slice(7);
 
 // Candidate trash roots for a target: home trash always, plus the topdir
-// trash ($topdir/.Trash-$uid) when the target lives on another filesystem
-// (removable media — spec §2). Resolved per call for env-redirection tests.
-const trashRootsFor = (target: string): string[] => {
+// trash ($topdir/.Trash-$uid on Linux, $topdir/.Trashes/$uid on darwin) when
+// the target lives on another filesystem (removable media — spec §2).
+// Resolved per call for env-redirection tests. Device comparison rides
+// lstatSync().dev — the same stat `stat -f %d` reports, without a spawn.
+const trashRootsFor = (target: string, platform: string = process.platform): string[] => {
   const home = trashDir();
   // unreadable home-parent (the XDG data dir may not exist yet) = home trash
   // only — the old homedir fallback was unreachable (inside one try, the
@@ -373,7 +417,8 @@ const trashRootsFor = (target: string): string[] => {
     top = cur;
   }
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  return [path.join(top, `.Trash-${uid}`), home];
+  // darwin per-volume root; Linux topdir root (spec §2)
+  return isDarwin(platform) ? [darwinVolumeTrash(top, uid), home] : [path.join(top, `.Trash-${uid}`), home];
 };
 
 // XDG trash: `gio trash` fails on tmpfs ("system internal mounts"), so we
@@ -387,9 +432,15 @@ const trashRootsFor = (target: string): string[] => {
 // Then the file moves, then the placeholder is overwritten with the real
 // Path=/DeletionDate=. If the move fails the placeholder is removed (no
 // orphan entry); if the final info write fails the move rolls back.
-export const xdgTrashMove = async (p: string): Promise<string> => {
+// Trash `p`, returning the final path. Linux: XDG move (`gio trash` fails on
+// tmpfs, so the .trashinfo is written by hand). Darwin: native lane
+// (/usr/bin/trash → JXA → Finder delete) so Finder stays the bookkeeper —
+// entries land at the trash root with no .trashinfo, and Trash-view restore
+// of such entries honestly reports "no trashinfo" like Finder-trashed files.
+export const xdgTrashMove = async (p: string, platform: string = process.platform): Promise<string> => {
   const absSrc = path.resolve(p);
-  const roots = trashRootsFor(absSrc);
+  if (isDarwin(platform)) return darwinTrashRun(absSrc);
+  const roots = trashRootsFor(absSrc, platform);
   let lastErr: unknown = null;
   for (const root of roots) {
     try {
@@ -401,6 +452,34 @@ export const xdgTrashMove = async (p: string): Promise<string> => {
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 };
+
+// darwin native-trash runner: one spawn, exit code only (trash output is
+// human chatter, never parsed). ENOENT (lane binary missing) degrades to a
+// nonzero code so the next lane is tried, never an unhandled rejection.
+const darwinTrashSpawn = async (bin: string, args: string[]): Promise<{ code: number }> => {
+  try {
+    const proc = Bun.spawn([bin, ...args], { stdout: "ignore", stderr: "ignore", stdin: "ignore", timeout: 30_000 });
+    return { code: await proc.exited };
+  } catch {
+    return { code: 127 };
+  }
+};
+
+// darwin lane behind xdgTrashMove: native move across the candidate roots
+// (home + volume trash — the CLI picks by device), fs-backed landing scan
+const darwinTrashRun = (absSrc: string): Promise<string> =>
+  darwinTrashMove(absSrc, darwinTrashSpawn, {
+    trashRoots: trashRootsFor(absSrc, "darwin"),
+    exists: existsSync,
+    readdir: (d) => readdirSync(d),
+    mtimeMs: (p) => {
+      try {
+        return lstatSync(p).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
+  });
 
 export const xdgTrashMoveToRoot = async (
   absSrc: string,
@@ -520,13 +599,18 @@ export const fileIdMatches = (id: FileId | null, p: string): boolean => {
 // at the desired end-state (success, nothing to do); a reoccupied path is
 // skipped with a log (trashing the stranger would be wrong) — neither throws.
 // A null id falls back to plain path semantics. Real trash errors propagate.
-export const trashIfSameFile = async (p: string, id: FileId | null, log?: (msg: string) => void): Promise<void> => {
+export const trashIfSameFile = async (
+  p: string,
+  id: FileId | null,
+  log?: (msg: string) => void,
+  platform: string = process.platform,
+): Promise<void> => {
   if (!existsSync(p)) return;
   if (id && !fileIdMatches(id, p)) {
     log?.(`undo trash ${p}: file replaced since op, skipped`);
     return;
   }
-  await xdgTrashMove(p);
+  await xdgTrashMove(p, platform);
 };
 
 // tmp+rename write: a crash or EDQUOT mid-write never leaves a truncated

@@ -3,6 +3,7 @@
 // callers inject prompt/notify/exec seams so tests never touch real sudo. ---
 import { errCode } from "./fsutil";
 import { errMessage } from "../lib/uiutil";
+import { isDarwin } from "./darwin";
 
 export const isPrivilegeError = (err: unknown): boolean => {
   const code = errCode(err);
@@ -18,26 +19,56 @@ export const sudoAvailable = (which: (bin: string) => string | null = Bun.which)
 
 export const sudoCpArgv = (src: string, dest: string): string[] => ["sudo", "-n", "cp", "-a", "--", src, dest];
 export const sudoMvArgv = (src: string, dest: string): string[] => ["sudo", "-n", "mv", "--", src, dest];
+// GNU stat (-c) vs BSD stat (-f): Linux reports birth via %w (Date.parse),
+// darwin via %B unix seconds (parsed as seconds, not a date string).
+export const sudoStatArgv = (file: string, platform: string = process.platform): string[] =>
+  isDarwin(platform)
+    ? ["sudo", "-n", "stat", "-f", "%d:%i:%B", "--", file]
+    : ["sudo", "-n", "stat", "-c", "%d:%i:%w", "--", file];
+// GNU mv -nT (no-clobber + treat dest as file) vs BSD mv -n (no -T flag at
+// all): darwin drops -T — the post-mv `test -e staged` still catches
+// regular-file races; a dir-into-dir race is the accepted darwin degrade.
+export const sudoMvNoClobberArgv = (src: string, dest: string, platform: string = process.platform): string[] =>
+  isDarwin(platform) ? ["sudo", "-n", "mv", "-n", "--", src, dest] : ["sudo", "-n", "mv", "-nT", "--", src, dest];
 export const sudoRmArgv = (target: string): string[] => ["sudo", "-n", "rm", "-rf", "--", target];
 export const sudoCatArgv = (file: string): string[] => ["sudo", "-n", "cat", "--", file];
-export const sudoValidateArgv = (): string[] => ["sudo", "-S", "-v"];
+// parse `stat` stdout from sudoStatArgv above: Linux %w is a date string
+// (or "-" when unknown), darwin %B is unix seconds. Null when unparseable.
+export const parseSudoStat = (
+  out: string,
+  platform: string = process.platform,
+): { dev: number; ino: number; born?: number } | null => {
+  const match = /^(\d+):(\d+):(.+)$/.exec(out.trim());
+  if (!match) return null;
+  const dev = Number(match[1]);
+  const ino = Number(match[2]);
+  const when = (match[3] ?? "").trim();
+  if (isDarwin(platform)) {
+    const secs = Number(when);
+    if (!Number.isFinite(secs) || secs <= 0) return { dev, ino };
+    return { dev, ino, born: secs * 1000 };
+  }
+  const parsed = Date.parse(when);
+  const fraction = /\.(\d+)/.exec(when)?.[1] ?? "";
+  const born = parsed + (fraction.length > 3 ? Number(`0.${fraction.slice(3)}`) : 0);
+  return { dev, ino, ...(Number.isFinite(born) ? { born } : {}) };
+};
 export const sudoCachedArgv = (): string[] => ["sudo", "-n", "true"];
+export const sudoValidateArgv = (): string[] => ["sudo", "-S", "-v"];
 // Elevated default-open. Deliberately NO `--`: tfm only passes absolute
 // paths (leading `/`, never parsed as options), and `--` is only legal when
 // XDG_UTILS_ENABLE_DOUBLE_HYPEN=1 is visible — which sudo's env_reset strips,
 // so with `--` the open always died as `unexpected option '--'`.
-export const sudoOpenArgv = (file: string): string[] => ["sudo", "-n", "-E", "xdg-open", file];
+export const sudoOpenArgv = (file: string, platform: string = process.platform): string[] =>
+  // same no-`--` rule as below; `open` replaces xdg-open on darwin
+  isDarwin(platform) ? ["sudo", "-n", "-E", "open", file] : ["sudo", "-n", "-E", "xdg-open", file];
 // elevated chosen-app launch (Open With… on an unreadable file). Same no-`--`
 // rule as the open above: both operands are absolute paths.
-export const sudoLaunchArgv = (desktopFile: string, file: string): string[] => [
-  "sudo",
-  "-n",
-  "-E",
-  "gio",
-  "launch",
-  desktopFile,
-  file,
-];
+export const sudoLaunchArgv = (desktopFile: string, file: string, platform: string = process.platform): string[] =>
+  // .app bundle path replaces the .desktop id on darwin (`open -a`)
+  isDarwin(platform)
+    ? ["sudo", "-n", "-E", "open", "-a", desktopFile, file]
+    : ["sudo", "-n", "-E", "gio", "launch", desktopFile, file];
 
 export type SudoAuthDeps = {
   cached: () => Promise<boolean>;
