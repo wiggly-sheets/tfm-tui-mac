@@ -1,10 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import { errMessage } from "../lib/uiutil";
 import path from "node:path";
 import { spawnSafe } from "./spawn-safe";
 import { runSudo, sudoLaunchArgv, sudoOpenArgv } from "./elevate";
-import { extOf, mimeForExt } from "./filetype";
+import { extOf, mimeForExt, mimeForPath } from "./filetype";
+import { isDarwin } from "./darwin";
 import type { NotifyLevel } from "../lib/notify-level";
 import { xdgDataHome } from "./uri";
 
@@ -53,8 +54,12 @@ export const desktopFilePath = (desktopId: string): string | null => {
   return null;
 };
 
-// what xdg-open would launch for p: mime probe → default handler → app name
-export const appForFile = async (p: string): Promise<string> => {
+// what the default open would launch for p: mime probe → default handler →
+// app name. Darwin has no queryable default-handler API (duti stalls on
+// macOS 26.4+, so no silent default-app set — and no read either): the toast
+// degrades to no app name, honestly.
+export const appForFile = async (p: string, platform: string = process.platform): Promise<string> => {
+  if (isDarwin(platform)) return "";
   try {
     const mime = await runOutShort(["xdg-mime", "query", "filetype", p]);
     if (mime) return await desktopAppName(await runOutShort(["xdg-mime", "query", "default", mime]));
@@ -79,6 +84,35 @@ export const parseGioMime = (out: string): string[] => {
 
 export type AppChoice = { id: string; name: string; file: string };
 
+// macOS app dirs for the Open With… chooser (no .desktop registry exists)
+const darwinAppDirs = (home: string = os.homedir()): string[] => ["/Applications", path.join(home, "Applications")];
+
+// launchable .app bundles: `<Name>.app` → choice id = bundle name. `ls`
+// injectable so tests never touch /Applications.
+export const darwinApps = (
+  ls: (dir: string) => string[] = readdirSync,
+  dirs: string[] = darwinAppDirs(),
+): AppChoice[] => {
+  const out: AppChoice[] = [];
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    let names: string[];
+    try {
+      names = ls(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names.sort()) {
+      if (!name.endsWith(".app")) continue;
+      const id = name.slice(0, -".app".length);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id, name: id, file: path.join(dir, name) });
+    }
+  }
+  return out;
+};
+
 // launchable handlers for a file: default + registered apps that resolve to a
 // real .desktop file. `run` is injectable so tests never shell out. Content
 // probe first (accurate for shebangs/odd bytes); when it fails (EACCES on a
@@ -90,7 +124,23 @@ export const appsForFile = async (
   p: string,
   run: (cmd: string[]) => Promise<string> = runOutShort,
   mimeByExt: (ext: string) => string | undefined = mimeForExt,
+  platform: string = process.platform,
+  lsApps: () => AppChoice[] = darwinApps,
 ): Promise<AppChoice[]> => {
+  // darwin: no gio/xdg-mime registry — Open With… lists installed .app
+  // bundles, launched via `open -a`. Content probe (mdls UTI → file → ext)
+  // still runs so the toast path shares one probe, but the app list is
+  // mime-independent (LaunchServices matching isn't queryable from CLI).
+  if (isDarwin(platform)) {
+    try {
+      await mimeForPath(p, run);
+    } catch {}
+    try {
+      return lsApps();
+    } catch {
+      return [];
+    }
+  }
   const collect = async (mime: string): Promise<AppChoice[]> => {
     const ids = parseGioMime(await run(["gio", "mime", mime]));
     const out: AppChoice[] = [];
@@ -124,8 +174,18 @@ export const appsForFile = async (
   }
 };
 
-// fire-and-forget launch through gio (detached so the app outlives the spawn)
-export const launchApp = (desktopFile: string, file: string, onFail?: (e: Error) => void): void => {
+// fire-and-forget launch (detached so the app outlives the spawn): gio on
+// Linux, `open -a <app> <file>` on darwin (file = .app bundle path)
+export const launchApp = (
+  desktopFile: string,
+  file: string,
+  onFail?: (e: Error) => void,
+  platform: string = process.platform,
+): void => {
+  if (isDarwin(platform)) {
+    spawnSafe("open", ["-a", desktopFile, file], { stdio: "ignore", detached: true }, onFail).unref?.();
+    return;
+  }
   spawnSafe("gio", ["launch", desktopFile, file], { stdio: "ignore", detached: true }, onFail).unref?.();
 };
 
@@ -187,14 +247,17 @@ const runElevated = async (
 // Escalation primitive behind the adaptive open: password gate first, then
 // the default app as root. `exec` is injectable so tests capture argv without
 // spawning.
-export const makeOpenAsRoot = (deps: ElevatedDeps): ((p: string) => Promise<void>) => {
+export const makeOpenAsRoot = (
+  deps: ElevatedDeps,
+  platform: string = process.platform,
+): ((p: string) => Promise<void>) => {
   return (p: string): Promise<void> =>
     runElevated(
       deps,
       "open-as-root",
       `open ${path.basename(p)} as root`,
       p,
-      sudoOpenArgv(p),
+      sudoOpenArgv(p, platform),
       `Opening ${path.basename(p)} as root`,
       `Can't open ${path.basename(p)} as root`,
     );
@@ -205,6 +268,7 @@ export const makeOpenAsRoot = (deps: ElevatedDeps): ((p: string) => Promise<void
 // (GUI apps as root may still fail on Wayland — the toast will say why).
 export const makeLaunchAppAsRoot = (
   deps: ElevatedDeps,
+  platform: string = process.platform,
 ): ((desktopFile: string, appName: string, p: string) => Promise<void>) => {
   return (desktopFile: string, appName: string, p: string): Promise<void> =>
     runElevated(
@@ -212,7 +276,7 @@ export const makeLaunchAppAsRoot = (
       "launch-as-root",
       `open ${path.basename(p)} with ${appName} as root`,
       p,
-      sudoLaunchArgv(desktopFile, p),
+      sudoLaunchArgv(desktopFile, p, platform),
       `Opening ${path.basename(p)} · ${appName} as root`,
       `Can't open ${path.basename(p)} with ${appName} as root`,
     );

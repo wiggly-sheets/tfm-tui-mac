@@ -82,7 +82,7 @@ describe("appsForFile", () => {
           ? "text/plain"
           : "Default application for “text/plain”: tfm-openwith.desktop\n" +
             "Registered applications:\n\ttfm-openwith.desktop\n\tdefinitely-missing.desktop\n";
-      const apps = await appsForFile("/tmp/x.txt", run);
+      const apps = await appsForFile("/tmp/x.txt", run, undefined, "linux");
       expect(apps.map((a) => a.name)).toEqual(["Fake Editor"]);
       expect(apps[0]!.file).toBe(path.join(dir, "tfm-openwith.desktop"));
     } finally {
@@ -91,7 +91,7 @@ describe("appsForFile", () => {
   });
 
   test("a failed mime probe yields no apps", async () => {
-    expect(await appsForFile("/x.txt", async () => "")).toEqual([]);
+    expect(await appsForFile("/x.txt", async () => "", undefined, "linux")).toEqual([]);
   });
 
   test("unreadable file falls back to ext→mime instead of yielding nothing", async () => {
@@ -105,7 +105,7 @@ describe("appsForFile", () => {
         cmd[0] === "xdg-mime"
           ? "" // content probe fails (EACCES on a root-owned file)
           : "Default application for “text/plain”: tfm-fb.desktop\n";
-      const apps = await appsForFile("/root/owned.txt", run, () => "text/plain");
+      const apps = await appsForFile("/root/owned.txt", run, () => "text/plain", "linux");
       expect(apps.map((a) => a.name)).toEqual(["Fallback Editor"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -118,6 +118,7 @@ describe("appsForFile", () => {
         "/root/owned",
         async () => "",
         () => undefined,
+        "linux",
       ),
     ).toEqual([]);
   });
@@ -136,7 +137,7 @@ describe("appsForFile", () => {
         if (cmd.includes("inode/x-empty")) return "No default applications for “inode/x-empty”\n";
         return "Default application for “text/plain”: tfm-rescue.desktop\n";
       };
-      const apps = await appsForFile("/home/clark/Downloads/test.txt", run, () => "text/plain");
+      const apps = await appsForFile("/home/clark/Downloads/test.txt", run, () => "text/plain", "linux");
       expect(apps.map((a) => a.name)).toEqual(["Rescue Editor"]);
       expect(seen.filter((c) => c[0] === "gio").map((c) => c[c.length - 1])).toEqual(["inode/x-empty", "text/plain"]);
     } finally {
@@ -157,9 +158,14 @@ describe("appsForFile", () => {
         if (cmd[0] === "xdg-mime") return "text/plain";
         return "Default application for “text/plain”: tfm-nofb.desktop\n";
       };
-      const apps = await appsForFile("/home/a/note.txt", run, () => {
-        throw new Error("fallback must not run");
-      });
+      const apps = await appsForFile(
+        "/home/a/note.txt",
+        run,
+        () => {
+          throw new Error("fallback must not run");
+        },
+        "linux",
+      );
       expect(apps.map((a) => a.name)).toEqual(["Direct Editor"]);
       expect(seen.filter((c) => c[0] === "gio")).toHaveLength(1);
     } finally {
@@ -179,7 +185,7 @@ describe("appsForFile", () => {
         if (cmd.includes("application/x-throwing")) throw new Error("gio exploded");
         return "Default application for “text/plain”: tfm-throwfb.desktop\n";
       };
-      const apps = await appsForFile("/home/a/note.txt", run, () => "text/plain");
+      const apps = await appsForFile("/home/a/note.txt", run, () => "text/plain", "linux");
       expect(apps.map((a) => a.name)).toEqual(["Throw Fallback"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -195,17 +201,20 @@ describe("makeOpenAsRoot", () => {
     const execArgv: string[][] = [];
     const notes: string[] = [];
     const logs: string[] = [];
-    const open = makeOpenAsRoot({
-      ensureSudo: gate,
-      exec:
-        exec ??
-        (async (argv) => {
-          execArgv.push(argv);
-          return { status: 0, stderr: "" };
-        }),
-      notify: (m, t) => void notes.push(`${t}:${m}`),
-      log: (m) => void logs.push(m),
-    });
+    const open = makeOpenAsRoot(
+      {
+        ensureSudo: gate,
+        exec:
+          exec ??
+          (async (argv) => {
+            execArgv.push(argv);
+            return { status: 0, stderr: "" };
+          }),
+        notify: (m, t) => void notes.push(`${t}:${m}`),
+        log: (m) => void logs.push(m),
+      },
+      "linux",
+    );
     return { open, spawns: execArgv, notes, logs };
   };
 
@@ -266,17 +275,20 @@ describe("makeLaunchAppAsRoot", () => {
     const execArgv: string[][] = [];
     const notes: string[] = [];
     const logs: string[] = [];
-    const launch = makeLaunchAppAsRoot({
-      ensureSudo: gate,
-      exec:
-        exec ??
-        (async (argv) => {
-          execArgv.push(argv);
-          return { status: 0, stderr: "" };
-        }),
-      notify: (m, t) => void notes.push(`${t}:${m}`),
-      log: (m) => void logs.push(m),
-    });
+    const launch = makeLaunchAppAsRoot(
+      {
+        ensureSudo: gate,
+        exec:
+          exec ??
+          (async (argv) => {
+            execArgv.push(argv);
+            return { status: 0, stderr: "" };
+          }),
+        notify: (m, t) => void notes.push(`${t}:${m}`),
+        log: (m) => void logs.push(m),
+      },
+      "linux",
+    );
     return { launch, execArgv, notes, logs };
   };
 
@@ -303,5 +315,51 @@ describe("makeLaunchAppAsRoot", () => {
     expect(h.notes.length).toBe(1);
     expect(h.notes[0]).toContain("open:Can't open f with Micro as root");
     expect(h.notes[0]).toContain("Operation not supported");
+  });
+});
+
+describe("darwin Open With", () => {
+  test("darwinApps lists .app bundles, deduped and sorted", async () => {
+    const { darwinApps } = await import("./apps");
+    const ls = (dir: string): string[] =>
+      dir === "/Applications" ? ["Zed.app", "Foo.app", "README.txt"] : dir === "/h/Applications" ? ["Foo.app"] : [];
+    expect(darwinApps(ls, ["/Applications", "/h/Applications"])).toEqual([
+      { id: "Foo", name: "Foo", file: "/Applications/Foo.app" },
+      { id: "Zed", name: "Zed", file: "/Applications/Zed.app" },
+    ]);
+    expect(darwinApps(() => [], ["/nope"])).toEqual([]);
+  });
+
+  test("appsForFile on darwin lists bundles via open -a (no gio)", async () => {
+    const { appsForFile } = await import("./apps");
+    const seen: string[][] = [];
+    const run = async (cmd: string[]): Promise<string> => {
+      seen.push(cmd);
+      return cmd[0] === "mdls" ? "public.plain-text" : "";
+    };
+    const apps = await appsForFile(
+      "/x/a.txt",
+      run,
+      () => undefined,
+      "darwin",
+      () => [{ id: "Cot", name: "Cot", file: "/Applications/Cot.app" }],
+    );
+    expect(apps).toEqual([{ id: "Cot", name: "Cot", file: "/Applications/Cot.app" }]);
+    expect(seen.some((c) => c[0] === "gio" || c[0] === "xdg-mime")).toBe(false);
+  });
+
+  test("launchApp argv core matches sudoLaunchArgv (same open -a shape)", async () => {
+    // launchApp itself is fire-and-forget spawn (no seam); the argv it uses
+    // is pinned here through the shared elevated builder
+    const { sudoLaunchArgv } = await import("./elevate");
+    expect(sudoLaunchArgv("/Applications/Cot.app", "/x/a.txt", "darwin")).toEqual([
+      "sudo",
+      "-n",
+      "-E",
+      "open",
+      "-a",
+      "/Applications/Cot.app",
+      "/x/a.txt",
+    ]);
   });
 });
