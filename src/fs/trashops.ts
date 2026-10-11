@@ -9,6 +9,7 @@ import {
   fsErrText,
   rmTrashInfoForPath,
   trashDir,
+  trashFilesDir,
   trashIfSameFile,
   trashInfoPathForTrashFile,
   xdgTrashMove,
@@ -20,6 +21,7 @@ import { sharedOpQueue } from "../lib/op-queue";
 import { checkPluginVeto, sharedPluginHooks } from "../lib/plugin-hooks";
 import type { NotifyLevel } from "../lib/notify-level";
 import { isNetworkPath } from "./network";
+import { isDarwin, darwinTrashPutBack } from "./darwin";
 import type { UndoJournalData, UndoStep, UndoUnit } from "../app/undo";
 
 // --- Trash operations: trash / restore / delete-forever / empty. The fs
@@ -73,7 +75,8 @@ export type TrashOpsSink = {
   ensureSudo?: (opLabel: string) => Promise<boolean>;
   sudoExec?: (argv: string[]) => Promise<{ status: number | null; stderr: string }>;
   // trash FILES dirs to empty (tests inject fakes; default enumerates home +
-  // every mounted $topdir/.Trash-$uid via /proc/mounts). Wiring passes nothing.
+  // every mounted per-volume trash — $topdir/.Trash-$uid via /proc/mounts on
+  // Linux, /Volumes/.Trashes via `mount` on darwin). Wiring passes nothing.
   trashFilesDirs?: () => string[];
 };
 
@@ -116,7 +119,7 @@ const parseTrashOrig = (raw: string): string | null => {
   return path.resolve(p);
 };
 
-export const makeTrashOps = (sink: TrashOpsSink) => {
+export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.platform) => {
   const queue = sharedOpQueue();
   const sudoExec = sink.sudoExec ?? defaultSudoExec;
   // one password gate per op (memoized per call below via needSudo closures)
@@ -134,7 +137,7 @@ export const makeTrashOps = (sink: TrashOpsSink) => {
     // network shares have no usable trash: xdgTrashMove would write a LOCAL
     // .trashinfo pointing at a FUSE path that dies on unmount (unrestorable,
     // remote file gone) — refuse instead of pretending it worked
-    if (paths.some(isNetworkPath)) {
+    if (paths.some((p) => isNetworkPath(p, platform))) {
       sink.notify("Trash isn't available on network locations", "trash", "error");
       return Promise.resolve();
     }
@@ -147,11 +150,11 @@ export const makeTrashOps = (sink: TrashOpsSink) => {
       let ok = 0;
       const failWhy = new Set<string>();
       for (const p of paths) {
-        // always trash via our own xdg path: we control the final name, so the
+        // always trash via our own trash lane: we control the final name, so the
         // undo unit pairs deterministically (a before/after listing diff could
         // mis-pair when something else trashes a similar name concurrently)
         try {
-          const loc = await xdgTrashMove(p);
+          const loc = await xdgTrashMove(p, platform);
           const hit = path.basename(loc);
           const from = path.join(path.dirname(loc), hit);
           units.push(async () => {
@@ -162,7 +165,7 @@ export const makeTrashOps = (sink: TrashOpsSink) => {
           dUnits.push({ op: "rm-trashinfo", name: hit, path: from });
           redos.push(async () => {
             try {
-              if (existsSync(p)) await xdgTrashMove(p);
+              if (existsSync(p)) await xdgTrashMove(p, platform);
             } catch (err) {
               sink.log?.(`redo trash ${p}: ${fsErrText(err)}`);
             }
@@ -209,7 +212,17 @@ export const makeTrashOps = (sink: TrashOpsSink) => {
       for (const src of paths) {
         const orig = await trashOrigPathForFile(src);
         if (!orig) {
-          failWhy.add("no trashinfo");
+          // darwin: Finder-trashed files lack .trashinfo — try Finder Put Back
+          if (isDarwin(platform)) {
+            const putBack = await darwinTrashPutBack([src]);
+            if (putBack) {
+              ok++;
+              continue;
+            }
+            failWhy.add("no trashinfo (Finder-trashed — use Finder Put Back)");
+          } else {
+            failWhy.add("no trashinfo");
+          }
           continue;
         }
         try {
@@ -233,7 +246,7 @@ export const makeTrashOps = (sink: TrashOpsSink) => {
           dUnits.push({ op: "trash", path: restoredDest, ...(rid ?? {}) });
           redos.push(async () => {
             try {
-              const loc = await xdgTrashMove(restoredDest).catch(() => null);
+              const loc = await xdgTrashMove(restoredDest, platform).catch(() => null);
               if (loc) {
                 const back = await trashOrigPathForFile(loc);
                 await safeRestoreMove(loc, back ?? restoredDest);
@@ -374,7 +387,7 @@ export const makeTrashOps = (sink: TrashOpsSink) => {
   const emptyTrash = (): Promise<void> => {
     if (vetoedByPlugin("empty", [])) return Promise.resolve();
     const run = queue.enqueue(async () => {
-      const homeFiles = path.join(trashDir(), "files");
+      const homeFiles = trashFilesDir(platform);
       let names: string[];
       try {
         names = await readdir(homeFiles);
@@ -390,7 +403,7 @@ export const makeTrashOps = (sink: TrashOpsSink) => {
       // other UI path to empty them — include every mounted one. Extra roots
       // read best-effort (a device yanked mid-empty just yields per-item
       // failures below); home stays the source of truth above.
-      const dirs = sink.trashFilesDirs ? sink.trashFilesDirs() : allTrashFilesDirs();
+      const dirs = sink.trashFilesDirs ? sink.trashFilesDirs() : allTrashFilesDirs(undefined, platform);
       for (const dir of new Set(
         dirs.map((d) => {
           try {
@@ -450,11 +463,11 @@ type TrashConfirmsCtx = {
   deleteForever(paths: string[]): void;
 };
 
-export const makeTrashConfirms = (ctx: TrashConfirmsCtx) => {
+export const makeTrashConfirms = (ctx: TrashConfirmsCtx, platform: string = process.platform) => {
   const confirmEmptyTrash = (): void => {
     // count is best-effort (home trash only; -1 when unreadable) — the prompt
     // names the count when known so "empty everything" isn't a blind click
-    const n = countTrashItems();
+    const n = countTrashItems(undefined, platform);
     const what = n >= 0 ? `Empty Trash (${n} item${n === 1 ? "" : "s"})?` : "Empty Trash?";
     ctx.confirm(`${what} This cannot be undone.`, "Empty Trash", () => ctx.emptyTrash(), true);
   };

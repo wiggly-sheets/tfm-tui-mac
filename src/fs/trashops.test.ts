@@ -52,7 +52,7 @@ describe("trashPaths", () => {
       const file = path.join(root, "doomed.txt");
       writeFileSync(file, "bye");
       const sink = recordingSink();
-      const ops = makeTrashOps(sink);
+      const ops = makeTrashOps(sink, "linux");
       ops.trashPaths([file]);
 
       const hit = path.join(trashDir(), "files", "doomed.txt");
@@ -77,7 +77,7 @@ describe("trashPaths", () => {
     const root = sandbox();
     try {
       const sink = recordingSink();
-      const ops = makeTrashOps(sink);
+      const ops = makeTrashOps(sink, "linux");
       ops.trashPaths([path.join(root, "missing.bin")]);
       await settleUntil(() => sink.notes.some((n) => n.startsWith("notify:trash failed")));
       expect(sink.notes.some((n) => n.includes("Trashed 0 of 1") && n.includes("FAILED"))).toBe(true);
@@ -94,16 +94,19 @@ describe("trashPaths", () => {
       const file = path.join(root, "doomed.txt");
       writeFileSync(file, "bye");
       const sink = recordingSink();
-      const ops = makeTrashOps({ ...sink, onEvent: (op, paths) => events.push({ op, paths }) });
+      const ops = makeTrashOps({ ...sink, onEvent: (op, paths) => events.push({ op, paths }) }, "linux");
       await ops.trashPaths([file]);
       expect(events).toEqual([{ op: "trash", paths: [file] }]);
       // a throwing listener never breaks the op
-      const ops2 = makeTrashOps({
-        ...sink,
-        onEvent: () => {
-          throw new Error("listener-boom");
+      const ops2 = makeTrashOps(
+        {
+          ...sink,
+          onEvent: () => {
+            throw new Error("listener-boom");
+          },
         },
-      });
+        "linux",
+      );
       const file2 = path.join(root, "doomed2.txt");
       writeFileSync(file2, "bye");
       await expect(ops2.trashPaths([file2])).resolves.toBeUndefined();
@@ -139,7 +142,7 @@ describe("trashOrigPath", () => {
       writeFileSync(path.join(topRoot, "files", "usb.txt"), "data");
       writeFileSync(path.join(topRoot, "info", "usb.txt.trashinfo"), `[Trash Info]\nPath=${origDir}/usb.txt\n`);
       const sink = recordingSink();
-      makeTrashOps(sink).restoreFromTrash([path.join(topRoot, "files", "usb.txt")]);
+      makeTrashOps(sink, "linux").restoreFromTrash([path.join(topRoot, "files", "usb.txt")]);
       await settleUntil(() => existsSync(path.join(origDir, "usb.txt")));
       expect(existsSync(path.join(origDir, "usb.txt"))).toBe(true);
       expect(existsSync(path.join(topRoot, "info", "usb.txt.trashinfo"))).toBe(false);
@@ -178,7 +181,7 @@ describe("restoreFromTrash", () => {
       writeFileSync(path.join(trashDir(), "files", "gone.txt"), "data");
       writeFileSync(path.join(trashDir(), "info", "gone.txt.trashinfo"), `[Trash Info]\nPath=${origDir}/gone.txt\n`);
       const sink = recordingSink();
-      makeTrashOps(sink).restoreFromTrash([path.join(trashDir(), "files", "gone.txt")]);
+      makeTrashOps(sink, "linux").restoreFromTrash([path.join(trashDir(), "files", "gone.txt")]);
       await settleUntil(() => existsSync(path.join(origDir, "gone.txt")));
       expect(existsSync(path.join(origDir, "gone.txt"))).toBe(true);
       expect(existsSync(path.join(trashDir(), "info", "gone.txt.trashinfo"))).toBe(false);
@@ -202,7 +205,7 @@ describe("restoreFromTrash", () => {
       writeFileSync(path.join(trashDir(), "info", "gone.txt.trashinfo"), `[Trash Info]\nPath=${origDir}/gone.txt\n`);
       writeFileSync(path.join(origDir, "gone.txt"), "current-data");
       const sink = recordingSink();
-      makeTrashOps(sink).restoreFromTrash([path.join(trashDir(), "files", "gone.txt")]);
+      makeTrashOps(sink, "linux").restoreFromTrash([path.join(trashDir(), "files", "gone.txt")]);
       await settleUntil(() => existsSync(path.join(origDir, "gone (copy).txt")));
       expect(readFileSync(path.join(origDir, "gone.txt"), "utf8")).toBe("current-data");
       expect(readFileSync(path.join(origDir, "gone (copy).txt"), "utf8")).toBe("restored-data");
@@ -221,7 +224,7 @@ describe("deleteForever / emptyTrash", () => {
       writeFileSync(path.join(trashDir(), "files", "x.txt"), "1");
       writeFileSync(path.join(trashDir(), "info", "x.txt.trashinfo"), "[Trash Info]\nPath=/tmp/x\n");
       const sink = recordingSink();
-      makeTrashOps(sink).deleteForever([path.join(trashDir(), "files", "x.txt")]);
+      makeTrashOps(sink, "linux").deleteForever([path.join(trashDir(), "files", "x.txt")]);
       await settleUntil(() => !existsSync(path.join(trashDir(), "info", "x.txt.trashinfo")));
       expect(existsSync(path.join(trashDir(), "files", "x.txt"))).toBe(false);
       expect(existsSync(path.join(trashDir(), "info", "x.txt.trashinfo"))).toBe(false);
@@ -240,7 +243,7 @@ describe("deleteForever / emptyTrash", () => {
       writeFileSync(path.join(trashDir(), "files", "a"), "1");
       writeFileSync(path.join(trashDir(), "files", "b"), "2");
       const sink = recordingSink();
-      makeTrashOps(sink).emptyTrash();
+      makeTrashOps(sink, "linux").emptyTrash();
       await settleUntil(() => !existsSync(path.join(trashDir(), "files", "a")));
       expect(existsSync(path.join(trashDir(), "files", "a"))).toBe(false);
       expect(sink.notes.some((n) => n === "notify:empty:success:Emptied 2 items · cannot be undone")).toBe(true);
@@ -253,7 +256,7 @@ describe("deleteForever / emptyTrash", () => {
     const root = sandbox();
     try {
       const sink = recordingSink();
-      makeTrashOps(sink).emptyTrash();
+      makeTrashOps(sink, "linux").emptyTrash();
       await settleUntil(() => sink.notes.some((n) => n.startsWith("notify:empty failed:error:Could not read trash")));
       expect(sink.notes.some((n) => n.startsWith("notify:empty failed:error:Could not read trash"))).toBe(true);
     } finally {
@@ -268,18 +271,21 @@ describe("makeTrashConfirms", () => {
     const asked: Confirmed[] = [];
     const fired: string[] = [];
     let onYes: (() => void) | null = null;
-    const confirms = makeTrashConfirms({
-      confirm: (message, yesLabel, cb, danger) => {
-        asked.push({ message, yesLabel, danger });
-        onYes = cb;
+    const confirms = makeTrashConfirms(
+      {
+        confirm: (message, yesLabel, cb, danger) => {
+          asked.push({ message, yesLabel, danger });
+          onYes = cb;
+        },
+        emptyTrash: () => {
+          fired.push("empty");
+        },
+        deleteForever: (paths) => {
+          fired.push(`delete:${paths.join(",")}`);
+        },
       },
-      emptyTrash: () => {
-        fired.push("empty");
-      },
-      deleteForever: (paths) => {
-        fired.push(`delete:${paths.join(",")}`);
-      },
-    });
+      "linux",
+    );
     return { asked, fired, confirms, runYes: () => onYes?.() };
   };
 
@@ -382,7 +388,7 @@ describe("delete progress driver", () => {
       const sink = recordingSink();
       const p = fakeDriver();
       sink.deleteProgress = p.driver;
-      makeTrashOps(sink).deleteForever([tree]);
+      makeTrashOps(sink, "linux").deleteForever([tree]);
       await settleUntil(() => p.calls.includes("stop"));
       expect(existsSync(tree)).toBe(false);
       expect(p.calls).toContain("start:2:5");
@@ -403,7 +409,7 @@ describe("delete progress driver", () => {
       const sink = recordingSink();
       const p = fakeDriver({ cancelAfterFiles: 1 });
       sink.deleteProgress = p.driver;
-      makeTrashOps(sink).deleteForever([tree]);
+      makeTrashOps(sink, "linux").deleteForever([tree]);
       await settleUntil(() => p.calls.includes("stop"));
       expect(existsSync(tree)).toBe(true);
       expect(p.files()).toBe(1);
@@ -436,7 +442,7 @@ describe("delete progress driver", () => {
         origStart(files, bytes);
       };
       sink.deleteProgress = p.driver;
-      makeTrashOps(sink).deleteForever([tree]);
+      makeTrashOps(sink, "linux").deleteForever([tree]);
       await settleUntil(() => p.calls.includes("stop"));
       expect(existsSync(tree)).toBe(false);
       // counting ticks arrive before the honest totals
@@ -458,7 +464,7 @@ describe("delete progress driver", () => {
       const sink = recordingSink();
       const p = fakeDriver();
       sink.deleteProgress = p.driver;
-      makeTrashOps(sink).emptyTrash();
+      makeTrashOps(sink, "linux").emptyTrash();
       await settleUntil(() => p.calls.includes("stop"));
       expect(p.calls).toContain("start:2:2");
       expect(p.calls).toContain("finish:✓ Emptied 2");
@@ -480,7 +486,7 @@ describe("trash pre-op veto", () => {
       const file = path.join(root, "keep.txt");
       writeFileSync(file, "keep");
       const sink = recordingSink();
-      makeTrashOps(sink).trashPaths([file]);
+      makeTrashOps(sink, "linux").trashPaths([file]);
       await settleUntil(() => sink.notes.length > 0);
       expect(existsSync(file)).toBe(true);
       expect(sink.notes.some((n) => n === "notify:blocked:info:Blocked by plugin: nope")).toBe(true);
@@ -500,7 +506,7 @@ describe("trashPaths network guard", () => {
     process.env.XDG_RUNTIME_DIR = "/run/user/4242";
     try {
       const sink = recordingSink();
-      const ops = makeTrashOps(sink);
+      const ops = makeTrashOps(sink, "linux");
       await ops.trashPaths(["/run/user/4242/gvfs/sftp:host=x,user=y/doomed.txt"]);
       expect(sink.batches.length).toBe(0);
       expect(sink.notes.some((n) => n.includes("Trash isn't available on network locations"))).toBe(true);
@@ -513,9 +519,11 @@ describe("trashPaths network guard", () => {
 });
 
 // chmod-based permission tests never fail as uid 0 (root bypasses
-// file perms), so the whole block is skipped there with a reason
-const describeNonRoot = process.getuid?.() === 0 ? describe.skip : describe;
-describeNonRoot("sudo escalation", () => {
+// file perms), so the whole block is skipped there with a reason.
+// Also Linux-only: the fake sudoExec models `sudo -n rm -rf` which is
+// Linux-specific; macOS uses different privilege escalation.
+const describeNonRoot = process.getuid?.() === 0 || process.platform !== "linux" ? describe.skip : describe;
+describeNonRoot("sudo escalation (linux)", () => {
   // fake sudoExec: lift write on operand parents during exec (rm needs the
   // containing dir), restoring exact modes after — models root without sudo
   const seenArgv: string[][] = [];
@@ -561,7 +569,7 @@ describeNonRoot("sudo escalation", () => {
       chmodSync(dir, 0o555);
 
       const plain = recordingSink();
-      await makeTrashOps(plain).deleteForever([path.join(dir, "victim.txt")]);
+      await makeTrashOps(plain, "linux").deleteForever([path.join(dir, "victim.txt")]);
       expect(plain.notes.some((n) => n.includes("FAILED") && n.includes("permission denied"))).toBe(true);
       expect(existsSync(path.join(dir, "victim.txt"))).toBe(true);
 
@@ -572,7 +580,7 @@ describeNonRoot("sudo escalation", () => {
         return true;
       };
       (esc as Record<string, unknown>).sudoExec = fakeSudoExec;
-      await makeTrashOps(esc).deleteForever([path.join(dir, "victim.txt")]);
+      await makeTrashOps(esc, "linux").deleteForever([path.join(dir, "victim.txt")]);
       expect(gates).toBe(1);
       chmodSync(dir, 0o755);
       expect(existsSync(path.join(dir, "victim.txt"))).toBe(false);
@@ -608,7 +616,7 @@ describeNonRoot("sudo escalation", () => {
         return true;
       };
       (esc as Record<string, unknown>).sudoExec = fakeSudoExec;
-      await makeTrashOps(esc).emptyTrash();
+      await makeTrashOps(esc, "linux").emptyTrash();
       expect(gates).toBe(1);
       chmodSync(filesDir, 0o755);
       expect(existsSync(path.join(filesDir, "stuck.txt"))).toBe(false);
@@ -634,7 +642,7 @@ describeNonRoot("sudo escalation", () => {
         throw new Error("trash must never ask for sudo");
       };
       // unhandled rejections surface as test failures; callers use .catch
-      await makeTrashOps(sink).trashPaths([path.join(dir, "doomed.txt")]);
+      await makeTrashOps(sink, "linux").trashPaths([path.join(dir, "doomed.txt")]);
       expect(sink.notes.some((n) => n.includes("FAILED") && n.includes("permission denied"))).toBe(true);
       expect(existsSync(path.join(dir, "doomed.txt"))).toBe(true);
 
@@ -653,7 +661,7 @@ describeNonRoot("sudo escalation", () => {
       (sink2 as Record<string, unknown>).ensureSudo = async (): Promise<boolean> => {
         throw new Error("restore must never ask for sudo");
       };
-      await makeTrashOps(sink2).restoreFromTrash([path.join(filesDir, "back.txt")]);
+      await makeTrashOps(sink2, "linux").restoreFromTrash([path.join(filesDir, "back.txt")]);
       expect(sink2.notes.some((n) => n.includes("FAILED") && n.includes("permission denied"))).toBe(true);
       expect(existsSync(path.join(filesDir, "back.txt"))).toBe(true);
     } finally {
@@ -682,7 +690,7 @@ describe("emptyTrash per-mount coverage", () => {
       writeFileSync(path.join(mnt, "info", "u.txt.trashinfo"), "[Trash Info]\nPath=/mnt/u.txt\n");
       const sink = recordingSink();
       (sink as Record<string, unknown>).trashFilesDirs = () => [homeFiles, path.join(mnt, "files")];
-      await makeTrashOps(sink).emptyTrash();
+      await makeTrashOps(sink, "linux").emptyTrash();
       await settleUntil(() => !existsSync(path.join(mnt, "files", "u.txt")));
       expect(existsSync(path.join(homeFiles, "h.txt"))).toBe(false);
       expect(existsSync(path.join(mnt, "files", "u.txt"))).toBe(false);
@@ -701,7 +709,7 @@ describe("emptyTrash per-mount coverage", () => {
       writeFileSync(path.join(homeFiles, "h.txt"), "home");
       const sink = recordingSink();
       (sink as Record<string, unknown>).trashFilesDirs = () => [homeFiles, path.join(root, "no-such-mount", "files")];
-      await makeTrashOps(sink).emptyTrash();
+      await makeTrashOps(sink, "linux").emptyTrash();
       await settleUntil(() => !existsSync(path.join(homeFiles, "h.txt")));
       expect(sink.notes.some((n) => n === "notify:empty:success:Emptied 1 item · cannot be undone")).toBe(true);
     } finally {
@@ -721,7 +729,7 @@ describe("non-rejecting op contract", () => {
         throw new Error("toast gone");
       };
       // must resolve (outcomes go to the sink / log, never to the caller)
-      await makeTrashOps(sink).trashPaths([file]);
+      await makeTrashOps(sink, "linux").trashPaths([file]);
       expect(existsSync(path.join(trashDir(), "files", "doomed.txt"))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
