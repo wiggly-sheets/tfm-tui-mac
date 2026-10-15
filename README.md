@@ -73,6 +73,31 @@ https://github.com/user-attachments/assets/b47c7136-642c-4c85-8b2a-dcab1bd0b37b
   - `ffmpeg` (macOS video thumbnails without the sidecar; `brew install ffmpeg`)
   - `tar` / `unzip` / `zip` / `7z` (zip files and archives)
 
+## Icons and terminal support
+
+Icons are Material Design Icons SVGs bundled with tfm. Where the terminal can
+draw images, tfm rasterizes the SVG in-process (resvg) and sends a color raster
+over the terminal's image protocol. Where it cannot, tfm draws a Nerd Font glyph
+in the icon's place.
+
+The fallback order:
+
+- kitty, WezTerm, Ghostty → kitty graphics protocol (color rasters).
+- iTerm2 → sixel, but only when the terminal reports pixel dimensions. Stable
+  iTerm2 does not report them, so tfm keeps the glyph there instead of reserving
+  cells for a placement that would render blank.
+- tmux and terminals with no graphics protocol → Nerd Font glyphs.
+- Linux text console and dumb terminals (`TERM` of `linux*`, `vt*`, `dumb`) →
+  ASCII glyphs and a fixed 16-color palette, no rasters.
+
+The Nerd Font glyph fallback needs a Nerd Font installed and selected as the
+terminal font (for example `MesloLGLDZ Nerd Font Mono`). Without one the glyphs
+show as tofu boxes.
+
+Rasterizing uses the resvg addon embedded in released binaries, so packaged
+builds draw icons out of the box. A source install without `devDependencies` has
+no addon and falls back to glyphs.
+
 ## Install
 
 ```bash
@@ -120,6 +145,9 @@ Everything is remappable: `esc` → Settings → keys.
 TFM_CONFIG=/custom/path/config.toml tfm
 ```
 See [config.example.toml](config.example.toml).
+
+Config and cache/state directories follow the XDG conventions on macOS too
+(`~/.config/tfm`, `~/.cache`).
 
 ## Plugins
 

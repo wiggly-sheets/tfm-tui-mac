@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+macOS is now supported with full port parity. Releases ship
+`aarch64-macos`; trash, servers, Finder tags and file opens go through the
+built-in macOS tools (`trash`, `diskutil`, `open`). macOS is added to CI.
+
+macOS fixes in this release:
+
+- Renames work correctly on case-insensitive APFS.
+- Writing a file no longer clobbers its Finder tags.
+- Copy preserves extended attributes.
+
+Icon rendering fix in this release:
+
+- Corrected the image-protocol fallback: iTerm2 now falls back to Nerd Font
+  glyphs. Stable iTerm2 does not report pixel dimensions, so the previous
+  sixel placements reserved cell space and rendered blank. kitty, WezTerm and
+  Ghostty keep color rasters; tmux, the Linux console and terminals with no
+  graphics protocol keep their glyphs.
+
 ## 1.0.0 — first stable release
 
 Terminal file manager goes stable: the beta warning is lifted and the
