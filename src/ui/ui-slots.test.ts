@@ -7,6 +7,7 @@ import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testin
 import {
   dimHex,
   hoverEvents,
+  imageProtocolFor,
   isFloatRootId,
   makePointerSetter,
   makeSlots,
@@ -41,9 +42,21 @@ const makeHarness = () => {
   let ttyMode = false;
   let forceGlyph = false;
   let iconStyle: "filled" | "outline" = "filled";
+  // a terminal that answers OpenTUI's pixel-size query. setResolution(null)
+  // models iTerm2 / dumb frontends, where it stays null FOREVER; undefined is
+  // the same "no pixels" for the protocol pick (see imageProtocolFor).
+  let resolution: { width: number; height: number } | null | undefined = { width: 800, height: 400 };
+  // graphics capabilities the drain reads (imageProtocolFor). Default = kitty so
+  // a normal harness actually drains to `done`; setCaps(null) is the "no
+  // protocol here" shape (glyphs, spec stays pending).
+  let capabilities: Record<string, unknown> | null = {
+    kitty_graphics: true,
+    sixel: false,
+    image_protocol: "auto",
+    multiplexer: "none",
+  };
   const ctx: SlotsCtx = {
-    renderer: () =>
-      ({ resolution: { width: 800, height: 400 }, terminalWidth: 80, terminalHeight: 20 }) as unknown as CliRenderer,
+    renderer: () => ({ resolution, capabilities, terminalWidth: 80, terminalHeight: 20 }) as unknown as CliRenderer,
     byId: (id) => nodes.get(id),
     colors: () => ({ bg: BG, sidebarFgMuted: FG, sidebarBg: BG, hoverBg: BG, white: "#fff" }) as unknown as Theme,
     uiStyle: () => "solid",
@@ -80,6 +93,8 @@ const makeHarness = () => {
     setTtyMode: (v: boolean) => (ttyMode = v),
     setForceGlyph: (v: boolean) => (forceGlyph = v),
     setIconStyle: (v: "filled" | "outline") => (iconStyle = v),
+    setResolution: (v: { width: number; height: number } | null | undefined) => (resolution = v),
+    setCaps: (v: Record<string, unknown> | null) => (capabilities = v),
   };
 };
 
@@ -196,6 +211,154 @@ describe("icon slot scrim", () => {
     h.setForceGlyph(false);
     await h.slots.drainIconQueue();
     expect(s.spec.done).toBe(true);
+  });
+});
+
+// A terminal that never answers OpenTUI's pixel-size query (stable iTerm2,
+// some multiplexer frontends) used to get ZERO rasters: both drains bailed on
+// `!renderer.resolution` before cellMetrics' 10x20 fallback could run, so every
+// icon/tile stayed on its fallback glyph. The fallback IS the pixel story on
+// those terminals — the pixel gate had to go, not the fallback.
+describe("drains with no pixel resolution", () => {
+  test("cellMetrics falls back to 10x20 cells", () => {
+    const h = makeHarness();
+    h.setResolution(null);
+    expect(h.slots.cellMetrics()).toEqual({ cellW: 10, cellH: 20, aspect: 2 });
+  });
+
+  test("cellMetrics prefers the reported pixels when they land", () => {
+    const h = makeHarness();
+    h.setResolution({ width: 1600, height: 480 });
+    expect(h.slots.cellMetrics()).toEqual({ cellW: 20, cellH: 24, aspect: 24 / 20 });
+  });
+
+  test("drainIconQueue rasters queued slots even though resolution is null", async () => {
+    const h = makeHarness();
+    h.setResolution(null);
+    const s = h.slots.makeIconSlot("no-such-icon-xyz", [{ fg: FG, bg: BG }], 1, 0);
+    h.mountFakeSlot(s.spec);
+
+    await h.slots.drainIconQueue();
+    expect(s.spec.done).toBe(true);
+  });
+
+  test("drainThumbs runs its jobs even though resolution is null", async () => {
+    const h = makeHarness();
+    h.setResolution(null);
+    const kids: any[] = [];
+    const slot = {
+      id: "tfm-tile-0-thumb",
+      kids,
+      getChildren: () => [...kids],
+      add: (c: any) => kids.push(c),
+    };
+    h.nodes.set("tfm-tile-0-thumb", slot);
+    h.slots.pushThumbJob({
+      slotId: "tfm-tile-0-thumb",
+      path: "/nonexistent.png",
+      mtimeMs: 0,
+      size: 1,
+      wCells: 2,
+      vector: false,
+      fallbackGlyph: "X",
+    });
+
+    await h.slots.drainThumbs();
+    // the render refused and the drain still delivered the glyph sentinel —
+    // proof the job was taken off the queue instead of dropped by the gate
+    expect(kids.length).toBe(1);
+  });
+
+  test("tty mode still bails before the resolution question is asked", async () => {
+    const h = makeHarness();
+    h.setResolution(null);
+    h.setTtyMode(true);
+    const s = h.slots.makeIconSlot("no-such-icon-xyz", [{ fg: FG, bg: BG }], 1, 0);
+    h.mountFakeSlot(s.spec);
+    await h.slots.drainIconQueue();
+    expect(s.spec.done).toBeFalsy();
+  });
+});
+
+// A drain must not CLAIM a spec it cannot raster. The protocol is settled before
+// the spec is marked done: a `null` (no placement here can paint) leaves it
+// pending so a later drain retries once the terminal reports graphics. Marking
+// it done first stranded the slot on its glyph until a resize/theme flip.
+describe("drain protocol gating", () => {
+  test("a null protocol leaves the spec pending, and a later drain retries it", async () => {
+    const h = makeHarness();
+    h.setCaps(null);
+    const s = h.slots.makeIconSlot("no-such-icon-xyz", [{ fg: FG, bg: BG }], 1, 0);
+    h.mountFakeSlot(s.spec);
+
+    await h.slots.drainIconQueue();
+    expect(s.spec.done).toBeFalsy();
+
+    // capabilities land after boot: the same spec is picked up again
+    h.setCaps({ kitty_graphics: true, sixel: false, image_protocol: "auto", multiplexer: "none" });
+    await h.slots.drainIconQueue();
+    expect(s.spec.done).toBe(true);
+  });
+
+  test("an undefined resolution counts as no pixels (sixel stays on the glyph)", async () => {
+    const h = makeHarness();
+    h.setCaps({ kitty_graphics: false, sixel: true, image_protocol: "auto", multiplexer: "none" });
+    h.setResolution(undefined);
+    const s = h.slots.makeIconSlot("no-such-icon-xyz", [{ fg: FG, bg: BG }], 1, 0);
+    h.mountFakeSlot(s.spec);
+
+    await h.slots.drainIconQueue();
+    // sixel cannot place without pixel metrics, and undefined must read as "no
+    // pixels" exactly like null (a `!== null` check let it slip through)
+    expect(s.spec.done).toBeFalsy();
+  });
+});
+
+// Protocol choice for tfm's own rasters. A raster is only mounted where it
+// truly draws: kitty (no pixel metrics needed) or sixel WITH a reported
+// resolution. tmux refuses kitty (the multiplexer would mangle the placements),
+// so it too falls back to the glyph. Everywhere else imageProtocolFor returns
+// the null sentinel and the slot keeps its glyph — the native sixel writer would
+// otherwise SKIP a placement at pixel_width 0 and leave reserved cells painted
+// with nothing.
+describe("imageProtocolFor", () => {
+  const kitty = { kitty_graphics: true, sixel: false, image_protocol: "auto" } as const;
+  const sixel = { kitty_graphics: false, sixel: true, image_protocol: "auto" } as const;
+
+  test("kitty stays kitty (it needs no pixel metrics)", () => {
+    expect(imageProtocolFor(kitty, false)).toBe("kitty");
+    expect(imageProtocolFor(kitty, true)).toBe("kitty");
+  });
+
+  test("sixel is preferred once the terminal reported pixels", () => {
+    expect(imageProtocolFor(sixel, true)).toBe("sixel");
+  });
+
+  test("sixel without pixel metrics keeps the glyph (null sentinel, no raster)", () => {
+    // the regression: auto -> sixel -> skipped at pixel_width 0 -> blank cells
+    expect(imageProtocolFor(sixel, false)).toBeNull();
+  });
+
+  test("an explicit user override is never second-guessed", () => {
+    expect(imageProtocolFor({ ...sixel, image_protocol: "blocks" }, true)).toBe("auto");
+    expect(imageProtocolFor({ ...kitty, image_protocol: "sixel" }, false)).toBe("auto");
+  });
+
+  test("no graphics detection keeps the glyph too (null sentinel)", () => {
+    expect(imageProtocolFor({ kitty_graphics: false, sixel: false }, true)).toBeNull();
+    expect(imageProtocolFor(null, true)).toBeNull();
+    expect(imageProtocolFor(undefined, false)).toBeNull();
+  });
+
+  test("a tmux multiplexer refuses kitty (and sixel) placements too", () => {
+    // OpenTUI's own resolveImageRenderProtocol bails to blocks under tmux before
+    // its kitty branch; we raster nothing and keep the glyph instead.
+    expect(imageProtocolFor({ ...kitty, multiplexer: "tmux" }, true)).toBeNull();
+    expect(imageProtocolFor({ ...sixel, multiplexer: "tmux" }, true)).toBeNull();
+  });
+
+  test("an explicit override still wins over the tmux guard", () => {
+    expect(imageProtocolFor({ ...kitty, image_protocol: "sixel", multiplexer: "tmux" }, true)).toBe("auto");
   });
 });
 
@@ -323,6 +486,23 @@ describe("thumbnail mount", () => {
   const openResolution = (): void => {
     Object.defineProperty(t.renderer, "resolution", { value: { width: 800, height: 480 }, configurable: true });
   };
+  // drop the shadow again — back to the null the headless renderer reports,
+  // which is the iTerm2 shape (terminal never answers the pixel query)
+  const closeResolution = (): void => {
+    delete (t.renderer as unknown as { resolution?: unknown }).resolution;
+  };
+  // the headless renderer reports null capabilities (imageProtocolFor -> null
+  // sentinel -> no raster). Shadow a graphics backend so the raster tests
+  // actually mount: kitty needs no pixel metrics, so it isolates the raster
+  // path from the resolution shadow above.
+  const openCaps = (
+    caps: Record<string, unknown> = { kitty_graphics: true, sixel: false, image_protocol: "auto" },
+  ): void => {
+    Object.defineProperty(t.renderer, "capabilities", { value: caps, configurable: true });
+  };
+  const closeCaps = (): void => {
+    delete (t.renderer as unknown as { capabilities?: unknown }).capabilities;
+  };
   const writePng = (name = "wide.png"): { dir: string; p: string } => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-slots-thumb-"));
     const p = path.join(dir, name);
@@ -345,6 +525,7 @@ describe("thumbnail mount", () => {
     const slots = mkSlots();
     slots.pushThumbJob({ slotId, path: p, mtimeMs: 1, size: 1, wCells: 4, vector: false, fallbackGlyph: "F" });
     openResolution();
+    openCaps();
     await slots.drainThumbs();
     await t.renderOnce();
 
@@ -352,6 +533,81 @@ describe("thumbnail mount", () => {
     expect(img).toBeTruthy();
     expect(img.fit).toBe("cover");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The iTerm2 shape: the terminal never answers the pixel-size query, so
+  // `resolution` stays null forever. cellMetrics' 10x20 fallback supplies the
+  // raster pixels and the drain must still deliver (the old gate returned
+  // before the fallback was ever consulted, so the tile stayed on its glyph).
+  test("a null resolution still drains a thumbnail (10x20 cell fallback)", async () => {
+    closeResolution();
+    openCaps();
+    expect(t.renderer.resolution).toBeNull();
+    const slotId = "tfm-tile-nores-thumb";
+    t.renderer.root.add(Box({ id: slotId, width: 8, height: 8 }));
+    await t.renderOnce();
+    const { dir, p } = writePng("nores.png");
+    const slots = mkSlots();
+    slots.pushThumbJob({ slotId, path: p, mtimeMs: 1, size: 1, wCells: 4, vector: false, fallbackGlyph: "F" });
+
+    await slots.drainThumbs();
+    await t.renderOnce();
+
+    expect(t.renderer.root.findDescendantById(`${slotId}-t`)).toBeTruthy();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The sentinel path: a sixel-only terminal with no pixel metrics (stable
+  // iTerm2) cannot paint a sixel placement — the native sink skips it at
+  // pixel_width 0 and the reserved cells stay blank. So NO ImageRenderable is
+  // mounted: the thumbnail slot keeps its fallback glyph and the icon slot
+  // keeps its glyph node visible.
+  test("sixel without pixel metrics mounts no raster, keeps the glyph", async () => {
+    closeResolution();
+    closeCaps();
+    openCaps({ kitty_graphics: false, sixel: true, image_protocol: "auto" });
+    const thumbId = "tfm-tile-sentinel-thumb";
+    t.renderer.root.add(Box({ id: thumbId, width: 8, height: 8 }));
+    await t.renderOnce();
+    const { dir, p } = writePng("sentinel.png");
+    const slots = mkSlots();
+    slots.pushThumbJob({ slotId: thumbId, path: p, mtimeMs: 1, size: 1, wCells: 4, vector: false, fallbackGlyph: "F" });
+
+    const iconSlot = slots.makeIconSlot("no-such-icon-xyz", [{ fg: FG, bg: BG }], 1, 0);
+    t.renderer.root.add(Box({ id: `${iconSlot.slotId}-host`, width: 8, height: 1 }, iconSlot.el));
+
+    await slots.drainThumbs();
+    await slots.drainIconQueue();
+    await t.renderOnce();
+
+    expect(t.renderer.root.findDescendantById(`${thumbId}-t`)).toBeFalsy();
+    expect(t.renderer.root.findDescendantById(`${iconSlot.slotId}-s0`)).toBeFalsy();
+    // the glyph fallbacks stay visible instead of a blank reserved box
+    expect((t.renderer.root.findDescendantById(`${iconSlot.slotId}-g`) as any)?.visible).not.toBe(false);
+    expect(t.renderer.root.findDescendantById(thumbId)?.getChildren().length).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test.skipIf(!hasSvgRenderer)("a null resolution still drains icon slots", async () => {
+    closeResolution();
+    openCaps();
+    expect(t.renderer.resolution).toBeNull();
+    const slots = mkSlots();
+    const slot = slots.makeIconSlot("home", [{ fg: FG, bg: BG }], 1, 0);
+    t.renderer.root.add(Box({ id: `${slot.slotId}-nores-host`, width: 8, height: 1 }, slot.el));
+    await t.renderOnce();
+
+    await slots.drainIconQueue();
+    await t.renderOnce();
+
+    const img = t.renderer.root.findDescendantById(`${slot.slotId}-s0`) as any;
+    expect(img).toBeTruthy();
+    // the raster was built at the 10x20 fallback (wCells round(1*2)=2 → 20x20),
+    // not at the 0 pixels a null resolution would otherwise imply
+    const { iconPng } = await import("./icons");
+    expect(Buffer.from(new Uint8Array(img.source))).toEqual(
+      Buffer.from(await iconPng("home", FG, BG, 20, 20, { transparent: false, style: "filled" })),
+    );
   });
 
   // A superseded drain must still DELIVER: renderAll fires drainThumbs from
@@ -367,6 +623,7 @@ describe("thumbnail mount", () => {
     const { dir, p } = writePng("live.png");
     const slots = mkSlots();
     openResolution();
+    openCaps();
     slots.pushThumbJob({ slotId, path: p, mtimeMs: 1, size: 1, wCells: 4, vector: false, fallbackGlyph: "F" });
 
     const superseded = slots.drainThumbs(); // starts the raster, yields
@@ -392,6 +649,7 @@ describe("thumbnail mount", () => {
     const svg = writeSvg("stale.svg");
     const slots = mkSlots();
     openResolution();
+    openCaps();
 
     slots.pushThumbJob({ slotId, path: svg.p, mtimeMs: 1, size: 1, wCells: 4, vector: true, fallbackGlyph: "F" });
     const staleDrain = slots.drainThumbs(); // slow SVG raster in flight
@@ -420,6 +678,7 @@ describe("thumbnail mount", () => {
     t.renderer.root.add(Box({ id: `${slot.slotId}-host`, width: 8, height: 1 }, slot.el));
     await t.renderOnce();
     openResolution();
+    openCaps();
 
     const first = slots.drainIconQueue();
     const second = slots.drainIconQueue(); // starts while `first` is mid-raster
@@ -443,6 +702,7 @@ describe("thumbnail mount", () => {
     t.renderer.root.add(Box({ id: "faithful-host", width: 16, height: 5 }, plain.el, faithful.el));
     await t.renderOnce();
     openResolution();
+    openCaps();
 
     await slots.drainIconQueue();
     await t.renderOnce();

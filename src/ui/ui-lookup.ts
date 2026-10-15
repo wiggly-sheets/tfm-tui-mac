@@ -60,8 +60,8 @@ export const makeLookup = (ctx: LookupCtx) => {
 // frontends — leave it null FOREVER, and the old waitForResolution parked
 // 40 x 50ms on EVERY grid rebuild there: navigation looked dead while the
 // previous folder sat on screen. The pane never needed those pixels (it builds
-// on cellMetrics' 10x20 fallback, and rasters are gated separately on the REAL
-// resolution), so the park is split in two:
+// on cellMetrics' 10x20 fallback, and the icon/thumb drains raster at that
+// same fallback), so the park is split in two:
 //   settle() — the boot wait. One full budget, then LATCH: a terminal that
 //     answered nothing by then never will, and later waits are free.
 //   wait()  — the render-path wait. Instant once the resolution landed or the

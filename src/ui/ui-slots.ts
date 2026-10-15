@@ -7,7 +7,16 @@
 // back to a pre-darkened glyph (setScrim); rasters come back on close.
 // Renderer/theme arrive via ctx getters — never capture geometry or colors.
 
-import { Box, type CliRenderer, type ColorInput, ImageRenderable, type MouseEvent, Text } from "@opentui/core";
+import {
+  Box,
+  type CliRenderer,
+  type ColorInput,
+  ImageRenderable,
+  type ImageRenderProtocol,
+  type MouseEvent,
+  type TerminalCapabilities,
+  Text,
+} from "@opentui/core";
 import { iconPng, brandPng, svgAspect, thumbPng } from "./icons";
 import { swallow } from "../app/log";
 import type { IconMode, IconStyle, Theme } from "../config/config";
@@ -200,6 +209,47 @@ export const thumbJobKey = (j: ThumbJob): string =>
 // `fit:"fit"` behavior, restored here for vectors only.
 export const thumbImageFit = (vector: boolean): "fit" | "cover" => (vector ? "fit" : "cover");
 
+// --- Image render protocol for tfm's own rasters -------------------------
+// A raster may only be mounted where it TRULY draws; everywhere else the slot
+// keeps its crisp Nerd Font glyph. OpenTUI's `"auto"` resolves sixel even on a
+// terminal that never answered the pixel-size query (stable iTerm2, some
+// multiplexer frontends), and the native sink then SKIPS a sixel placement
+// whose pixel_width or pixel_height is 0 — it cannot size the raster — so the
+// icon's cells get reserved for an image and painted with nothing (blank/tofu).
+// `blocks` would stay visible (the native layer materializes it into unicode
+// quadrant cells), but chunky art is worse than the glyph, so we dropped it:
+//   * explicit user override (OPENTUI_IMAGE_PROTOCOL) → "auto", handed back to
+//     OpenTUI untouched (which resolves it server-side and may itself downgrade
+//     a sixel request to `blocks` when there are no pixel metrics);
+//   * tmux → `null` (glyphs): OpenTUI refuses kitty placements under a
+//     multiplexer (see resolveImageRenderProtocol) and sixel there is just as
+//     unreliable, so keep the glyph;
+//   * kitty → "kitty" (needs no pixel metrics);
+//   * sixel WITH a reported resolution → "sixel";
+//   * anything else → `null`, the "keep the glyph, do not raster" sentinel the
+//     two mount sites below test for.
+// Pure so the mapping is pinned without a renderer on the machine.
+export const imageProtocolFor = (
+  caps:
+    | (Pick<TerminalCapabilities, "kitty_graphics" | "sixel" | "image_protocol"> & {
+        // optional like the real field's sibling `image_protocol`: caps objects
+        // built before this check (and the pure-function tests) omit it.
+        multiplexer?: TerminalCapabilities["multiplexer"];
+      })
+    | null
+    | undefined,
+  hasResolution: boolean,
+): ImageRenderProtocol | null => {
+  const override = caps?.image_protocol;
+  if (override && override !== "auto") return "auto";
+  // same rule OpenTUI applies before its kitty branch: a multiplexer mangles
+  // kitty placements, so fall back to the glyph rather than reserve blank cells.
+  if (caps?.multiplexer === "tmux") return null;
+  if (caps?.kitty_graphics) return "kitty";
+  if (caps?.sixel && hasResolution) return "sixel";
+  return null;
+};
+
 // --- Floating-layer roots ---
 // A slot inside one of these is a FLOAT child. Two decisions hang off it: the
 // raster keeps its alpha only OUTSIDE floats in `transparent-partial` (an opaque
@@ -308,6 +358,14 @@ export const makeSlots = (ctx: SlotsCtx) => {
     return { cellW, cellH, aspect: cellH > 0 ? cellH / cellW : 2 };
   };
 
+  // Protocol for every raster tfm mounts (see imageProtocolFor). Read at drain
+  // time: capabilities and the pixel resolution both land after boot. `null`
+  // means "do not raster here" — the mount sites keep the glyph instead.
+  const imageProtocol = (): ImageRenderProtocol | null =>
+    // `!= null`: an absent resolution is the same "no pixels" as a null one —
+    // sixel cannot place without pixel metrics either way.
+    imageProtocolFor(ctx.renderer().capabilities, ctx.renderer().resolution != null);
+
   const makeIconSlot = (
     name: string,
     states: IconState[],
@@ -384,7 +442,17 @@ export const makeSlots = (ctx: SlotsCtx) => {
     thumbJobs = [];
     // drop the backlog (a rebuild re-queues what it needs if tty mode flips off)
     if (ctx.isTtyMode?.() || ctx.forceGlyph?.()) return;
-    if (!ctx.renderer().resolution || jobs.length === 0) return;
+    // NO pixel-resolution gate. A terminal that never answers OpenTUI's
+    // pixel-size query (stable iTerm2, some multiplexer frontends) leaves
+    // `resolution` null FOREVER, and the old `!resolution` bail produced ZERO
+    // rasters there — every tile stuck on its fallback glyph. cellMetrics'
+    // 10x20 fallback below IS the pixel story on those terminals; the protocol
+    // pick (imageProtocolFor) is what keeps us off a raster that could not
+    // draw — that path keeps the glyph instead (see below).
+    if (jobs.length === 0) return;
+    // one protocol for the whole drain: it is a per-terminal decision, so a
+    // `null` means NO job here can paint — keep every glyph.
+    const protocol = imageProtocol();
     // priority first, then visible tiles, then the off-screen backlog —
     // Array#sort is stable, so each class keeps its push order
     jobs.sort((a, b) => thumbJobRank(a) - thumbJobRank(b));
@@ -396,6 +464,18 @@ export const makeSlots = (ctx: SlotsCtx) => {
         if (!j) continue;
         let slot = ctx.byId(j.slotId);
         if (!slot) continue;
+        // "do not raster" sentinel: kitty is absent and sixel has no pixel
+        // metrics (or no graphics at all). Mounting an ImageRenderable here
+        // would reserve cells for a placement that lands blank, so keep the
+        // crisp fallback glyph (same node the failure path below installs).
+        if (protocol === null) {
+          if (slot.getChildren().length === 0) {
+            try {
+              slot.add(Text({ content: j.fallbackGlyph, fg: ctx.colors().sidebarFgMuted }));
+            } catch {}
+          }
+          continue;
+        }
         const hCells = j.hCells ?? ctx.iconCells();
         const jobBg = j.bg ?? ctx.colors().bg;
         // 2px inset so kitty's cell->pixel rounding never bleeds onto neighbors
@@ -411,7 +491,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
             // rasters/video cover-crop into the tile; SVG vectors contain (see
             // thumbImageFit) — icons keep fit:"fit" at their own site
             fit: thumbImageFit(j.vector),
-            protocol: "auto",
+            protocol,
           });
           if (img.loadPromise) await img.loadPromise;
           // RE-RESOLVE: a rebuild during the raster detached the captured node;
@@ -458,6 +538,11 @@ export const makeSlots = (ctx: SlotsCtx) => {
     faithful = false,
   ) => {
     const { cellW, cellH } = cellMetrics();
+    const protocol = imageProtocol();
+    // "do not raster" sentinel (see imageProtocolFor): no protocol here can
+    // actually paint, so build NO ImageRenderable — the slot keeps its glyph
+    // node visible (runIconDrain hides it only when imgs come back non-empty).
+    if (protocol === null) return [];
     // `transparent` = raster keeps alpha; strip it inside floating layers in
     // partial mode so an opaque island can't blend the desktop through.
     // transparent-bg force keeps alpha outside floats too (chrome tiles are
@@ -494,7 +579,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
           width: wCells,
           height: heightCells,
           fit: "fit",
-          protocol: "auto",
+          protocol,
         });
         if (img.loadPromise) await img.loadPromise;
         img.visible = si === initial;
@@ -510,8 +595,10 @@ export const makeSlots = (ctx: SlotsCtx) => {
   };
 
   // ONE pass over the specs pending at its start (or every spec after a reset).
-  // Never runs concurrently with itself — drainIconQueue serializes it — so a
-  // spec marked done here always gets its rasters attached (or genuinely fails).
+  // Never runs concurrently with itself — drainIconQueue serializes it — and the
+  // protocol is settled BEFORE a spec is marked done: a `null` protocol (no
+  // placement here can paint) leaves the spec undone so a later drain retries it,
+  // while a spec that IS marked done either got its rasters or genuinely failed.
   const runIconDrain = async (): Promise<void> => {
     const aspect = cellMetrics().aspect;
     const specs = [...allSpecs.values()];
@@ -524,6 +611,10 @@ export const makeSlots = (ctx: SlotsCtx) => {
       while (idx < pending.length) {
         const spec = pending[idx++];
         if (!spec) continue;
+        // settle the protocol BEFORE claiming the spec: with `null` no placement
+        // here can paint (see imageProtocolFor), so leave it undone for a later
+        // drain to retry instead of marking it done with no rasters attached.
+        if (imageProtocol() === null) continue;
         spec.done = true;
         const slot = ctx.byId(spec.slotId);
         if (!slot) continue;
@@ -595,7 +686,9 @@ export const makeSlots = (ctx: SlotsCtx) => {
   // old per-drain supersession token stranded exactly those).
   const drainIconQueue = (): Promise<void> => {
     if (ctx.isTtyMode?.() || ctx.forceGlyph?.()) return Promise.resolve();
-    if (!ctx.renderer().resolution) return Promise.resolve();
+    // NO pixel-resolution gate (see drainThumbs): a null `resolution` means the
+    // terminal never answered the pixel query, not that there are no pixels to
+    // raster into — cellMetrics falls back to 10x20 for exactly this case.
     iconDrainAgain = true;
     if (!iconDrain) {
       iconDrain = (async () => {

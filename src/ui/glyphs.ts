@@ -128,8 +128,10 @@ const glyphChains: Record<string, GlyphChain> = {
   "arrow-down": "↓",
 };
 
-// Resolve a glyph chain to the first available codepoint (fallback to tofu)
-const resolveChain = (chain: GlyphChain): string => (Array.isArray(chain) ? chain[0] : chain);
+// Resolve a glyph chain to the first available codepoint (fallback to tofu).
+// The `?? "\u{FFFD}"` only satisfies the type: every chain in the table is a
+// non-empty array or a bare string, so the empty-array branch never runs.
+const resolveChain = (chain: GlyphChain): string => (Array.isArray(chain) ? (chain[0] ?? "\u{FFFD}") : chain);
 
 // Build the flat glyph table from chains (primary codepoints only)
 export const glyph: Record<string, string> = (() => {
