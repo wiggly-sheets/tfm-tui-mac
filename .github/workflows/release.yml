@@ -1,14 +1,15 @@
 name: Release
 
 # Produces the artifacts install.sh downloads: tfm-{x86_64,aarch64}-linux.gz
-# and tfm-aarch64-macos.gz, plus a .sha256 sidecar each, AND the bundled
-# video-thumbnail ffmpeg as tfm-ffmpeg-{x86_64,aarch64}-linux.gz plus
-# tfm-ffmpeg-aarch64-macos.gz, each with its own .sha256 (install.sh
-# verifies when present and warns-but-continues when absent). Tag a version
+# and tfm-{aarch64,x86_64}-macos.gz, plus a .sha256 sidecar each, AND the
+# bundled video-thumbnail ffmpeg as tfm-ffmpeg-{x86_64,aarch64}-linux.gz plus
+# tfm-ffmpeg-{aarch64,x86_64}-macos.gz, each with its own .sha256 (install.sh
+# verifies when present and warns-but-continues when absent). macOS also ships
+# a lipo'd universal tfm-universal-macos.gz and ffmpeg sidecar. Tag a version
 # to ship it:
 #   git tag v1.0.0 && git push origin v1.0.0
 # Version must match package.json (checked below) so --version never lies.
-# macOS is arm64-only (Apple Silicon); Linux covers x64 + arm64.
+# Linux covers x64 + arm64; macOS covers both plus the universal binary.
 
 on:
   push:
@@ -83,11 +84,11 @@ jobs:
             dist/tfm-ffmpeg-${{ matrix.arch }}.gz
             dist/tfm-ffmpeg-${{ matrix.arch }}.gz.sha256
 
-  # macOS arm64 (Apple Silicon only): native runner, bun-darwin-arm64 target.
-  # The ffmpeg sidecar rides ffmpeg-static's pinned darwin-arm64 binary — the
-  # same binary dev/CI runs use (see the BtbN comment above) — instead of a
-  # brew install (brew ffmpeg links Homebrew dylibs and would not run on
-  # machines without them).
+  # macOS arm64 runner (Apple Silicon), cross-compiling the x64 slice and
+  # lipo-ing the two into a universal binary. The ffmpeg sidecars ride
+  # ffmpeg-static's pinned darwin binaries — the same binaries dev/CI runs
+  # use (see the BtbN comment above) — instead of a brew install (brew ffmpeg
+  # links Homebrew dylibs and would not run on machines without them).
   build-macos:
     runs-on: macos-14
     steps:
@@ -100,44 +101,79 @@ jobs:
       - name: Version matches package.json
         run: test "v$(bun -e 'console.log(require("./package.json").version)')" = "${{ github.ref_name }}"
 
+      # --os=* --cpu=*: cross-compiling darwin-x64 from this arm64 host needs
+      # @opentui/core-darwin-x64, which a plain install skips (host-arch only).
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --os='*' --cpu='*'
 
       - name: Check + test
         run: |
           bun run check
           bun run test
 
-      - name: Compile
-        run: bun build --compile --target=bun-darwin-arm64 src/index.ts assets/icons/*.svg --outfile dist/tfm-aarch64-macos
+      - name: Compile (arm64 + x64 + universal)
+        run: bun run scripts/build.ts mac-arm64 mac-x64 mac-universal
 
       - name: Package + checksum
         run: |
-          gzip -kf dist/tfm-aarch64-macos
-          (cd dist && shasum -a 256 tfm-aarch64-macos.gz > tfm-aarch64-macos.gz.sha256)
+          for a in aarch64-macos x86_64-macos universal-macos; do
+            gzip -kf dist/tfm-$a
+            (cd dist && shasum -a 256 tfm-$a.gz > tfm-$a.gz.sha256)
+          done
+
+      # the x64 ffmpeg sidecar smoke test below runs the x86_64 binary under
+      # Rosetta; the command is idempotent (no-ops when Rosetta is present)
+      - name: Ensure Rosetta 2 (for the x64 sidecar smoke test)
+        run: sudo softwareupdate --install-rosetta --agree-to-license || true
 
       - name: Package ffmpeg sidecar
         run: |
+          # ffmpeg-static installs only the HOST arch, but its pinned release
+          # also publishes ffmpeg-darwin-x64.gz, so the x64 sidecar comes from
+          # the same tag and the universal sidecar lipos the two.
           test -x node_modules/ffmpeg-static/ffmpeg
           cp node_modules/ffmpeg-static/ffmpeg dist/tfm-ffmpeg-aarch64-macos
-          dist/tfm-ffmpeg-aarch64-macos -hide_banner -version
-          gzip -kf dist/tfm-ffmpeg-aarch64-macos
-          (cd dist && shasum -a 256 tfm-ffmpeg-aarch64-macos.gz > tfm-ffmpeg-aarch64-macos.gz.sha256)
+          TAG=$(bun -e 'console.log(require("ffmpeg-static/package.json")["ffmpeg-static"]["binary-release-tag"])')
+          curl -fsSL --retry 3 -o ffmpeg-darwin-x64.gz "https://github.com/eugeneware/ffmpeg-static/releases/download/$TAG/ffmpeg-darwin-x64.gz"
+          gunzip -f ffmpeg-darwin-x64.gz
+          chmod +x ffmpeg-darwin-x64
+          mv ffmpeg-darwin-x64 dist/tfm-ffmpeg-x86_64-macos
+          lipo -create -output dist/tfm-ffmpeg-universal-macos dist/tfm-ffmpeg-aarch64-macos dist/tfm-ffmpeg-x86_64-macos
+          # ffmpeg-static ships the arm64 binary signed but the x64 one unsigned,
+          # and lipo invalidates the fat container's signature: ad-hoc sign both
+          # so codesign --verify passes and Apple Silicon will run them.
+          codesign --force --sign - dist/tfm-ffmpeg-x86_64-macos
+          codesign --force --sign - dist/tfm-ffmpeg-universal-macos
+          for a in aarch64-macos x86_64-macos universal-macos; do
+            dist/tfm-ffmpeg-$a -hide_banner -version >/dev/null
+            gzip -kf dist/tfm-ffmpeg-$a
+            (cd dist && shasum -a 256 tfm-ffmpeg-$a.gz > tfm-ffmpeg-$a.gz.sha256)
+          done
 
       - name: Verify code signature
         run: |
-          codesign --verify --deep --strict --verbose=2 dist/tfm-aarch64-macos
-          codesign --verify --deep --strict --verbose=2 dist/tfm-ffmpeg-aarch64-macos
+          for a in aarch64-macos x86_64-macos universal-macos; do
+            codesign --verify --deep --strict --verbose=2 dist/tfm-$a
+            codesign --verify --deep --strict --verbose=2 dist/tfm-ffmpeg-$a
+          done
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tfm-aarch64-macos
+          name: tfm-macos
           path: |
             dist/tfm-aarch64-macos.gz
             dist/tfm-aarch64-macos.gz.sha256
+            dist/tfm-x86_64-macos.gz
+            dist/tfm-x86_64-macos.gz.sha256
+            dist/tfm-universal-macos.gz
+            dist/tfm-universal-macos.gz.sha256
             dist/tfm-ffmpeg-aarch64-macos.gz
             dist/tfm-ffmpeg-aarch64-macos.gz.sha256
+            dist/tfm-ffmpeg-x86_64-macos.gz
+            dist/tfm-ffmpeg-x86_64-macos.gz.sha256
+            dist/tfm-ffmpeg-universal-macos.gz
+            dist/tfm-ffmpeg-universal-macos.gz.sha256
 
   release:
     needs: [build, build-macos]
@@ -163,9 +199,17 @@ jobs:
             dist/tfm-aarch64-linux.gz.sha256
             dist/tfm-aarch64-macos.gz
             dist/tfm-aarch64-macos.gz.sha256
+            dist/tfm-x86_64-macos.gz
+            dist/tfm-x86_64-macos.gz.sha256
+            dist/tfm-universal-macos.gz
+            dist/tfm-universal-macos.gz.sha256
             dist/tfm-ffmpeg-x86_64-linux.gz
             dist/tfm-ffmpeg-x86_64-linux.gz.sha256
             dist/tfm-ffmpeg-aarch64-linux.gz
             dist/tfm-ffmpeg-aarch64-linux.gz.sha256
             dist/tfm-ffmpeg-aarch64-macos.gz
             dist/tfm-ffmpeg-aarch64-macos.gz.sha256
+            dist/tfm-ffmpeg-x86_64-macos.gz
+            dist/tfm-ffmpeg-x86_64-macos.gz.sha256
+            dist/tfm-ffmpeg-universal-macos.gz
+            dist/tfm-ffmpeg-universal-macos.gz.sha256

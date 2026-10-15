@@ -104,8 +104,8 @@ ARCH=""
 case "$OS_NAME-$(uname -m)" in
   Linux-x86_64) ARCH="x86_64-linux" ;;
   Linux-aarch64 | Linux-arm64) ARCH="aarch64-linux" ;;
-  # macOS is arm64-only (Apple Silicon); Intel macs get no build
   Darwin-arm64 | Darwin-aarch64) ARCH="aarch64-macos" ;;
+  Darwin-x86_64) ARCH="x86_64-macos" ;;
   *) ARCH="" ;;
 esac
 
