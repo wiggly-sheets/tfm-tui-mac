@@ -9,6 +9,7 @@ import {
   statSync,
   writeFileSync,
   chmodSync,
+  linkSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,8 +33,17 @@ import {
   countTrashItems,
   fileIdMatches,
   fileIdOf,
+  sameFile,
   trashIfSameFile,
+  runXattr,
+  XATTR_MAX_BUFFER,
+  preserveXattrs,
+  preserveXattrsShallow,
+  enqueueXattr,
+  awaitXattrQueue,
+  XATTR_QUEUE_MAX,
 } from "./fsutil";
+import type { XattrRun } from "./darwin";
 
 // mkdtemp only creates the last segment — the parent must be a dir that
 // exists everywhere (CI runners choke on a hardcoded /tmp/opencode)
@@ -43,6 +53,20 @@ const mktmp = (prefix: string): string => mkdtempSync(path.join(os.tmpdir(), pre
 // beforeAll sandboxes all trash writes away from the real ~/.local/share.
 const SANDBOX = mktmp("tfm-fsutil-");
 let oldData: string | undefined;
+
+// filesystems may fold case (macOS APFS/HFS+); the real-FS case-only test below
+// is only meaningful there, so probe the sandbox once
+const caseInsensitive = (() => {
+  const probe = path.join(SANDBOX, "case-probe");
+  try {
+    writeFileSync(probe, "x");
+    return existsSync(path.join(SANDBOX, "CASE-PROBE"));
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { force: true });
+  }
+})();
 
 beforeAll(() => {
   oldData = process.env.XDG_DATA_HOME;
@@ -513,5 +537,163 @@ describe("fileIdOf / fileIdMatches / trashIfSameFile", () => {
     writeFileSync(p, "x");
     await trashIfSameFile(p, null, undefined, "linux");
     expect(existsSync(p)).toBe(false);
+  });
+});
+
+describe("sameFile", () => {
+  test("distinct hardlinks to one inode are NOT the same file (non-case paths differ)", () => {
+    const a = path.join(SANDBOX, "samefile-a.txt");
+    writeFileSync(a, "x");
+    const b = path.join(SANDBOX, "samefile-b.txt");
+    linkSync(a, b);
+    expect(sameFile(a, b)).toBe(false);
+    expect(sameFile(a, a)).toBe(true);
+  });
+
+  test("case-only spellings of one inode ARE the same (injected ids: any FS)", () => {
+    const id = { dev: 7, ino: 42 };
+    const both = (): { dev: number; ino: number } => id;
+    expect(sameFile("/x/Foo.txt", "/x/foo.txt", both)).toBe(true);
+    // non-case paths to one inode: never (hardlink case)
+    expect(sameFile("/x/Foo.txt", "/x/bar.txt", both)).toBe(false);
+  });
+
+  test("inode 0 on either side is never the same (FUSE/CIFS report 0 for everything)", () => {
+    const zero = (): { dev: number; ino: number } => ({ dev: 1, ino: 0 });
+    expect(sameFile("/x/a", "/x/A", zero)).toBe(false);
+    // first side fine, second side ino 0
+    expect(sameFile("/x/a", "/x/A", (p) => (p === "/x/a" ? { dev: 1, ino: 5 } : { dev: 1, ino: 0 }))).toBe(false);
+  });
+
+  test("distinct files and a missing target are never the same", () => {
+    const a = path.join(SANDBOX, "samefile-c.txt");
+    const b = path.join(SANDBOX, "samefile-d.txt");
+    writeFileSync(a, "x");
+    writeFileSync(b, "x");
+    expect(sameFile(a, b)).toBe(false);
+    // the not-yet-existing target must not throw (lstat ENOTDIR/ENOENT caught)
+    expect(sameFile(a, path.join(SANDBOX, "absent.txt"))).toBe(false);
+    expect(sameFile(path.join(SANDBOX, "absent.txt"), a)).toBe(false);
+  });
+
+  test("relative vs absolute (and a trailing separator) spellings of one file ARE the same", () => {
+    const p = path.join(SANDBOX, "samefile-rel.txt");
+    writeFileSync(p, "x");
+    const rel = path.relative(process.cwd(), p);
+    expect(sameFile(p, rel)).toBe(true);
+    expect(sameFile(rel, p)).toBe(true);
+    expect(sameFile(p + path.sep, p)).toBe(true);
+  });
+
+  // real-FS alias: only meaningful where the FS folds case (macOS APFS/HFS+)
+  test.skipIf(!caseInsensitive)("case-only respelling of one real file IS the same", () => {
+    const p = path.join(SANDBOX, "samefile-case.txt");
+    writeFileSync(p, "x");
+    expect(sameFile(p, path.join(SANDBOX, "SAMEFILE-CASE.TXT"))).toBe(true);
+  });
+});
+
+describe("enqueueXattr / awaitXattrQueue", () => {
+  test("runs ops one at a time, in enqueue order (serialized lane)", async () => {
+    let active = 0;
+    let peak = 0;
+    const order: number[] = [];
+    const op = (i: number) => async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 5));
+      order.push(i);
+      active--;
+    };
+    enqueueXattr(op(1));
+    enqueueXattr(op(2));
+    enqueueXattr(op(3));
+    await awaitXattrQueue();
+    expect(peak).toBe(1);
+    expect(order).toEqual([1, 2, 3]);
+  });
+
+  test("a rejected op is swallowed and never wedges the lane", async () => {
+    const ran: string[] = [];
+    enqueueXattr(async () => {
+      throw new Error("boom");
+    });
+    enqueueXattr(async () => {
+      ran.push("after");
+    });
+    await awaitXattrQueue();
+    expect(ran).toEqual(["after"]);
+  });
+
+  test("awaitXattrQueue resolves on an empty lane (shutdown drain is bounded)", async () => {
+    await awaitXattrQueue();
+  });
+
+  test("the backlog is bounded: enqueues past XATTR_QUEUE_MAX are dropped", async () => {
+    // enqueued synchronously in one tick, so none can run before the loop ends —
+    // the counter climbs to the cap and every further op is dropped on purpose
+    let ran = 0;
+    for (let i = 0; i < XATTR_QUEUE_MAX + 10; i++) enqueueXattr(async () => void ran++);
+    await awaitXattrQueue();
+    expect(ran).toBe(XATTR_QUEUE_MAX);
+  });
+});
+
+describe("runXattr", () => {
+  test("reads stdout past Node's 1 MiB default maxBuffer", async () => {
+    const big = path.join(SANDBOX, "xattr-big.txt");
+    writeFileSync(big, "x".repeat(2 * 1024 * 1024));
+    const r = await runXattr("/bin/cat", [big]);
+    expect(r.code).toBe(0);
+    expect(r.stdout.length).toBe(2 * 1024 * 1024);
+  });
+
+  test("maxBuffer constant is raised well above the 1 MiB default", () => {
+    expect(XATTR_MAX_BUFFER).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+  });
+});
+
+describe("preserveXattrs", () => {
+  const fakeRun =
+    (seen: string[]): XattrRun =>
+    async (_bin, args) => {
+      seen.push(args[args.length - 1] ?? "");
+      return { stdout: "", code: 0 };
+    };
+
+  test("non-darwin is a no-op (Linux byte-identical)", async () => {
+    const seen: string[] = [];
+    await preserveXattrs("/s", "/d", { platform: "linux", run: fakeRun(seen) });
+    expect(seen).toEqual([]);
+  });
+
+  test("a plain file: one list op, no walk", async () => {
+    const src = path.join(SANDBOX, "px-file.txt");
+    writeFileSync(src, "x");
+    const seen: string[] = [];
+    await preserveXattrs(src, "/dest", { platform: "darwin", run: fakeRun(seen) });
+    expect(seen).toEqual([src]);
+  });
+
+  test("a directory recurses into every child (EXDEV dir move keeps child xattrs)", async () => {
+    const src = path.join(SANDBOX, "px-dir");
+    mkdirSync(path.join(src, "sub"), { recursive: true });
+    writeFileSync(path.join(src, "a.txt"), "a");
+    writeFileSync(path.join(src, "sub", "b.txt"), "b");
+    const seen: string[] = [];
+    await preserveXattrs(src, "/dest", { platform: "darwin", run: fakeRun(seen) });
+    expect(seen).toContain(src);
+    expect(seen).toContain(path.join(src, "a.txt"));
+    expect(seen).toContain(path.join(src, "sub"));
+    expect(seen).toContain(path.join(src, "sub", "b.txt"));
+  });
+
+  test("preserveXattrsShallow copies only the node, never walks (dir root in the copy lane)", async () => {
+    const src = path.join(SANDBOX, "px-shallow-dir");
+    mkdirSync(path.join(src, "sub"), { recursive: true });
+    writeFileSync(path.join(src, "a.txt"), "a");
+    const seen: string[] = [];
+    await preserveXattrsShallow(src, "/dest", { platform: "darwin", run: fakeRun(seen) });
+    expect(seen).toEqual([src]);
   });
 });

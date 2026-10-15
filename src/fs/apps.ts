@@ -84,8 +84,15 @@ export const parseGioMime = (out: string): string[] => {
 
 export type AppChoice = { id: string; name: string; file: string };
 
-// macOS app dirs for the Open With… chooser (no .desktop registry exists)
-const darwinAppDirs = (home: string = os.homedir()): string[] => ["/Applications", path.join(home, "Applications")];
+// macOS app dirs for the Open With… chooser (no .desktop registry exists).
+// /System/Applications holds Apple's bundled apps (Safari, Preview, TextEdit,
+// QuickTime…); user dirs stay first so a user-installed app wins the id.
+const darwinAppDirs = (home: string = os.homedir()): string[] => [
+  "/Applications",
+  path.join(home, "Applications"),
+  "/System/Applications",
+  "/System/Applications/Utilities",
+];
 
 // launchable .app bundles: `<Name>.app` → choice id = bundle name. `ls`
 // injectable so tests never touch /Applications.

@@ -14,7 +14,17 @@ import {
   utimes,
 } from "node:fs/promises";
 import path from "node:path";
-import { errCode, claimTmp, fileIdMatches, fileIdOf, fsyncPath, type FileId } from "./fsutil";
+import {
+  errCode,
+  claimTmp,
+  fileIdMatches,
+  fileIdOf,
+  fsyncPath,
+  enqueueXattr,
+  preserveXattrs,
+  preserveXattrsShallow,
+  type FileId,
+} from "./fsutil";
 import { swallow } from "../app/log";
 
 // --- Copy engine: tree walking, pre-scan and streamed file copy with
@@ -211,6 +221,11 @@ export const copyFileProgress = (src: string, dest: string, sink: TransferSink):
                         await utimes(tmp, srcStat.atime, srcStat.mtime);
                       } catch {}
                       const id = await landCopiedFile(tmp, dest);
+                      // Finder metadata lives in xattrs a byte-stream copy drops
+                      // (macOS only, best-effort — never rejects). Enqueued on a
+                      // serialized background lane so per-file progress never waits
+                      // on the xattr spawn; awaitXattrQueue() drains it.
+                      enqueueXattr(() => preserveXattrs(src, dest));
                       await cleanupTmp();
                       await fsyncParentDir(dest);
                       resolve(id);
@@ -271,6 +286,8 @@ export const copyTreeProgress = async (src: string, dest: string, sink: Transfer
       if (errCode(err) === "EEXIST") throw new Error(`already exists: ${path.basename(dest)}`);
       throw err;
     }
+    // a symlink has no children to walk — its own attrs are all there is
+    enqueueXattr(() => preserveXattrsShallow(src, dest));
     sink.fileDone();
     sink.repaint(true);
     return fileIdOf(dest);
@@ -297,6 +314,9 @@ export const copyTreeProgress = async (src: string, dest: string, sink: Transfer
         throw err;
       }
       await fsyncParentDir(dest);
+      // the directory's OWN xattrs (Finder tags on a folder) — children are
+      // enqueued by their own branches, so a shallow copy here, not a walk
+      enqueueXattr(() => preserveXattrsShallow(src, dest));
       return tmpId;
     } catch (err) {
       await rm(tmp, { recursive: true, force: true }).catch((cleanup) => swallow("transfer stage cleanup", cleanup));

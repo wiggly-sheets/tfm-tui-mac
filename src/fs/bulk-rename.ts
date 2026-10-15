@@ -9,7 +9,7 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { splitStemExt } from "./fsutil";
+import { sameFile as defaultSameFile, splitStemExt } from "./fsutil";
 
 export type BulkRenameItem = { path: string };
 export type BulkRenamePair = { from: string; to: string };
@@ -37,6 +37,7 @@ export const planBulkRename = (
   stem: string,
   style: BulkRenameStyle,
   exists: (p: string) => boolean = existsSync,
+  sameFile: (a: string, b: string) => boolean = defaultSameFile,
 ): BulkRenamePlan => {
   const base = stem.trim();
   if (!base) return { ok: false, error: "Name can't be empty" };
@@ -58,7 +59,10 @@ export const planBulkRename = (
     seen.add(name);
     if (origins.has(name)) return { ok: false, error: `${name} collides with another selected item` };
     const to = path.join(path.dirname(from), name);
-    if (exists(to)) return { ok: false, error: `Already exists: ${name}` };
+    // a target that resolves to the SOURCE file is not a collision (case-only
+    // rename on a case-insensitive FS: exists("FOO 1.txt") is true because it
+    // IS "foo 1.txt")
+    if (exists(to) && !sameFile(from, to)) return { ok: false, error: `Already exists: ${name}` };
     pairs.push({ from, to });
   }
   return { ok: true, pairs };

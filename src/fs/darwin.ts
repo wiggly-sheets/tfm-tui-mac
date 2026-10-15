@@ -244,6 +244,67 @@ export const parseMdlsTags = (out: string): string[] => {
     .filter(Boolean);
 };
 
+export type StarTagDeps = {
+  which: (bin: string) => string | null;
+  exec: (bin: string, args: string[]) => unknown;
+};
+
+// Finder tag sync behind the Properties star toggle. `tag` CLI only:
+// com.apple.metadata:_kMDItemUserTags is a binary plist — a plain write is
+// invalid data, and `xattr -d` deletes every unrelated color/name tag with it.
+// When the CLI is absent tfm leaves the attribute untouched (its own starred
+// registry is then the source of truth). deps injectable so tests pin the
+// "no xattr" guard headless.
+export const syncStarTag = (deps: StarTagDeps, starred: boolean, targetPath: string): void => {
+  const tagBin = deps.which("tag");
+  if (!tagBin) return;
+  void deps.exec(tagBin, starred ? ["-a", "Starred", targetPath] : ["-r", "Starred", targetPath]);
+};
+
+// --- extended attributes: Finder tags (com.apple.metadata:_kMDItemUserTags),
+// quarantine, download provenance and resource forks (com.apple.ResourceFork)
+// live in xattrs, which a byte/mode/mtime copy silently drops. `xattr -p -x`
+// reads the value as hex and `-w -x` writes hex back, so binary attributes
+// survive a round-trip (a plain text write corrupts them). Best-effort: a
+// listing spawn first keeps the common no-attribute file to that one spawn
+// (no reads, no writes); every failure is swallowed so a copy never fails
+// over an attribute it could not carry. deps injectable — syncStarTag's
+// headless-test pattern. ---
+export const XATTR_CLI = "/usr/bin/xattr";
+
+export const xattrListArgs = (p: string): string[] => [p];
+export const xattrReadArgs = (name: string, p: string): string[] => ["-p", "-x", name, p];
+export const xattrWriteArgs = (name: string, hex: string, p: string): string[] => ["-w", "-x", name, hex, p];
+
+export type XattrRun = (bin: string, args: string[]) => Promise<{ stdout: string; code: number }>;
+
+export type XattrDeps = { run: XattrRun; platform?: string };
+
+// Copy every xattr from src onto a file that already landed at dest. No-op off
+// darwin (Linux byte-identical); no read/write spawns when src has none; a
+// failed read skips that attribute, a failed write is ignored — never throws.
+export const copyXattrs = async (src: string, dest: string, deps: XattrDeps): Promise<void> => {
+  if (!isDarwin(deps.platform ?? process.platform)) return;
+  let listed: { stdout: string; code: number };
+  try {
+    listed = await deps.run(XATTR_CLI, xattrListArgs(src));
+  } catch {
+    return;
+  }
+  if (listed.code !== 0) return;
+  const names = listed.stdout
+    .split("\n")
+    .map((n) => n.trim())
+    .filter(Boolean);
+  for (const name of names) {
+    try {
+      const read = await deps.run(XATTR_CLI, xattrReadArgs(name, src));
+      if (read.code !== 0) continue;
+      await deps.run(XATTR_CLI, xattrWriteArgs(name, read.stdout.trim(), dest));
+    } catch {}
+  }
+};
+
 // --- clipboard: pbcopy/pbpaste text path (paste-anywhere, like the Linux
 // text publish); Finder file refs detected via `clipboard info` furl, read
 // back as realpath-absolute POSIX paths. No x-special/gnome type on darwin. ---

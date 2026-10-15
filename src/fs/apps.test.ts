@@ -330,6 +330,19 @@ describe("darwin Open With", () => {
     expect(darwinApps(() => [], ["/nope"])).toEqual([]);
   });
 
+  test("default dirs include Apple's system apps (Safari/Preview/Terminal)", async () => {
+    const { darwinApps } = await import("./apps");
+    const ls = (dir: string): string[] =>
+      dir === "/System/Applications"
+        ? ["Safari.app", "Preview.app"]
+        : dir === "/System/Applications/Utilities"
+          ? ["Terminal.app"]
+          : [];
+    const ids = darwinApps(ls).map((a) => a.id);
+    expect(ids).toContain("Safari");
+    expect(ids).toContain("Terminal");
+  });
+
   test("appsForFile on darwin lists bundles via open -a (no gio)", async () => {
     const { appsForFile } = await import("./apps");
     const seen: string[][] = [];

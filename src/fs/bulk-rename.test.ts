@@ -71,14 +71,16 @@ describe("planBulkRename", () => {
     if (!plan.ok) expect(plan.error).toContain("another selected");
   });
 
-  test("each pair lands in the item's own directory", () => {
-    const plan = planBulkRename([{ path: "/one/a" }, { path: "/two/b" }], "x", "plain", none);
-    expect(plan).toEqual({
+  test("a target that resolves to the source is not a collision (case-only rename)", () => {
+    const from = path.join("/d", "foo 1.txt");
+    const to = path.join("/d", "FOO 1.txt");
+    const exists = (p: string) => p === to;
+    const self = (a: string, b: string) => a === from && b === to;
+    expect(planBulkRename([{ path: from }], "FOO", "plain", exists, self)).toEqual({
       ok: true,
-      pairs: [
-        { from: "/one/a", to: "/one/x 1" },
-        { from: "/two/b", to: "/two/x 2" },
-      ],
+      pairs: [{ from, to }],
     });
+    // a genuine collision (different file) still rejects
+    expect(planBulkRename([{ path: from }], "FOO", "plain", exists, () => false).ok).toBe(false);
   });
 });

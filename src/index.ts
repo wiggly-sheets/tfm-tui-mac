@@ -142,6 +142,7 @@ const chrome = await wireChrome({
 
 // graceful shutdown on SIGTERM/SIGINT (e.g. terminal close, system shutdown)
 const { saveConfig } = await import("./config/config");
+const { awaitXattrQueue } = await import("./fs/fsutil");
 const shutdown = async (signal: string) => {
   if (isDebug) appendLog(`shutdown: ${signal}`);
   try {
@@ -152,6 +153,12 @@ const shutdown = async (signal: string) => {
   } catch {}
   try {
     chrome.stopGpm?.();
+  } catch {}
+  try {
+    // bounded drain: a copy that just landed still has resource-fork/tag/
+    // quarantine xattrs queued on the background lane, and process.exit would
+    // drop them. A stuck xattr spawn must not block quit, so cap the wait.
+    await Promise.race([awaitXattrQueue(), new Promise((r) => setTimeout(r, 2000))]);
   } catch {}
   process.exit(signal === "SIGTERM" ? 143 : 130);
 };

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import {
   cpSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -16,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { makeFileOps, type FileOpsCtx } from "./fileops";
 import type { UndoJournalData } from "../app/undo";
-import { trashDir } from "./fsutil";
+import { trashDir, enqueueXattr } from "./fsutil";
 import type { ArchiveRun, ToolSpec } from "./archive";
 import type { ProgressState } from "../ui/ui-progress";
 import { sharedPluginHooks } from "../lib/plugin-hooks";
@@ -167,6 +168,40 @@ describe("runTransfer: same-fs move", () => {
 
     expect(existsSync(path.join(destDir, ".tfm-extract-1234-ab12cd34"))).toBe(false);
     expect(existsSync(path.join(destDir, "sweep-src.txt"))).toBe(true);
+  });
+});
+
+describe("runTransfer: xattr lane drains at completion", () => {
+  test("copy promise resolves only after the background xattr lane settles", async () => {
+    // stall the lane, then copy: the file lands (the lane never blocks the copy
+    // itself) but runTransfer must NOT resolve until the lane drains — it is the
+    // boundary the UI awaits for "copy finished".
+    const h = makeHarness();
+    const src = path.join(ROOT, "xattr-drain-src");
+    const destDir = path.join(ROOT, "xattr-drain-dest");
+    W(src, "payload");
+    mkdirSync(destDir, { recursive: true });
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    enqueueXattr(() => gate);
+
+    let settled = false;
+    const done = h.ops.runTransfer("copy", destDir, [src], "paste").then(() => {
+      settled = true;
+    });
+
+    // wait for the copy to actually land (proves the op reached its tail), then
+    // give the tail a few ticks to reach the drain with the lane still stalled
+    const dst = path.join(destDir, "xattr-drain-src");
+    for (let i = 0; i < 400 && !existsSync(dst); i++) await new Promise((r) => setTimeout(r, 5));
+    expect(existsSync(dst)).toBe(true);
+    await new Promise((r) => setTimeout(r, 25));
+    expect(settled).toBe(false);
+
+    release();
+    await done;
+    expect(settled).toBe(true);
   });
 });
 
@@ -664,14 +699,16 @@ describe("performBulkRename", () => {
     const b = path.join(ROOT, "bulk-race-b.txt");
     W(a, "A");
     W(b, "B");
-    // external create lands between planBulkRename and apply
-    W(path.join(ROOT, "bulk-race-B.txt"), "INNOCENT");
+    // external create lands between planBulkRename and apply (a genuinely
+    // distinct file — a case-only variant would BE the source on APFS)
+    const victim = path.join(ROOT, "bulk-race-victim.txt");
+    W(victim, "INNOCENT");
     await h.ops.performBulkRename([
       { from: a, to: path.join(ROOT, "bulk-race-A.txt") },
-      { from: b, to: path.join(ROOT, "bulk-race-B.txt") },
+      { from: b, to: victim },
     ]);
     expect(readFileSync(path.join(ROOT, "bulk-race-A.txt"), "utf8")).toBe("A");
-    expect(readFileSync(path.join(ROOT, "bulk-race-B.txt"), "utf8")).toBe("INNOCENT");
+    expect(readFileSync(victim, "utf8")).toBe("INNOCENT");
     expect(existsSync(b)).toBe(true);
     expect(h.calls.some((c) => c.includes("already exists"))).toBe(true);
   });
@@ -988,6 +1025,40 @@ describe("rename undo / replace-stash guards", () => {
     expect(readFileSync(b, "utf8")).toBe("OLD");
     expect(readFileSync(a, "utf8")).toBe("A");
     expect(h.calls).toContain("notify:rename failed:error:Replace failed — existing file kept");
+  });
+});
+
+describe("rename: target resolves to the source (case-insensitive FS model)", () => {
+  // On APFS `Foo` exists because it IS `foo`; a hardlink is the portable
+  // stand-in for that inode alias on case-sensitive CI. On a case-insensitive
+  // host the alias path already resolves, so the link is skipped.
+  const aliasTo = (dir: string, src: string, name: string): string => {
+    const alias = path.join(dir, name);
+    if (!existsSync(alias)) linkSync(src, alias);
+    return alias;
+  };
+
+  test("performRename: no conflict prompt, no stash — renamed straight through", async () => {
+    const h = makeHarness();
+    const dir = path.join(ROOT, "same-file-rename");
+    mkdirSync(dir, { recursive: true });
+    const src = path.join(dir, "foo.txt");
+    W(src, "payload");
+    aliasTo(dir, src, "Foo.txt");
+    await h.ops.performRename(src, "Foo.txt");
+    expect(h.calls).not.toContain("conflict:prompt");
+    expect(h.calls.some((c) => c.startsWith("notify:rename:success:"))).toBe(true);
+  });
+
+  test("performBulkRename: same-file target is not 'already exists'", async () => {
+    const h = makeHarness();
+    const dir = path.join(ROOT, "same-file-bulk");
+    mkdirSync(dir, { recursive: true });
+    const src = path.join(dir, "foo.txt");
+    W(src, "payload");
+    const alias = aliasTo(dir, src, "Foo.txt");
+    await h.ops.performBulkRename([{ from: src, to: alias }]);
+    expect(h.calls).toContain("notify:rename:success:Renamed 1 item · ctrl+z to undo");
   });
 });
 

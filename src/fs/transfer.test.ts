@@ -22,6 +22,7 @@ import {
   scanTree,
   type TransferSink,
 } from "./transfer";
+import * as fsutil from "./fsutil";
 
 // mkdtemp only creates the last segment — the parent must be a dir that
 // exists everywhere (CI runners choke on a hardcoded /tmp/opencode)
@@ -384,5 +385,40 @@ describe("rmTreeProgress", () => {
     expect(existsSync(path.join(dir, "empty"))).toBe(false);
     expect(h.files).toBe(0);
     expect(h.bytes).toBe(0);
+  });
+});
+
+describe("copy path xattr lane", () => {
+  test("tree copy does not block on the serialized xattr lane", async () => {
+    // stall the lane with an unresolved op: a copy that awaited the xattr work
+    // would hang here instead of landing its file
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    fsutil.enqueueXattr(() => gate);
+    W(path.join(dir, "src", "a.txt"), "A");
+    const h = mkSink();
+    const outcome = await Promise.race([
+      copyTreeProgress(path.join(dir, "src"), path.join(dir, "dst"), h.sink).then(() => "copied" as const),
+      new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 1000)),
+    ]);
+    expect(outcome).toBe("copied");
+    expect(readFileSync(path.join(dir, "dst", "a.txt"), "utf8")).toBe("A");
+    release();
+    await fsutil.awaitXattrQueue();
+  });
+
+  test("copy enqueues xattr work for the directory root and a symlink, not only files", async () => {
+    W(path.join(dir, "src", "a.txt"), "A");
+    W(path.join(dir, "src", "sub", "b.txt"), "B");
+    symlinkSync(path.join(dir, "src", "a.txt"), path.join(dir, "src", "link"));
+    const spy = spyOn(fsutil, "enqueueXattr");
+    const h = mkSink();
+    await copyTreeProgress(path.join(dir, "src"), path.join(dir, "dst"), h.sink);
+    // one enqueue per node: src, sub, a.txt, sub/b.txt, link
+    expect(spy).toHaveBeenCalledTimes(5);
+    spy.mockRestore();
+    await fsutil.awaitXattrQueue();
   });
 });

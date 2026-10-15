@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   applescriptString,
+  copyXattrs,
   darwinMountEntries,
   darwinTrashMove,
   darwinVolumeTrash,
@@ -27,8 +28,14 @@ import {
   posixPathOfClipboardArgs,
   qlmanageThumbArgs,
   sipsThumbArgs,
+  syncStarTag,
   trashCliArgs,
   TRASH_CLI,
+  XATTR_CLI,
+  xattrListArgs,
+  xattrReadArgs,
+  xattrWriteArgs,
+  type XattrRun,
 } from "./darwin";
 
 describe("isDarwin / openerBin", () => {
@@ -255,5 +262,100 @@ describe("thumbnail argv", () => {
   test("mac sidecar names probe the arch build first", () => {
     expect(MACOS_FFMPEG_SIDECARS[0]).toBe("tfm-ffmpeg-macos-arm64");
     expect(MACOS_FFMPEG_SIDECARS).toContain("tfm-ffmpeg-macos-arm64");
+  });
+});
+
+describe("syncStarTag", () => {
+  test("no `tag` CLI: never touches the Finder tags attribute", () => {
+    const calls: Array<[string, string[]]> = [];
+    const deps = { which: () => null, exec: (bin: string, args: string[]) => void calls.push([bin, args]) };
+    syncStarTag(deps, true, "/x/f.txt");
+    syncStarTag(deps, false, "/x/f.txt");
+    expect(calls).toEqual([]);
+  });
+
+  test("`tag` CLI present: add/remove Starred through it only", () => {
+    const calls: Array<[string, string[]]> = [];
+    const deps = {
+      which: () => "/opt/homebrew/bin/tag",
+      exec: (bin: string, args: string[]) => void calls.push([bin, args]),
+    };
+    syncStarTag(deps, true, "/x/f.txt");
+    syncStarTag(deps, false, "/x/f.txt");
+    expect(calls).toEqual([
+      ["/opt/homebrew/bin/tag", ["-a", "Starred", "/x/f.txt"]],
+      ["/opt/homebrew/bin/tag", ["-r", "Starred", "/x/f.txt"]],
+    ]);
+  });
+});
+
+describe("copyXattrs", () => {
+  test("argv round-trips binary values as hex", () => {
+    expect(XATTR_CLI).toBe("/usr/bin/xattr");
+    expect(xattrListArgs("/s")).toEqual(["/s"]);
+    expect(xattrReadArgs("com.apple.quarantine", "/s")).toEqual(["-p", "-x", "com.apple.quarantine", "/s"]);
+    expect(xattrWriteArgs("com.apple.quarantine", "3030", "/d")).toEqual([
+      "-w",
+      "-x",
+      "com.apple.quarantine",
+      "3030",
+      "/d",
+    ]);
+  });
+
+  test("non-darwin: no calls at all", async () => {
+    const calls: string[][] = [];
+    const run: XattrRun = async (_bin, args) => {
+      calls.push(args);
+      return { stdout: "", code: 0 };
+    };
+    await copyXattrs("/s", "/d", { platform: "linux", run });
+    expect(calls).toEqual([]);
+  });
+
+  test("source with no xattrs: list only, zero writes", async () => {
+    const calls: string[][] = [];
+    const run: XattrRun = async (_bin, args) => {
+      calls.push(args);
+      return { stdout: "", code: 0 };
+    };
+    await copyXattrs("/s", "/d", { platform: "darwin", run });
+    expect(calls).toEqual([["/s"]]);
+    expect(calls.some((a) => a[0] === "-w")).toBe(false);
+  });
+
+  test("source with attrs: one hex write per attr", async () => {
+    const calls: string[][] = [];
+    const run: XattrRun = async (_bin, args) => {
+      calls.push(args);
+      if (args.length === 1) return { stdout: "com.apple.quarantine\ncom.apple.ResourceFork\n", code: 0 };
+      if (args[0] === "-p") return { stdout: "0a0b\n", code: 0 };
+      return { stdout: "", code: 0 };
+    };
+    await copyXattrs("/s", "/d", { platform: "darwin", run });
+    const writes = calls.filter((a) => a[0] === "-w");
+    expect(writes).toEqual([
+      ["-w", "-x", "com.apple.quarantine", "0a0b", "/d"],
+      ["-w", "-x", "com.apple.ResourceFork", "0a0b", "/d"],
+    ]);
+  });
+
+  test("write failure is swallowed (never throws)", async () => {
+    const run: XattrRun = async (_bin, args) => {
+      if (args.length === 1) return { stdout: "com.apple.quarantine\n", code: 0 };
+      if (args[0] === "-p") return { stdout: "01", code: 0 };
+      throw new Error("xattr failed");
+    };
+    await expect(copyXattrs("/s", "/d", { platform: "darwin", run })).resolves.toBeUndefined();
+  });
+
+  test("missing source (nonzero list) is a silent no-op", async () => {
+    const calls: string[][] = [];
+    const run: XattrRun = async (_bin, args) => {
+      calls.push(args);
+      return { stdout: "", code: 1 };
+    };
+    await expect(copyXattrs("/gone", "/d", { platform: "darwin", run })).resolves.toBeUndefined();
+    expect(calls).toEqual([["/gone"]]);
   });
 });

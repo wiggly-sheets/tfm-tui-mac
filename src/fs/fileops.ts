@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, lstat, readdir, readlink, rm, rename as fsRename } from "node:fs/promises";
 import { swallow } from "../app/log";
 import {
+  awaitXattrQueue,
   errCode,
   failSuffix,
   type FileId,
@@ -22,6 +23,7 @@ import {
   isWithinOrEqual,
   rmTrashInfoForPath,
   safeRestoreMove,
+  sameFile,
   shouldToast,
   tmpName,
   trashDir,
@@ -796,6 +798,17 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
     if (failed) bits.push(failSuffix(failed, failWhy));
     if (ok || replaced) bits.push(usedSudo ? "ctrl+z to undo (may need permission)" : "ctrl+z to undo");
     const msg = bits.join(" · ");
+    // macOS xattrs for every landed node streamed onto the background lane
+    // (transfer) so per-file progress never waited on an xattr spawn. Drain it
+    // ONCE here — the completion boundary of the whole op — so the promise the
+    // UI awaits for "copy finished" resolves only after the lane settles, and
+    // the success report below implies the metadata is written. The serial op
+    // slot is still held, so the quit busy-guard keeps refusing until then.
+    // awaitXattrQueue resolves on an empty lane and the lane swallows op
+    // failures; the wrap guarantees this never throws into the copy result.
+    try {
+      await awaitXattrQueue();
+    } catch {}
     // always surface the outcome — success, failure, or cancel
     finishOpSummary(op, opNoun, `${verb} ${ok}`, msg, [...srcs], destDir, cancelled, failed);
   };
@@ -831,7 +844,11 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
       renameSudoOk = ctx.ensureSudo ? await ctx.ensureSudo(`rename ${path.basename(p)}`) : false;
       return renameSudoOk;
     };
-    if (existsSync(finalDest)) {
+    // case-only rename on a case-insensitive FS: `Foo` resolves to `foo`, so
+    // existsSync(finalDest) is true but the target IS the source. The
+    // conflict/stash path would prompt a bogus collision, and "replace" would
+    // trash the source — rename straight through instead.
+    if (existsSync(finalDest) && !sameFile(p, finalDest)) {
       // single target: the bulk policy row never shows (promptConflict only
       // offers "…all" when remaining > 0), so there is no policy to reset
       const choice = await conflict.promptConflict(finalDest, 0);
@@ -885,7 +902,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
         // the gate prompts (a concurrent create can land meanwhile) and
         // sudo mv has no no-clobber flag — re-check so a raced occupant is
         // never silently overwritten
-        if (existsSync(finalDest)) {
+        if (existsSync(finalDest) && !sameFile(p, finalDest)) {
           failure = new Error(`already exists: ${path.basename(finalDest)}`);
         } else {
           try {
@@ -980,7 +997,9 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
         // plan-time collision check is inherently racy (TOCTOU: an external
         // create — or an earlier pair's target — can land between plan and
         // apply) — re-check here so fsRename never silently overwrites
-        if (existsSync(to)) {
+        // a target that resolves to the SOURCE is not a collision (case-only
+        // rename on a case-insensitive FS: exists(to) is true because it IS from)
+        if (existsSync(to) && !sameFile(from, to)) {
           failed++;
           failWhy.add(`already exists: ${path.basename(to)}`);
           continue;
@@ -994,7 +1013,7 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
           // sudo mv has no no-clobber flag and the gate prompts (a concurrent
           // create can land meanwhile) — re-check so a raced occupant is
           // never silently overwritten
-          if (bulkSudoOk && existsSync(to)) {
+          if (bulkSudoOk && existsSync(to) && !sameFile(from, to)) {
             failure = new Error(`already exists: ${path.basename(to)}`);
           } else if (bulkSudoOk) {
             try {

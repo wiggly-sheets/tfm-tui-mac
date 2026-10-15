@@ -4,8 +4,99 @@ import os from "node:os";
 import path from "node:path";
 import { pathToUri } from "./uri";
 import { swallow } from "../app/log";
-import { darwinTrashMove, darwinVolumeTrash, isDarwin, parseMountTable } from "./darwin";
-import { execSync } from "node:child_process";
+import {
+  copyXattrs,
+  darwinTrashMove,
+  darwinVolumeTrash,
+  isDarwin,
+  parseMountTable,
+  type XattrDeps,
+  type XattrRun,
+} from "./darwin";
+import { execFile, execSync } from "node:child_process";
+import { promisify } from "node:util";
+
+// execFile captures stdout; a non-zero exit (missing/unwritable attribute) is
+// reported as a code so copyXattrs skips it instead of throwing.
+const execFileP = promisify(execFile);
+
+// `xattr -p -x` returns the value as hex (twice the byte length), so Node's
+// 1 MiB default maxBuffer would silently truncate resource forks over ~512 KiB.
+// The write side (`-w -x <hex>`) is still bounded by ARG_MAX for enormous values.
+export const XATTR_MAX_BUFFER = 64 * 1024 * 1024;
+
+export const runXattr: XattrRun = async (bin, args) => {
+  try {
+    const { stdout } = await execFileP(bin, args, {
+      timeout: 10_000,
+      encoding: "utf8",
+      maxBuffer: XATTR_MAX_BUFFER,
+    });
+    return { stdout: String(stdout), code: 0 };
+  } catch (err) {
+    const e = err as { code?: unknown; stdout?: unknown };
+    return { stdout: typeof e.stdout === "string" ? e.stdout : "", code: typeof e.code === "number" ? e.code : 1 };
+  }
+};
+
+// best-effort macOS xattr carry-over for a file — or, recursively, a whole tree —
+// that already landed at dest (Linux no-op). The copy landing path runs this
+// through the enqueueXattr lane so per-file progress never waits on it; the
+// EXDEV move path (fsMove) awaits it directly. macOS `cp` carries the ROOT dir's
+// xattrs only, so a directory walk copies each descendant's too (lstat: a symlink
+// is never followed into). Never throws.
+export const preserveXattrs = async (src: string, dest: string, deps: XattrDeps = { run: runXattr }): Promise<void> => {
+  await copyXattrs(src, dest, deps);
+  if (!isDarwin(deps.platform ?? process.platform)) return;
+  let isDir: boolean;
+  try {
+    isDir = lstatSync(src).isDirectory();
+  } catch {
+    return;
+  }
+  if (!isDir) return;
+  let kids: string[];
+  try {
+    kids = readdirSync(src);
+  } catch {
+    return;
+  }
+  for (const k of kids) await preserveXattrs(path.join(src, k), path.join(dest, k), deps);
+};
+
+// copy ONLY this node's own xattrs (no walk). The tree-copy lane enqueues each
+// descendant itself, so using the recursive preserveXattrs at every directory
+// level would redo every child's attributes; preserveXattrs stays for the EXDEV
+// move path, which owns the whole tree in one awaited op. Never throws.
+export const preserveXattrsShallow = (src: string, dest: string, deps: XattrDeps = { run: runXattr }): Promise<void> =>
+  copyXattrs(src, dest, deps);
+
+// Serialized single-lane queue for best-effort xattr work: the tree-copy path
+// (transfer) enqueues one op per landed file so copy progress is NOT blocked by
+// an /usr/bin/xattr spawn, and the lane runs them one at a time. fsMove's EXDEV
+// path awaits preserveXattrs directly instead. copyXattrs never rejects, and
+// rejects are swallowed anyway so one failure can't wedge the lane.
+// XATTR_QUEUE_MAX bounds the backlog (one chain link + closure per landed file):
+// past the cap, enqueueXattr drops the work on purpose — a dropped xattr is
+// cosmetic macOS metadata, an unbounded chain is a leak.
+export const XATTR_QUEUE_MAX = 4096;
+
+let xattrLane: Promise<void> = Promise.resolve();
+let xattrQueued = 0;
+
+export const enqueueXattr = (op: () => Promise<void>): void => {
+  if (xattrQueued >= XATTR_QUEUE_MAX) return;
+  xattrQueued++;
+  xattrLane = xattrLane
+    .then(op)
+    .catch(() => {})
+    .finally(() => {
+      xattrQueued--;
+    });
+};
+
+// drain the queue (tests; shutdown) — resolves once every enqueued op settled
+export const awaitXattrQueue = (): Promise<void> => xattrLane;
 
 // --- Deterministic fs+path operations: the primitives runTransfer, trash and
 // undo sit on. No prompts, no UI, no state — callers own decisions; these own
@@ -296,6 +387,8 @@ export const fsMove = async (src: string, dest: string): Promise<void> => {
         } catch {}
       }
       await fsRename(tmp, dest);
+      // Finder metadata lives in xattrs that cp drops — best-effort, never fatal
+      await preserveXattrs(src, dest);
     } catch (copyErr) {
       await rm(tmp, { recursive: true, force: true }).catch(() => {});
       throw copyErr;
@@ -593,6 +686,26 @@ export const fileIdMatches = (id: FileId | null, p: string): boolean => {
   if (id === null) return true;
   const cur = fileIdOf(p);
   return cur !== null && cur.dev === id.dev && cur.ino === id.ino && (id.born === undefined || cur.born === id.born);
+};
+
+// two paths that resolve to the SAME on-disk file AND are a case-insensitive
+// alias of each other. The case-only rename guard: on a case-insensitive FS
+// `Foo` exists because it IS `foo`, and treating it as a collision would trash
+// the source under a bogus conflict. True ONLY for that genuine alias: the two
+// paths must be equal ignoring case (so distinct hardlinks to one inode, whose
+// non-case paths differ, are NOT "same") and both inos must be non-zero (some
+// FUSE/CIFS mounts report 0 for every file). A missing/unstatable path is never
+// "same" (lstat throws → fileIdOf null). idOf is an injectable seam for tests.
+export const sameFile = (a: string, b: string, idOf: (p: string) => FileId | null = fileIdOf): boolean => {
+  // resolve first: relative-vs-absolute or a trailing separator spells the same
+  // path but compares unequal as raw strings (a bogus "already exists")
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  if (ra.toLowerCase() !== rb.toLowerCase()) return false;
+  const ia = idOf(ra);
+  if (ia === null || ia.ino === 0) return false;
+  const ib = idOf(rb);
+  return ib !== null && ib.ino !== 0 && ia.dev === ib.dev && ia.ino === ib.ino;
 };
 
 // trash `p` only if it is still the recorded file: a missing path is already

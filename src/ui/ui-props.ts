@@ -10,7 +10,7 @@ import { canThumbVideo } from "./icons";
 import type { IconSlotHandle, IconSpec, IconState, SlotElement, ThumbJob } from "./ui-slots";
 import { dirWalkStats, fmtBytes, fmtDate, inodeKey, mimeLabelFor } from "../fs/propsinfo";
 import { readStarredList, starredRegistryAdd, starredRegistryRemove } from "../fs/recent";
-import { isDarwin, parseMdlsTags } from "../fs/darwin";
+import { isDarwin, parseMdlsTags, syncStarTag } from "../fs/darwin";
 import { isBookmarked, setBookmarked, loadSystemPlaces } from "../fs/places";
 import type { ListEntry } from "./ui-menu";
 import { FLOAT_Z, type Floats } from "./floats";
@@ -156,25 +156,16 @@ export const makeProps = (ctx: PropsCtx) => {
       if (starred) starredRegistryAdd(targetPath);
       else starredRegistryRemove(targetPath);
       if (isDarwin()) {
-        // write Finder tags: prefer `tag` CLI, fall back to xattr bplist
-        const tagBin = Bun.which("tag");
-        if (tagBin) {
-          void execFileP(tagBin, starred ? ["-a", "Starred", targetPath] : ["-r", "Starred", targetPath], {
-            timeout: 10_000,
-          }).catch(() => {});
-        } else if (starred) {
-          // xattr fallback: write Starred tag as bplist array to com.apple.metadata:_kMDItemUserTags
-          void execFileP(
-            "/usr/bin/xattr",
-            ["-w", "com.apple.metadata:_kMDItemUserTags", "<array><string>Starred</string></array>", targetPath],
-            { timeout: 10_000 },
-          ).catch(() => {});
-        } else {
-          // remove Starred tag via xattr (clear the attribute)
-          void execFileP("/usr/bin/xattr", ["-d", "com.apple.metadata:_kMDItemUserTags", targetPath], {
-            timeout: 10_000,
-          }).catch(() => {});
-        }
+        // Finder tags via the `tag` CLI only. Without it the tfm starred
+        // registry (above) is the source of truth — never the tags xattr.
+        syncStarTag(
+          {
+            which: (bin) => Bun.which(bin),
+            exec: (bin, args) => execFileP(bin, args, { timeout: 10_000 }).catch(() => {}),
+          },
+          starred,
+          targetPath,
+        );
         return;
       }
       void execFileP("gio", ["set", "-t", "string", targetPath, "metadata::starred", starred ? "true" : ""], {
