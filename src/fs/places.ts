@@ -307,7 +307,24 @@ export type SidebarVisibility = {
   showNetwork?: boolean;
 };
 
-export function buildSections(vis: SidebarVisibility = {}): SidebarSection[] {
+// The system sources the groups derive from. Injectable so a caller owns the
+// snapshot it renders instead of reading whatever loadSystemPlaces() last left
+// in this module (process-wide state).
+export type SystemPlaces = {
+  userDirs: UserDir[];
+  bookmarks: BookmarkEntry[];
+  mounts: MountEntry[];
+  network: NetworkMount[];
+};
+
+const loadedSystemPlaces = (): SystemPlaces => ({
+  userDirs: sysUserDirs,
+  bookmarks: sysBookmarks,
+  mounts: sysMounts,
+  network: sysNetwork,
+});
+
+export function buildSections(vis: SidebarVisibility = {}, sys: SystemPlaces = loadedSystemPlaces()): SidebarSection[] {
   const { showRecent = true, showStarred = true, showTrash = true } = vis;
   const { showUserDirs = true, showBookmarks = true, showDevices = true, showNetwork = true } = vis;
   const trashFilesDirPath = trashFilesDir();
@@ -326,11 +343,11 @@ export function buildSections(vis: SidebarVisibility = {}): SidebarSection[] {
     defaults.push({ icon: "trash-can", label: "Trash", path: trashFilesDirPath, ejectable: false });
 
   const dirs: Place[] = showUserDirs
-    ? sysUserDirs.map((d) => ({ icon: "folder", label: d.label, path: d.p, ejectable: false }))
+    ? sys.userDirs.map((d) => ({ icon: "folder", label: d.label, path: d.p, ejectable: false }))
     : [];
 
   const bookmarks: Place[] = showBookmarks
-    ? sysBookmarks
+    ? sys.bookmarks
         .filter((b) => !b.remote)
         .map((b) => ({
           icon: "bookmark",
@@ -343,7 +360,7 @@ export function buildSections(vis: SidebarVisibility = {}): SidebarSection[] {
 
   const devices: Place[] = [
     { icon: "harddisk", label: "This Device", path: "/", ejectable: false },
-    ...sysMounts.map(
+    ...sys.mounts.map(
       (m): Place => ({
         icon: m.removable ? "usb" : "harddisk",
         label: m.label,
@@ -359,10 +376,10 @@ export function buildSections(vis: SidebarVisibility = {}): SidebarSection[] {
   // and saved remote bookmarks that aren't mounted yet (click connects). A
   // bookmark whose share is already mounted is shown once, as the mount.
   const normUri = (u: string): string => u.replace(/\/+$/, "").toLowerCase();
-  const mounted = new Map(sysNetwork.map((m) => [normUri(m.uri), m]));
+  const mounted = new Map(sys.network.map((m) => [normUri(m.uri), m]));
   const network: Place[] = [
     { icon: "network", label: "Connect to Server…", path: null, ejectable: false, action: "connect" },
-    ...sysNetwork.map(
+    ...sys.network.map(
       (m): Place => ({
         icon: "network",
         label: m.label,
@@ -372,7 +389,7 @@ export function buildSections(vis: SidebarVisibility = {}): SidebarSection[] {
         networkUri: m.uri,
       }),
     ),
-    ...sysBookmarks
+    ...sys.bookmarks
       .filter((b) => b.remote && b.uri && !mounted.has(normUri(b.uri)))
       .map(
         (b): Place => ({

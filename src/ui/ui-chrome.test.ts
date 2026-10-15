@@ -16,8 +16,10 @@ import type { Tab } from "../app/tabs";
 // paint (cwd row), navigate/context-menu click routing, the DROP contract
 // (trash-target routes to trashPaths, self-drops filtered), tab chip
 // activation/close/drop, the strip visibility rule and hover normalization.
-// buildSections() runs without loadSystemPlaces() — defaults are deterministic
-// (Home/Recent/Starred/Trash with a sandboxed $XDG_DATA_HOME).
+// buildSections() runs on the injected empty system snapshot below — the groups
+// are deterministic (Home/Recent/Starred/Trash + This Device + Connect) no
+// matter what loadSystemPlaces() another test file already loaded into the
+// shared ./fs/places module in this process.
 
 const colors = defaultConfig.theme as Theme & Record<string, any>;
 const HOME = os.homedir();
@@ -115,6 +117,9 @@ beforeAll(async () => {
     tabBar: () => tabBar,
     // [ui] sidebar-section-titles (absent in the old fakes = dividers only)
     sectionTitles: () => sectionTitles,
+    // empty system snapshot: the sidebar groups must not depend on the ambient
+    // module state another test file's loadSystemPlaces() left behind
+    systemPlaces: () => ({ userDirs: [], bookmarks: [], mounts: [], network: [] }),
     availW: () => availWVal,
     rasterSig: () => rasterSig,
     renderAll: () => {},

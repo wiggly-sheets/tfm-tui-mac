@@ -3,7 +3,7 @@ import { spawnSafe } from "../fs/spawn-safe";
 import path from "node:path";
 import { destroyChildren } from "../lib/uiutil";
 import { applySurface, btnSurface, rowSurface, slotBg, tileSurface, type UiStyle } from "./style";
-import { buildSections, loadSystemPlaces, type Place, type SidebarVisibility } from "../fs/places";
+import { buildSections, loadSystemPlaces, type Place, type SidebarVisibility, type SystemPlaces } from "../fs/places";
 import { diskutilBin, diskutilEjectArgv, diskutilMountArgv, isDarwin } from "../fs/darwin";
 import { trashFilesDir } from "../fs/fsutil";
 import { RECENT_URI, STARRED_URI } from "../fs/uri";
@@ -49,6 +49,10 @@ type ChromeCtx = {
   // sidebar section visibility ([ui] sidebar-show-*): renderSidebar filters
   // through it. Optional so old fakes keep working — absent = all visible.
   sidebarSections?(): SidebarVisibility;
+  // the system places the groups derive from (user dirs / bookmarks / mounts /
+  // network). Optional so old fakes keep working — absent = whatever
+  // loadSystemPlaces() last loaded into ./fs/places.
+  systemPlaces?(): SystemPlaces;
   // [ui] sidebar-section-titles: name each group in place of its divider.
   // Optional so old fakes keep working — absent = dividers only.
   sectionTitles?(): boolean;
@@ -287,7 +291,7 @@ export const makeChrome = (ctx: ChromeCtx) => {
   const renderSidebar = () => {
     const hostBox = ctx.byId("tfm-places");
     if (!hostBox) return;
-    const groups = buildSections(ctx.sidebarSections?.() ?? {});
+    const groups = buildSections(ctx.sidebarSections?.() ?? {}, ctx.systemPlaces?.());
     const titles = ctx.sectionTitles?.() === true;
     const sig = JSON.stringify([
       ctx.uiStyle(),
