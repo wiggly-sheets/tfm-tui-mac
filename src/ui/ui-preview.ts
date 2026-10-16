@@ -15,8 +15,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { destroyChildren, debounced, type Scheduler } from "../lib/uiutil";
 import { slotBg, type UiStyle } from "./style";
-import { fileIconFor, fileIsImage, fileIsVideo } from "../fs/filetype";
+import { extOf, fileIconFor, fileIsAudio, fileIsGif, fileIsImage, fileIsVideo, gifFrameCount } from "../fs/filetype";
 import { isPrivilegeError } from "../fs/elevate";
+import { detectArchiveFormat } from "../fs/archive";
+import { readArchiveEntries, type ArchiveEntryInfo } from "../fs/archive-read";
+import { fmtBytes } from "../fs/propsinfo";
 import { canThumbVideo } from "./icons";
 import type { ThumbJob } from "./ui-slots";
 import { buildSyntaxStyle, isTextLike, PREVIEW_FT_BY_EXT, syntaxStyleSig } from "./syntax";
@@ -24,13 +27,20 @@ import type { Theme } from "../config/config";
 import type { WrapMode } from "../config/config-schema";
 import { scrollbarTrackColors } from "./ui-boot-layout";
 import type { MaybeNode } from "../lib/node-like";
+import { refreshQuicklook, setQuicklookRenderer, type QuicklookGeometry } from "./ui-quicklook";
 
 // --- Preview pane (right sidebar): image thumbs go through the shared
 // thumb-job sink, text files render via CodeRenderable + tree-sitter
 // (machinery in ./syntax.ts), directories get a header + entry count (full
-// stats live in Properties…). ctx-seamed like ui-props/ui-term; the
-// gen-counter guards stale async file reads so a slow preview can't paint
-// over a newer one. tfm-preview-* ids stay byte-identical. ---
+// stats live in Properties…), audio files an info card, archives a read-only
+// entry listing. ctx-seamed like ui-props/ui-term; the gen-counter guards
+// stale async file reads so a slow preview can't paint over a newer one.
+// tfm-preview-* ids stay byte-identical.
+//
+// The same content renders into the quicklook float (./ui-quicklook) through
+// ONE implementation: renderInto() below takes its target node and geometry,
+// the PaneSurface/float surface each keep their own gen counter and cached code
+// node (a node can only be mounted once). The pane path is unchanged. ---
 
 type PreviewCtx = {
   renderer: CliRenderer;
@@ -43,6 +53,8 @@ type PreviewCtx = {
   // of the time, yet every selection move would still rebuild the pane (and
   // allocate its native Text/Code buffers) — pure wasted churn that OOMs this
   // app. Skip the rebuild entirely while hidden/collapsed. Absent = visible.
+  // The quicklook float ignores these gates on purpose: it exists to preview
+  // while the pane is hidden.
   visible?(): boolean;
   // coalesce rapid selection-driven rebuilds (arrow keys, rubber band) instead
   // of clearing + re-allocating the pane per step; injectable for tests
@@ -76,10 +88,45 @@ type PreviewCtx = {
   sudoCat?: (path: string) => Promise<string | null>;
 };
 
+// which container the shared render paints into: one gen counter and one
+// cached code node each, so a float refresh can never cancel a pane read.
+type PreviewSurface = "pane" | "float";
+type SurfaceState = {
+  gen: number;
+  code: {
+    key: string;
+    mtimeMs: number;
+    size: number;
+    // the wrap mode the node was built with — a toggle must not be served
+    // the stale wrap from the cache (key/mtime/size don't change on toggle)
+    wrap: string;
+    // whichever renderable the last preview mounted — every body (code and
+    // markdown) rides in a scrollbox, so the cached node is the scroller and
+    // scroll position survives re-previews of one file.
+    node: ScrollBoxRenderable;
+  } | null;
+};
+
+// a GIF whose frame table we will read for the "(animated GIF, N frames)"
+// label; past this the label is skipped rather than buffering the file
+const GIF_COUNT_MAX = 32 * 1024 * 1024;
+
+// one archive listing row: the name clipped so the size column stays
+// right-aligned (the tail is kept — the file name lives there)
+const archiveRow = (e: ArchiveEntryInfo, w: number): string => {
+  const size = fmtBytes(e.size);
+  const nameW = Math.max(1, w - 4 - size.length);
+  const name = e.name.length > nameW ? `…${e.name.slice(-(nameW - 1))}` : e.name;
+  return ` ${name}${" ".repeat(Math.max(1, w - 2 - name.length - size.length))}${size}`;
+};
+
 export const makePreview = (ctx: PreviewCtx) => {
   const TEXT_PREVIEW_MAX = 262144;
 
-  let previewGen = 0;
+  const surfaces: Record<PreviewSurface, SurfaceState> = {
+    pane: { gen: 0, code: null },
+    float: { gen: 0, code: null },
+  };
 
   // --- syntax highlighting for the preview pane: tree-sitter machinery (extra
   // parser registration, filetype map, style builder) lives in ./syntax.ts ---
@@ -94,7 +141,8 @@ export const makePreview = (ctx: PreviewCtx) => {
       // getStyle() on the destroyed style (OpenTUI's catch degrades it to a
       // warn + plain repaint) and hold its native buffers until finalizers.
       // destroy() makes its continuations bail on isDestroyed.
-      destroyCachedNode();
+      destroyCachedNode("pane");
+      destroyCachedNode("float");
       try {
         previewSyntaxStyle?.destroy();
       } catch {}
@@ -104,19 +152,6 @@ export const makePreview = (ctx: PreviewCtx) => {
     return previewSyntaxStyle;
   };
   let previewCodeSeq = 0;
-  // reuse the (already-parsed/highlighted) node when the same file is previewed again
-  let previewCodeCache: {
-    key: string;
-    mtimeMs: number;
-    size: number;
-    // the wrap mode the node was built with — a toggle must not be served
-    // the stale wrap from the cache (key/mtime/size don't change on toggle)
-    wrap: string;
-    // whichever renderable the last preview mounted — every body (code and
-    // markdown) rides in a scrollbox, so the cached node is the scroller and
-    // scroll position survives re-previews of one file.
-    node: ScrollBoxRenderable;
-  } | null = null;
   // NOTE: the global mode reaches markdown FENCES only. Fence blocks
   // carry their info-string filetype (e.g. javascript) while prose blocks
   // stay filetype markdown, so the two are separable without token
@@ -145,55 +180,60 @@ export const makePreview = (ctx: PreviewCtx) => {
   // rebuilds the node anyway (style sig evicts the cache), so no retheme
   // hook is needed. Scrollers are built inline per branch: widths/colors
   // are render locals, not factory state.
-  const destroyCachedNode = () => {
+  const destroyCachedNode = (surface: PreviewSurface) => {
     // destroy() only DETACHES children — a gutter/markdown wrapper would
     // leak its inner nodes' native buffers (and an in-flight highlight
     // would keep touching the destroyed style). destroyRecursively is
     // identical for bare Text/Code nodes (they have no children), so one
     // helper covers all.
     try {
-      previewCodeCache?.node.destroyRecursively();
+      surfaces[surface].code?.node.destroyRecursively();
     } catch {}
-    previewCodeCache = null;
+    surfaces[surface].code = null;
   };
 
-  const renderPreviewNow = async () => {
-    if (!ctx.previewEnabled()) return;
-    if (ctx.visible && !ctx.visible()) return;
-    const colors = ctx.colors();
-    const gen = ++previewGen;
-    const pane = ctx.byId("tfm-preview");
-    if (!pane) return;
-    // destroy the previous pane's nodes (each owns a native TextBuffer) — but
-    // keep the cached code node, which the cache-hit path below re-adds;
-    // destroying that here would be a use-after-destroy
-    destroyChildren(pane, previewCodeCache?.node);
-
-    // target = focused tile, else single selected, else folder summary
-    let key: string | null = null;
+  // focused tile, else single selected, else the multi-selection summary —
+  // both surfaces target the same file
+  const resolveTarget = (): { kind: "key"; key: string } | { kind: "multi"; n: number } | { kind: "none" } => {
     const fk = ctx.focusKey();
-    if (fk) key = fk;
-    else {
-      let selCount = 0;
-      let selKey: string | null = null;
-      ctx.tileRefs.forEach((r, k) => {
-        if (r.selected) {
-          selCount++;
-          selKey = k;
-        }
-      });
-      if (selCount === 1 && selKey) key = selKey;
-      else if (selCount > 1) {
-        pane.add(Text({ content: `${selCount} items selected`, fg: colors.white }));
-        return;
+    if (fk) return { kind: "key", key: fk };
+    let selCount = 0;
+    let selKey: string | null = null;
+    ctx.tileRefs.forEach((r, k) => {
+      if (r.selected) {
+        selCount++;
+        selKey = k;
       }
-    }
+    });
+    if (selCount === 1 && selKey) return { kind: "key", key: selKey };
+    if (selCount > 1) return { kind: "multi", n: selCount };
+    return { kind: "none" };
+  };
 
-    if (!key || !existsSync(key)) {
-      pane.add(Box({ height: 1 }));
-      pane.add(Text({ content: "no selection", fg: colors.sidebarFgMuted }));
+  // The shared render: `target` is the pane box or the quicklook body, `geo`
+  // its geometry in the pane's units (divider width = w - 2, text bodies
+  // w - 2, body height h - 6, media fit h - 8).
+  const renderInto = async (target: MaybeNode, surface: PreviewSurface, geo: QuicklookGeometry): Promise<void> => {
+    if (!target) return;
+    const s = surfaces[surface];
+    const gen = ++s.gen;
+    const colors = ctx.colors();
+    // destroy the previous content's nodes (each owns a native TextBuffer) —
+    // but keep the cached code node, which the cache-hit path below re-adds;
+    // destroying that here would be a use-after-destroy
+    destroyChildren(target, s.code?.node);
+
+    const src = resolveTarget();
+    if (src.kind === "multi") {
+      target.add(Text({ content: `${src.n} items selected`, fg: colors.white }));
       return;
     }
+    if (src.kind === "none" || !existsSync(src.key)) {
+      target.add(Box({ height: 1 }));
+      target.add(Text({ content: "no selection", fg: colors.sidebarFgMuted }));
+      return;
+    }
+    const key = src.key;
 
     let st: Stats | null = null;
     try {
@@ -202,25 +242,25 @@ export const makePreview = (ctx: PreviewCtx) => {
       // on-disk invariant covers displayed sizes, not content decisions
       st = statSync(key);
     } catch {
-      pane.add(Text({ content: "source gone", fg: colors.sidebarFgMuted }));
+      target.add(Text({ content: "source gone", fg: colors.sidebarFgMuted }));
       return;
     }
-    if (gen !== previewGen) return;
+    if (gen !== s.gen) return;
     const isDirTarget = st.isDirectory();
 
-    pane.add(Text({ content: ` ${path.basename(key)}${isDirTarget ? "/" : ""}`, fg: colors.white }));
-    pane.add(Text({ content: "~".repeat(Math.max(0, ctx.previewWidth() - 2)), fg: colors.divider }));
+    target.add(Text({ content: ` ${path.basename(key)}${isDirTarget ? "/" : ""}`, fg: colors.white }));
+    target.add(Text({ content: "~".repeat(Math.max(0, geo.w - 2)), fg: colors.divider }));
 
     // directories show a count + pointer instead of a blank pane under a
     // header (full stats live in right-click → Properties…)
     if (isDirTarget) {
       try {
         const n = readdirSync(key).length;
-        pane.add(
+        target.add(
           Text({ content: ` ${n} item${n === 1 ? "" : "s"} — Properties… for details`, fg: colors.sidebarFgMuted }),
         );
       } catch {
-        pane.add(Text({ content: "can't list this folder", fg: colors.sidebarFgMuted }));
+        target.add(Text({ content: "can't list this folder", fg: colors.sidebarFgMuted }));
       }
       void ctx.drainIconQueue();
       return;
@@ -231,16 +271,48 @@ export const makePreview = (ctx: PreviewCtx) => {
     if (ctx.pluginPreview) {
       try {
         const text = await ctx.pluginPreview(key);
-        if (gen !== previewGen) return;
+        if (gen !== s.gen) return;
         if (typeof text === "string" && text.length) {
-          const maxLines = Math.max(4, ctx.termH() - 8);
+          const maxLines = Math.max(4, geo.h - 8);
           for (const line of text.split("\n").slice(0, maxLines)) {
-            pane.add(Text({ content: ` ${line}`.slice(0, Math.max(0, ctx.previewWidth() - 1)), fg: colors.white }));
+            target.add(Text({ content: ` ${line}`.slice(0, Math.max(0, geo.w - 1)), fg: colors.white }));
           }
           return;
         }
       } catch {}
-      if (gen !== previewGen) return;
+      if (gen !== s.gen) return;
+    }
+
+    // archives: a READ-ONLY listing (name + size rows) — nothing is extracted
+    // and nothing is entered (browsing inside an archive is its own feature).
+    // A format we cannot read in-process (7z/rar/…) falls through to the
+    // generic file card below.
+    const archiveFmt = detectArchiveFormat(key);
+    if (archiveFmt) {
+      const entries = await readArchiveEntries(key, archiveFmt);
+      if (gen !== s.gen) return;
+      if (entries) {
+        const maxRows = Math.max(1, geo.h - 4);
+        const shown = entries.length > maxRows ? maxRows - 1 : entries.length;
+        for (const e of entries.slice(0, shown)) {
+          target.add(Text({ content: archiveRow(e, geo.w), fg: colors.white }));
+        }
+        if (shown < entries.length) {
+          target.add(Text({ content: ` … ${entries.length - shown} more`, fg: colors.sidebarFgMuted }));
+        }
+        return;
+      }
+    }
+
+    // audio: a static info card (type + size). Duration/bitrate would need an
+    // ffprobe run per selection move — the bundled binary in ./fs/videobin is
+    // ffmpeg for video frames only, and a spawn per focus move is exactly the
+    // blocking this pane must never do, so the card stays static.
+    if (fileIsAudio(key)) {
+      const ext = extOf(key).toUpperCase();
+      target.add(Text({ content: ` ${ext || "Audio"} audio`, fg: colors.white }));
+      target.add(Text({ content: ` ${fmtBytes(st.size ?? 0)}`, fg: colors.sidebarFgMuted }));
+      return;
     }
 
     // pictures and videos (ffmpeg present): render the actual content instead
@@ -253,11 +325,11 @@ export const makePreview = (ctx: PreviewCtx) => {
       st.size > 0 &&
       st.size <= 26214400
     ) {
-      const w = Math.max(4, ctx.previewWidth() - 4);
-      const maxH = Math.max(4, ctx.termH() - 8);
+      const w = Math.max(4, geo.w - 4);
+      const maxH = Math.max(4, geo.h - 8);
       const h = Math.min(maxH, Math.max(3, Math.round(w / ctx.cellMetrics().aspect)));
       const slotId = ctx.nextIconId();
-      pane.add(
+      target.add(
         Box(
           { width: "100%", flexDirection: "row", justifyContent: "center" },
           Box({ id: slotId, width: w, height: h }),
@@ -270,13 +342,31 @@ export const makePreview = (ctx: PreviewCtx) => {
         size: st.size,
         wCells: w,
         hCells: h,
-        bg: slotBg(ctx.uiStyle(), colors, colors.sidebarBg),
+        // a float island is always filled, so its raster flattens onto the
+        // panel fill instead of the canvas (style.slotBg's role)
+        bg:
+          surface === "pane"
+            ? slotBg(ctx.uiStyle(), colors, colors.sidebarBg)
+            : slotBg(ctx.uiStyle(), colors, colors.sidebarBg, "float"),
         vector: key.toLowerCase().endsWith(".svg"),
         video: isVideo,
         fallbackGlyph: ctx.fallbackGlyphFor(fileIconFor(key)),
         priority: true, // must not wait behind the grid's thumbnail backlog
       });
       void ctx.drainThumbs();
+      // shortcut: a GIF shows its FIRST frame only (a slot mounts one raster,
+      // there is no frame sequencing in this pipeline), upgrade to real
+      // animation when a slot can carry kitty frame control data.
+      if (fileIsGif(key) && st.size <= GIF_COUNT_MAX) {
+        let frames = 0;
+        try {
+          frames = gifFrameCount(new Uint8Array(await readFile(key)));
+        } catch {}
+        if (gen !== s.gen) return;
+        if (frames > 1) {
+          target.add(Text({ content: ` (animated GIF, ${frames} frames)`, fg: colors.sidebarFgMuted }));
+        }
+      }
       return;
     }
 
@@ -290,13 +380,13 @@ export const makePreview = (ctx: PreviewCtx) => {
       // focus moves constantly, a password popup per move is unusable)
       if (!isPrivilegeError(err) || !ctx.sudoCat) return;
       const elevated = await ctx.sudoCat(key).catch(() => null);
-      if (gen !== previewGen) return;
+      if (gen !== s.gen) return;
       if (!elevated) return;
       text = elevated.slice(0, 65536);
     }
     try {
-      if (gen !== previewGen) return;
-      // Called BEFORE the cache check on purpose: it nulls previewCodeCache
+      if (gen !== s.gen) return;
+      // Called BEFORE the cache check on purpose: it nulls the cached nodes
       // when the theme sig changed, so a stale styled node can't survive a
       // re-preview of the same unchanged file (the cache-hit return below
       // would otherwise keep painting the OLD theme until some OTHER file
@@ -313,23 +403,18 @@ export const makePreview = (ctx: PreviewCtx) => {
       // and follow the mode too (they used to force word wrap as "prose",
       // which char-sliced long key=value config lines).
       const wrap: WrapMode = ctx.wrapMode?.() ?? "none";
-      if (
-        previewCodeCache &&
-        previewCodeCache.key === key &&
-        previewCodeCache.mtimeMs === mtimeMs &&
-        previewCodeCache.size === size &&
-        previewCodeCache.wrap === wrap
-      ) {
-        pane.add(previewCodeCache.node);
+      const cache = s.code;
+      if (cache && cache.key === key && cache.mtimeMs === mtimeMs && cache.size === size && cache.wrap === wrap) {
+        target.add(cache.node);
         return;
       }
       // cache miss on a DIFFERENT file: the old cached node was detached above
       // (kept, not destroyed) and is about to be replaced — destroy it now so
       // its native buffer frees here, not at the next GC poke
-      destroyCachedNode();
+      destroyCachedNode(surface);
       const ext = path.extname(key).slice(1).toLowerCase();
-      const bodyW = Math.max(8, ctx.previewWidth() - 2);
-      const bodyH = Math.max(1, ctx.termH() - 6);
+      const bodyW = Math.max(8, geo.w - 2);
+      const bodyH = Math.max(1, geo.h - 6);
       // markdown gets the rich render (headings/lists/links, OSC-8
       // hyperlink chunks included) instead of a monochrome code dump.
       // The whole node — prose and fences — renders in the global mode;
@@ -352,8 +437,8 @@ export const makePreview = (ctx: PreviewCtx) => {
           scrollbarOptions: { trackOptions: scrollbarTrackColors(colors) },
         });
         scroller.add(mdNode);
-        previewCodeCache = { key, mtimeMs, size, wrap, node: scroller };
-        pane.add(scroller);
+        s.code = { key, mtimeMs, size, wrap, node: scroller };
+        target.add(scroller);
         void ctx.drainIconQueue();
         return;
       }
@@ -397,10 +482,18 @@ export const makePreview = (ctx: PreviewCtx) => {
       // constraints): in a scrollbox it scrolls in sync with the body
       // instead of running past short content — its designed use.
       scroller.add(gutter);
-      previewCodeCache = { key, mtimeMs, size, wrap, node: scroller };
-      pane.add(scroller);
+      s.code = { key, mtimeMs, size, wrap, node: scroller };
+      target.add(scroller);
       void ctx.drainIconQueue();
     } catch {}
+  };
+
+  const renderPreviewNow = async (): Promise<void> => {
+    if (!ctx.previewEnabled()) return;
+    if (ctx.visible && !ctx.visible()) return;
+    const pane = ctx.byId("tfm-preview");
+    if (!pane) return;
+    await renderInto(pane, "pane", { w: ctx.previewWidth(), h: ctx.termH() });
   };
 
   // public entry: coalesce bursts. A holding arrow key / band drag fires
@@ -415,7 +508,16 @@ export const makePreview = (ctx: PreviewCtx) => {
   );
   const renderPreview = (): void => {
     schedulePreview();
+    // the quicklook float follows the selection like the pane (no-op while
+    // closed); it debounces itself
+    refreshQuicklook();
   };
+
+  // the quicklook float renders this same content into its own container —
+  // registered once per preview instance (the app has exactly one)
+  setQuicklookRenderer((target, geo) => {
+    void renderInto(target, "float", geo);
+  });
 
   return { renderPreview };
 };

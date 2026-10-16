@@ -192,6 +192,7 @@ reload-places         = ["ctrl+r"]                  # default: ctrl+r
 toggle-sidebar        = ["ctrl+b"]                  # default: ctrl+b
 toggle-preview        = ["f3"]                      # default: f3
 toggle-info-sidebar   = ["f7"]                      # default: f7
+toggle-quicklook      = ["f8"]                      # default: f8
 toggle-view           = ["ctrl+g"]                  # default: ctrl+g
 next-theme            = ["alt+t"]                   # default: alt+t
 cycle-sort            = ["alt+s"]                   # default: alt+s

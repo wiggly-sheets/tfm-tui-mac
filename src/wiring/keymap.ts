@@ -12,6 +12,7 @@ import { makeKeyRouter } from "../input/keymap";
 import { makePick } from "../ui/ui-pick";
 import { makePrompt } from "../ui/ui-prompt";
 import { makeGoToFolder } from "../ui/ui-goto";
+import { makeQuicklook } from "../ui/ui-quicklook";
 import { themePresetIdx, zoomUiPatch } from "../ui/settings";
 import { THEME_PRESETS } from "../config/themes";
 import { cycleSortMode } from "../lib/sort";
@@ -110,6 +111,25 @@ export const wireKeymap = (deps: {
     home: core.home,
     navigate: nav.navigate,
     notify: chrome.notify,
+    setPointer,
+  });
+
+  // --- Quick Look float (space-bar Quick Look): a NON-MODAL overlay that
+  // previews the selection when the preview pane is hidden. The content is
+  // painted by the preview module through ./ui-quicklook's registry, so this
+  // wiring only builds the widget + routes its keys. ---
+  const quicklook = makeQuicklook({
+    byId,
+    rootAdd: (node) => chrome.renderer.root.add(node),
+    stripSelectable: core.lookup.stripSelectable,
+    colors: core.themeGet,
+    uiStyle: () => core.config.ui.uiStyle,
+    floats,
+    termW: () => chrome.renderer.terminalWidth,
+    termH: () => chrome.renderer.terminalHeight,
+    previewWidth: () => core.config.ui.previewWidth,
+    escHintBtn: core.slots.escHintBtn,
+    drainIconQueue: core.slots.drainIconQueue,
     setPointer,
   });
 
@@ -236,6 +256,13 @@ export const wireKeymap = (deps: {
       getRetheme().applyConfig({ ...core.config, ui: { ...ui, infoSidebar: !ui.infoSidebar } });
       getRetheme().scheduleSaveConfig();
     },
+    toggleQuicklook: () => quicklook.toggle(),
+    quicklook: {
+      isOpen: () => quicklook.isOpen(),
+      close: () => quicklook.close(),
+      scroll: (lines) => quicklook.scroll(lines),
+      page: (dir) => quicklook.page(dir),
+    },
     // the drawer owns panel visibility/width, so the flip publishes through
     // applyConfig -> onConfigApplied -> hover.refresh() like every other knob
     toggleSidebar: () => {
@@ -355,5 +382,5 @@ export const wireKeymap = (deps: {
 
   chrome.renderer.keyInput.on("keypress", (e: KeyEvent) => keyRouter.handleKey(e));
 
-  return { keyRouter, pick, prompt, goToFolder };
+  return { keyRouter, pick, prompt, goToFolder, quicklook };
 };

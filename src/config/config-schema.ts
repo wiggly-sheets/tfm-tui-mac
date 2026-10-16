@@ -393,7 +393,8 @@ export type KeyAction =
   | "cycleSort"
   | "reverseSort"
   | "goHome"
-  | "goToFolder";
+  | "goToFolder"
+  | "toggleQuicklook";
 
 type KeysConfig = Record<KeyAction, string[]>;
 
@@ -1965,6 +1966,7 @@ const KEY_ROWS: KeyRow[] = (
     ["toggleSidebar", "toggle sidebar", ["ctrl+b"], "view", "Show or hide the places sidebar"],
     ["togglePreview", "toggle preview pane", ["f3"], "view", "Show or hide the file preview"],
     ["toggleInfoSidebar", "toggle info sidebar", ["f7"], "view", "Show or hide the file info sidebar"],
+    ["toggleQuicklook", "toggle quicklook", ["f8"], "view", "Preview the selection in a float"],
     ["toggleView", "toggle view", ["ctrl+g"], "view", "Cycle grid, list and columns"],
     ["nextTheme", "next theme", ["alt+t"], "view", "Step through the color themes"],
     ["cycleSort", "cycle sort", ["alt+s"], "view", "Name, size, date, then type"],
