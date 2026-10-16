@@ -1098,7 +1098,7 @@ describe("extractArchive", () => {
     expect(readFileSync(path.join(destDir, "foo"), "utf8")).toBe("extracted");
     // staging is gone, only the extracted entry remains
     expect(readdirSync(destDir)).toEqual(["foo"]);
-    expect(runs[0]!.args).toContain("-x");
+    expect(runs.find((r) => r.args.includes("-x"))!.args).toContain("-x");
     expect(h.calls.some((c) => c.startsWith("undo:extract 1 archive:1:0"))).toBe(true);
     expect(h.calls).toContain("notify:extract:success:Extracted 1 archive · ctrl+z to undo");
   });
@@ -1107,6 +1107,7 @@ describe("extractArchive", () => {
     // `../` members land in destDir unseen by the stage readdir — the sweep
     // trashes them recoverably (never rm) and nothing from the archive lands
     const runArchive: ArchiveRun = async (spec) => {
+      if (!spec.args.includes("-C")) return { code: 0, stdout: "", stderr: "" };
       const stage = spec.args[spec.args.indexOf("-C") + 1]!;
       writeFileSync(path.join(stage, "good.txt"), "good");
       writeFileSync(path.join(path.dirname(stage), "escape.txt"), "evil");
@@ -1127,6 +1128,7 @@ describe("extractArchive", () => {
   test("symlinks escaping the stage are removed, legit entries still land", async () => {
     const { symlinkSync } = await import("node:fs");
     const runArchive: ArchiveRun = async (spec) => {
+      if (!spec.args.includes("-C")) return { code: 0, stdout: "", stderr: "" };
       const stage = spec.args[spec.args.indexOf("-C") + 1]!;
       writeFileSync(path.join(stage, "good.txt"), "good");
       symlinkSync(path.join(path.dirname(stage), "outside.txt"), path.join(stage, "link"));
@@ -1197,7 +1199,7 @@ describe("extractArchive", () => {
     await h.ops.extractArchive([archive], destDir);
 
     expect(readdirSync(destDir)).toEqual([]);
-    expect(runs.length).toBe(1);
+    expect(runs.filter((r) => r.args.includes("-x")).length).toBe(1);
     // nothing landed, so no undo batch (production drops empty batches)
     expect(h.calls.some((c) => c.startsWith("undo:"))).toBe(false);
     expect(h.calls).toContain("notify:extract cancelled:info:Extract cancelled (0 done)");
@@ -1266,6 +1268,7 @@ describe("extractArchive", () => {
     const h = makeHarness({
       listArchive: async () => 1,
       runArchive: async (spec) => {
+        if (!spec.args.includes("-C")) return { code: 0, stdout: "", stderr: "" };
         const stage = spec.args[spec.args.indexOf("-C") + 1]!;
         writeFileSync(path.join(stage, "foo"), "extracted");
         return { code: 1, stdout: "", stderr: "warning: skipped one member" };

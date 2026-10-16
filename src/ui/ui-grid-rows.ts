@@ -195,6 +195,16 @@ export const makeGridBuilders = (ctx: GridRendererCtx) => {
     scroller?.content.add(pane);
   };
 
+  // Archive folder view: ONE header row above the listing naming the container
+  // and the inner path (the pane's cwd is an archive location — see
+  // app/archive-nav). It is a SIBLING of `inner` inside the scroller, so the
+  // windowed child contract ([pad-top, rows, pad-bottom]) is untouched.
+  const buildArchiveHeader = (label: string): SlotElement =>
+    Box(
+      { id: `${tilePrefix()}archive-header`, width: "100%", height: 1 },
+      Text({ content: ` ${label}`, fg: ctx.colors().sidebarFgMuted }),
+    );
+
   const buildTile = (aspect: number, entry: Entry, idx: number, inViewport: boolean): SlotElement => {
     // --- grid tile: icon/thumbnail slot + name label, regs in tileRefs ---
     const TILE_W = ctx.tileW();
@@ -505,6 +515,7 @@ export const makeGridBuilders = (ctx: GridRendererCtx) => {
     registerRef,
     buildEmptyPane,
     buildLoadingPane,
+    buildArchiveHeader,
     buildTile,
     buildListRow,
     buildRow,

@@ -6,6 +6,7 @@
 import type { Theme } from "../config/config";
 import type { ScrollerLike } from "../lib/node-like";
 import type { HoverLiftOpts, ViewMode, WrapMode } from "../config/config-schema";
+import type { ArchiveEntryInfo } from "../fs/archive";
 import type { Entry } from "../fs/listing";
 import type { TileMouseHandlers } from "../input/grid-input";
 import type { Selection } from "../input/selection";
@@ -23,6 +24,17 @@ export type GridState = {
   // one-shot: a launch FILE path to highlight after the first build (set by
   // the CLI, consumed + cleared here)
   pendingSelect?: string | null;
+};
+
+// the archive folder view's seam (wiring/grid owns the fs side): the pane cwd
+// is an archive location (fs/uri's ARCHIVE_URI, model in app/archive-nav).
+// `enterable` marks an archive the pane may OPEN as a folder — the renderer
+// flips that tile to a directory row, so Enter/double-click navigate into it
+// (app/nav maps the file path to its location). `list` returns the container's
+// members, null when the lane cannot list it (then the pane shows why).
+export type ArchiveBrowseCtx = {
+  enterable(name: string): boolean;
+  list(archive: string): Promise<ArchiveEntryInfo[] | null>;
 };
 
 export type GridRendererCtx = {
@@ -147,4 +159,7 @@ export type GridRendererCtx = {
   // misc hooks
   waitForResolution(): Promise<void>;
   clearRenameEdit(): void;
+  // archive browsing (folder view + entering an archive tile). Absent = feature
+  // off: a test fake keeps the plain listing, and archives open as files.
+  archive?: ArchiveBrowseCtx;
 };

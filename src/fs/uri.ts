@@ -6,8 +6,14 @@ import path from "node:path";
 
 export const RECENT_URI = "recent://";
 export const STARRED_URI = "starred://";
+// an archive opened as a folder: "archive:///path/foo.zip?inner/sub" (see
+// app/archive-nav for the model). Only the prefix is needed here, so a URI is
+// recognized without pulling the archive engine into this leaf module.
+export const ARCHIVE_URI = "archive://";
 
-export const isVirtualUri = (p: string): boolean => p === RECENT_URI || p === STARRED_URI;
+export const isArchiveUri = (p: string): boolean => p.startsWith(ARCHIVE_URI);
+
+export const isVirtualUri = (p: string): boolean => p === RECENT_URI || p === STARRED_URI || isArchiveUri(p);
 
 export const xdgDataHome = (): string => process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local/share");
 

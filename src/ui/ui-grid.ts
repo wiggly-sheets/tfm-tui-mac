@@ -8,6 +8,7 @@
 // (live getters for geometry). ---
 import path from "node:path";
 import { compareEntries, fillStatsInto, listDir, type Entry } from "../fs/listing";
+import { archiveBreadcrumb, archiveUri, buildArchiveTree, listArchiveDir, parseArchiveUri } from "../app/archive-nav";
 import { searchTree } from "../fs/search";
 import { fsErrText, isTrashFilesDir } from "../fs/fsutil";
 import type { Renderable } from "@opentui/core";
@@ -181,8 +182,22 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
   const { selection } = ctx;
   // the builders own the tile/list-row/row constructors and the id + geometry
   // helpers derived from ctx; the state machine below drives them
-  const { tilePrefix, availW, rowH, entryKey, registerRef, buildEmptyPane, buildLoadingPane, buildRow, buildInner } =
-    makeGridBuilders(ctx);
+  const {
+    tilePrefix,
+    availW,
+    rowH,
+    entryKey,
+    registerRef,
+    buildEmptyPane,
+    buildLoadingPane,
+    buildArchiveHeader,
+    buildRow,
+    buildInner,
+  } = makeGridBuilders(ctx);
+  // the archive folder view's header row is a SIBLING of `inner` (see
+  // buildArchiveHeader): its label has to survive a windowed re-build, and the
+  // slide has to know which child is `inner`
+  let headerLabel: string | null = null;
 
   // The pane is NOT showing the listing the signatures describe (it was cleared
   // by a render whose build then threw, or that never got to build). Drop the
@@ -240,6 +255,9 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // same for the loading placeholder this pane may be showing: the screen is
     // about to be repainted for real
     cancelLoadingTimers();
+    // the archive folder view's header died with the content below; the build
+    // that repaints re-sets it (or leaves it null for a plain folder)
+    headerLabel = null;
     const scroller = ctx.scroller();
     if (!scroller) return;
     win = null;
@@ -373,9 +391,14 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // a rebuild destroys the edit input; dropped once we actually rebuild (a
     // skipped render leaves an in-progress rename/edit alone)
     const q = ctx.searchQuery().trim().toLowerCase();
+    // archive folder view: the cwd IS an archive location, so the listing comes
+    // from the container instead of the disk (see app/archive-nav)
+    const archiveLoc = ctx.archive ? parseArchiveUri(state.cwd) : null;
     // recursive search replaces the listing with subtree matches; virtual
-    // places have no fs root to walk, so they keep the in-dir filter
-    const recursive = q.length > 0 && ctx.recursiveSearch() && state.cwd !== RECENT_URI && state.cwd !== STARRED_URI;
+    // places (and an archive) have no fs root to walk, so they keep the in-dir
+    // filter
+    const recursive =
+      q.length > 0 && ctx.recursiveSearch() && !archiveLoc && state.cwd !== RECENT_URI && state.cwd !== STARRED_URI;
     // Signature of everything that affects the painted tiles. renderAll repaints
     // BOTH panes on any navigation, so without this a move in one pane visibly
     // rebuilds the other (and churns native buffers). Empty/error states sign
@@ -468,7 +491,22 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     if (!showingLoading && ctxKey !== lastPaintedCtx) armLoading(gen, state.cwd, q, recursive);
     let allEntries: Entry[];
     try {
-      if (recursive) {
+      if (archiveLoc && ctx.archive) {
+        const members = await ctx.archive.list(archiveLoc.archive);
+        // unlistable container: the error branch below says why instead of
+        // painting a wrong empty folder
+        if (members === null) throw new Error("can't list this archive");
+        const tree = buildArchiveTree(members);
+        allEntries = listArchiveDir(tree, archiveLoc.inner, state.showHidden).map((e) => ({
+          name: e.name,
+          isDir: e.isDir,
+          ...(e.size === undefined ? {} : { size: e.size }),
+          // the member's OWN location: the key every later action re-resolves
+          // (an inner dir's URI is what Enter navigates to)
+          abs: archiveUri(archiveLoc.archive, archiveLoc.inner ? `${archiveLoc.inner}/${e.name}` : e.name),
+        }));
+        allEntries.sort(compareEntries(state.sortBy, state.sortAsc));
+      } else if (recursive) {
         const ac = new AbortController();
         searchAbort = ac;
         // honor the show-hidden toggle: skipping hidden dirs keeps fd out of
@@ -489,6 +527,18 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
           cacheStats: ctx.listingsCacheStats?.() ?? true,
           ttlMs: ctx.listingsCacheTtlMs?.(),
         });
+        // an archive lane can list real archives: the tile becomes an enterable
+        // DIRECTORY row, so Enter and double-click take the directory path
+        // (app/nav turns the file path into its archive location)
+        if (ctx.archive) {
+          let flipped = false;
+          for (const e of allEntries) {
+            if (e.isDir || !ctx.archive.enterable(e.name)) continue;
+            e.isDir = true;
+            flipped = true;
+          }
+          if (flipped) allEntries.sort(compareEntries(state.sortBy, state.sortAsc));
+        }
       }
     } catch (err) {
       // restricted dir (/root, foreign 000 dirs): say why instead of a blank pane
@@ -573,7 +623,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // change must move the signature). Batched + awaited (./listing
     // fillStatsInto): the old blocking statSync loop froze the frame loop, and
     // tty mode forces list view — the console felt dead on big folders.
-    if (isList) await fillStatsInto(entries, state.cwd);
+    if (isList && !archiveLoc) await fillStatsInto(entries, state.cwd);
     // the fill is the one await between the listing and the signature: a newer
     // render inside it owns the refs and the pane (same rule as the entry
     // computation above and the park below)
@@ -667,6 +717,13 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       // the container `slide` animates (and holds the row window + pads) — its
       // id is absolute so it resolves across slides
       const innerId = `${tilePrefix()}inner`;
+      if (archiveLoc) {
+        // header row above the listing (a SIBLING of inner, so the windowed
+        // child contract is untouched). It names the container and the inner
+        // path — the pane's own label has no room for either.
+        headerLabel = archiveBreadcrumb(state.cwd, Math.max(8, availW() - 2));
+        scroller.content.add(buildArchiveHeader(headerLabel));
+      } else headerLabel = null;
       scroller.content.add(buildInner(entries, isList, cols, rowHgt, totalRows, r0, r1, visFirst, windowed));
       win = windowed
         ? {
@@ -814,8 +871,8 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     const { firstRow, r0, r1 } = windowRange(scrollTop, rh, rows, ctx.termH());
     const visFirst = isList ? firstRow : firstRow * cols;
     // operate on the MOUNTED nodes (VNode proxies no-op post-mount): content
-    // holds exactly [inner], inner exactly [pad-top, old.r0..old.r1, pad-bottom]
-    const mounted = scroller.content.getChildren()[0];
+    // holds [inner] — or [archive header, inner] in the archive folder view
+    const mounted = scroller.content.getChildren()[headerLabel ? 1 : 0];
     const kids: Renderable[] | null = mounted && r0 <= old.r1 + 1 && r1 >= old.r0 - 1 ? mounted.getChildren() : null;
     const slideable = !!kids && kids.length === old.r1 - old.r0 + 3;
     const paint = (a: number, b: number): void => {
@@ -847,6 +904,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
           ctx.fileAnim({ tiles: [], inner: null });
         } catch {}
         destroyChildren(scroller.content);
+        if (headerLabel) scroller.content.add(buildArchiveHeader(headerLabel));
         scroller.content.add(buildInner(entries, isList, cols, rh, rows, r0, r1, visFirst, true));
         paint(r0, r1);
       }
