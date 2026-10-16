@@ -3,6 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import {
   cpSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -582,6 +583,27 @@ describe("runTransfer: raced destinations", () => {
 
     expect(readlinkSync(target)).toBe("missing");
     expect(h.calls.some((c) => c.startsWith("notify:copy failed:error:"))).toBe(true);
+  });
+
+  test("a staged remote symlink lands as a link, never read through its target", async () => {
+    // A remote drop stages the peer-supplied symlink (symlinkSync) and lands it
+    // through runTransfer("copy") — the peer picks the target, so the copy must
+    // recreate the link and never stream the local file it points at.
+    const h = makeHarness();
+    const secret = path.join(ROOT, "staged-link-secret.txt");
+    const stage = mktmp("tfm-staged-link-");
+    const destDir = path.join(ROOT, "staged-link-dest");
+    W(secret, "TOP-SECRET");
+    mkdirSync(destDir, { recursive: true });
+    const staged = path.join(stage, "innocent.txt");
+    symlinkSync(secret, staged);
+
+    await h.ops.runTransfer("copy", destDir, [staged], "drop 1 item");
+
+    const landed = path.join(destDir, "innocent.txt");
+    expect(lstatSync(landed).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(landed)).toBe(secret);
+    rmSync(stage, { recursive: true, force: true });
   });
 });
 
