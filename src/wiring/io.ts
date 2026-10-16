@@ -11,12 +11,14 @@ import { makeCwdWatcher } from "../fs/watcher";
 import { isVirtualUri } from "../fs/uri";
 import { isNetworkPath } from "../fs/network";
 import { makeDnd72 } from "../dnd/dnd72";
+import { resolveDragPath } from "../dnd/transfer-drag";
 import { makeHitTargetAt } from "../dnd/hit-target";
 import { debounced } from "../lib/uiutil";
 import { makeHoverDrawer } from "../ui/ui-hover-drawer";
 import { gridDrag } from "../input/grid-input";
-import { mergedMapFacade } from "../app/panes";
+import { getMap, mergedMapFacade } from "../app/panes";
 import { loadGlobs2 } from "../fs/filetype";
+import type { PaneId } from "../app/layout";
 import { loadSystemPlaces } from "../fs/places";
 import { startMemHygiene, type NativeStatsReach } from "../app/mem-hygiene";
 import { xtShiftEscapeFrame, kittyDeleteAllImages } from "../ui/ui-term";
@@ -39,28 +41,28 @@ export const wireWatcher = (deps: {
   // one watcher per pane so external changes refresh BOTH sides of a dual
   // workspace. Pane 1's watcher stands down (isVirtualCwd true) while dual
   // pane is off, so a hidden pane never holds an inotify watch.
-  const makeFor = (pane: 0 | 1) =>
+  const makeFor = (id: PaneId) =>
     makeCwdWatcher({
-      cwd: () => core.panes.states[pane].cwd,
+      cwd: () => core.panes.stateOf(id).cwd,
       // network (gvfs FUSE) mounts get no watcher: inotify over FUSE is
       // unreliable and can storm; the grid refreshes on navigation instead
       isVirtualCwd: () => {
-        if (pane === 1 && !core.config.ui.dualPane) return true;
-        const cwd = core.panes.states[pane].cwd;
+        if (id === "p1" && !core.config.ui.dualPane) return true;
+        const cwd = core.panes.stateOf(id).cwd;
         return isVirtualUri(cwd) || isNetworkPath(cwd);
       },
       isRenaming: () => getGridFoundation().rename.isRenaming(),
-      renderGrid: () => getGrid().renderPane(pane),
+      renderGrid: () => getGrid().renderPane(id === "p1" ? 1 : 0),
       // our own diagnostic sinks: dlog appends on every mouse event and defaults
       // to /tmp/tfm-dnd.log — when that IS the cwd, each click would otherwise
       // full-rebuild the grid 200ms later (visible flash after every select)
       ignorePaths: () => [DND_LOG, DEBUG_LOG],
     });
-  // `as const` keeps the pair a TUPLE so indexing needs no non-null assertion
-  const watchers = [makeFor(0), makeFor(1)] as const;
+  // one watcher per leaf
+  const watchers = new Map<PaneId, ReturnType<typeof makeCwdWatcher>>();
+  for (const id of core.panes.leafIds()) watchers.set(id, makeFor(id));
   const syncCwdWatcher = (): void => {
-    watchers[0].syncCwdWatcher();
-    watchers[1].syncCwdWatcher();
+    for (const w of watchers.values()) w.syncCwdWatcher();
   };
   return { syncCwdWatcher };
 };
@@ -125,8 +127,8 @@ export const wireBoot = (deps: {
         byId: core.lookup.byId,
         colors: core.colors,
         bandCtx: grid.bandCtx,
-        focusPane: (i) => grid.focusPane(i as 0 | 1),
-        dropIntoPane: (i) => grid.dropIntoPane(i as 0 | 1),
+        focusPane: (i) => grid.focusPane(i === 1 ? "p1" : "p0"),
+        dropIntoPane: (i) => grid.dropIntoPane(i === 1 ? "p1" : "p0"),
         closeFileMenu: chrome.menu.closeFileMenu,
         clearSearch: nav.clearSearch,
         blurTerminal: fileops.terminal.blurTerminal,
@@ -139,14 +141,14 @@ export const wireBoot = (deps: {
         emptyAreaEntries: grid.menuEntries.emptyAreaEntries,
         isTtyMode: core.isTtyMode,
       });
-      core.scrollerRefs[0].current = scrollers[0];
-      core.scrollerRefs[1].current = scrollers[1];
+      getMap(core.scrollerRefs, "p0").current = scrollers[0];
+      getMap(core.scrollerRefs, "p1").current = scrollers[1];
       // [ui] windowed-grid: the hook wraps the scrollTop setter (wheel, drag
       // auto-scroll, programmatic scrollTo) AND chains the scrollbar's
       // _onChange — a thumb drag writes the position field raw, never the
       // setter (ScrollBox exposes no scroll event)
-      hookScrollerScroll(scrollers[0], () => grid.syncWindowPane(0));
-      hookScrollerScroll(scrollers[1], () => grid.syncWindowPane(1));
+      hookScrollerScroll(scrollers[0], () => grid.syncWindowPane("p0"));
+      hookScrollerScroll(scrollers[1], () => grid.syncWindowPane("p1"));
       // the hover drawer's construction-time collapse wrote to no nodes (they
       // only mount here) — re-apply its panel states now that they exist
       try {
@@ -224,9 +226,21 @@ export const wireDnd = (deps: {
   // drop-target tile resolution must find a tile in EITHER pane; the merged
   // live map unions both panes' tileRefs (pane-prefixed ids make them unique).
   const allTileRefs = mergedMapFacade(() => [
-    gridFoundation.selections[0].tileRefs,
-    gridFoundation.selections[1].tileRefs,
+    getMap(gridFoundation.selections, "p0").tileRefs,
+    getMap(gridFoundation.selections, "p1").tileRefs,
   ]);
+  // terminal capability -> drag path. OSC 72 wins on kitty/ghostty (the
+  // richest surface: external + self-drop + hover highlight); SGR mouse is
+  // OpenTUI's universal drag surface and covers sixel/xterm; anything else
+  // gets the fallback (press + hold -> pick up -> click a folder -> move).
+  // The fallback seam is null on SGR/OSC-72 terminals so the grid's press
+  // path stays byte-identical there. Capabilities arrive async (the
+  // capabilities event), so re-resolve on every read — a terminal that
+  // starts dumb and later answers XTVERSION must not stay in fallback.
+  const fallbackDrag = (): { pickupMs(): number } | null =>
+    resolveDragPath(chrome.renderer.capabilities) === "fallback"
+      ? { pickupMs: () => core.config.ui.doubleClickMs }
+      : null;
   const { enableDrops, disableDrops } = makeDnd72({
     log: (msg) => dlog(msg),
     writeFrame: (s) => {
@@ -241,7 +255,7 @@ export const wireDnd = (deps: {
       byNumber: (num) => Renderable.renderablesByNumber.get(num),
       placesHost: () => chrome.chrome.placesHost,
       tileRefs: allTileRefs,
-      panesCwd: () => [core.panes.states[0].cwd, core.panes.states[1].cwd],
+      panesCwd: () => [core.panes.stateOf("p0").cwd, core.panes.stateOf("p1").cwd],
     }),
     tileRefs: allTileRefs,
     setTileVisual: gridFoundation.selection.setTileVisual,
@@ -272,7 +286,7 @@ export const wireDnd = (deps: {
     dlog("tx xtshiftescape on");
     process.stdout.write(xtShiftEscapeFrame(true));
   } catch {}
-  return { enableDrops, disableDrops };
+  return { enableDrops, disableDrops, fallbackDrag };
 };
 
 // --- resize: repave rasters and rebuild layout. The trailing debounce lives

@@ -47,10 +47,12 @@ export const makeHitTargetAt =
               }
             }
           }
-          // pane column/background (tfm-pane-0 / tfm-pane-col-1) → its cwd
-          const pane = /^tfm-pane-(?:col-)?(\d+)$/.exec(id);
+          // pane column/background (tfm-pane-0 / tfm-pane-col-1 / tfm-pane-p2) → its cwd
+          const pane = /^tfm-pane-(?:col-)?(\d+|p\d+)$/.exec(id);
           if (pane) {
-            const cwd = ctx.panesCwd?.()[Number(pane[1])];
+            const raw = pane[1];
+            const idx = raw?.startsWith("p") ? Number(raw.slice(1)) : Number(raw);
+            const cwd = ctx.panesCwd?.()[idx];
             return cwd ? { kind: "folder", path: cwd } : null;
           }
         }

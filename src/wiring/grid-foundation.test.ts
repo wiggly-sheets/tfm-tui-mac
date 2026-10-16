@@ -10,19 +10,27 @@
 import { describe, expect, test } from "bun:test";
 import { wireGridFoundation } from "./grid-foundation";
 
-type HarnessOver = { virtual?: boolean; trash?: boolean; active?: 0 | 1 };
+type HarnessOver = { virtual?: boolean; trash?: boolean; active?: 0 | 1; activeId?: string };
 
 const harness = (over: HarnessOver = {}) => {
   const calls: string[] = [];
+  const activeId = over.activeId ?? (over.active === 1 ? "p1" : "p0");
   const core = {
     themeGet: () => ({ accent: "#000000" }),
     config: { ui: { uiStyle: "solid" } },
     lookup: { byId: () => null, setTextOnId: () => {}, stripSelectable: () => {} },
     slots: { setIconState: () => {}, escHintBtn: () => ({}), drainIconQueue: () => {} },
     isCutKey: () => false,
-    scrollerRefs: [{ current: null }, { current: null }],
+    scrollerRefs: new Map([
+      ["p0", { current: null }],
+      ["p1", { current: null }],
+    ]),
     geometry: { tileH: 3, tileW: 8 },
-    panes: { active: over.active ?? 0 },
+    panes: {
+      active: over.active ?? (activeId === "p1" ? 1 : 0),
+      activeId,
+      leafIds: () => ["p0", "p1"],
+    },
     isVirtualCwd: () => !!over.virtual,
     inTrashView: () => !!over.trash,
     state: { cwd: "/tmp" },
@@ -64,14 +72,14 @@ describe("grid-foundation wiring: bulk-rename guard", () => {
 
 describe("grid-foundation wiring: active-pane facades", () => {
   test("selection.tileRefs is a live view over the ACTIVE pane's map", () => {
-    const h = harness({ active: 0 });
-    h.found.selections[0].tileRefs.set("pane0-key", {} as never);
-    h.found.selections[1].tileRefs.set("pane1-key", {} as never);
+    const h = harness({ activeId: "p0" });
+    h.found.selections.get("p0")!.tileRefs.set("pane0-key", {} as never);
+    h.found.selections.get("p1")!.tileRefs.set("pane1-key", {} as never);
 
     expect(h.found.selection.tileRefs.has("pane0-key")).toBe(true);
     // flipping the pane re-points the SAME facade object (captured once by
     // ui-rename/preview) at the other pane's map
-    h.core.panes.active = 1;
+    h.core.panes.activeId = "p1";
     expect(h.found.selection.tileRefs.has("pane0-key")).toBe(false);
     expect(h.found.selection.tileRefs.has("pane1-key")).toBe(true);
   });
