@@ -240,7 +240,7 @@ export const allTrashFilesDirs = async (
         return out;
       }
     }
-    for (const m of parseMountTable(text)) {
+    for (const m of parseMountTable(text ?? "")) {
       // user volumes only — system/private mounts never hold user trash
       if (m.target !== "/Volumes" && !m.target.startsWith("/Volumes/")) continue;
       const dir = darwinVolumeTrash(m.target, uid);
