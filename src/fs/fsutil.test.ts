@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   trashDir,
+  trashFilesDir,
   fsErrText,
   failSuffix,
   fsMove,
@@ -427,20 +428,20 @@ describe("rmTrashInfoForPath per-mount isolation", () => {
 
 describe("allTrashFilesDirs", () => {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  test("home first, one entry per mount, deduped", () => {
+  test("home first, one entry per mount, deduped", async () => {
     const mounts = [
       "dev2 /mnt/usb ext4 rw 0 0",
       "dev3 /mnt/usb ext4 rw 0 0",
       "dev4 /mnt/odd\\040name ext4 rw 0 0",
     ].join("\n");
-    expect(allTrashFilesDirs(mounts, "linux")).toEqual([
+    expect(await allTrashFilesDirs(mounts, "linux")).toEqual([
       path.join(trashDir(), "files"),
       path.join("/mnt/usb", `.Trash-${uid}`, "files"),
       path.join("/mnt/odd name", `.Trash-${uid}`, "files"),
     ]);
   });
 
-  test("network and automount filesystems are never probed", () => {
+  test("network and automount filesystems are never probed", async () => {
     const mounts = [
       "srv:/share /mnt/nfs nfs rw 0 0",
       "//srv/share /mnt/cifs cifs rw 0 0",
@@ -449,26 +450,69 @@ describe("allTrashFilesDirs", () => {
       "gvfs /run/user/1000/gvfs fuse.gvfsd-fuse rw 0 0",
       "dev5 /mnt/disk ext4 rw 0 0",
     ].join("\n");
-    expect(allTrashFilesDirs(mounts, "linux")).toEqual([
+    expect(await allTrashFilesDirs(mounts, "linux")).toEqual([
       path.join(trashDir(), "files"),
       path.join("/mnt/disk", `.Trash-${uid}`, "files"),
     ]);
   });
 
-  test("malformed lines are skipped, never throw", () => {
+  test("malformed lines are skipped, never throw", async () => {
     // "garbage" (one field) and blank lines skip; "dev /x ext4" is a
     // well-formed (if odd) entry and is honored
-    expect(allTrashFilesDirs("garbage\n\n  \ndev /x ext4", "linux")).toEqual([
+    expect(await allTrashFilesDirs("garbage\n\n  \ndev /x ext4", "linux")).toEqual([
       path.join(trashDir(), "files"),
       path.join("/x", `.Trash-${uid}`, "files"),
     ]);
-    expect(allTrashFilesDirs("", "linux")).toEqual([path.join(trashDir(), "files")]);
+    expect(await allTrashFilesDirs("", "linux")).toEqual([path.join(trashDir(), "files")]);
+  });
+
+  test("darwin mount probe is non-blocking: a hung `mount` falls back to home only", async () => {
+    // On darwin the mount table is read by spawning `mount`. A hung network
+    // mount must not block the event loop: the probe is bounded and any
+    // failure/timeout yields the home trash dir only (same as the old
+    // execSync catch path). We can't fake the real spawn here, but the
+    // contract is: the function resolves (never throws) and always includes
+    // the home trash files dir first.
+    const out = await allTrashFilesDirs(undefined, "darwin");
+    expect(out[0]).toBe(trashFilesDir("darwin"));
+    expect(out.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("darwin mount probe passes a bounded timeout and never blocks", async () => {
+    // The whole point of the fix: `mount` is spawned with a finite timeout so
+    // a hung network share cannot freeze the TUI. Spy on Bun.spawn, hand back
+    // a child that "hangs" (stdout closes empty, exited resolves nonzero like
+    // a timeout kill), and assert the probe still resolves — home only, no
+    // throw, no hang.
+    let captured: { timeout?: number } | null = null;
+    const fakeStdout = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(""));
+        c.close();
+      },
+    });
+    const spy = spyOn(Bun, "spawn").mockImplementation(((_cmd: unknown, opts?: { timeout?: number }) => {
+      captured = opts ?? null;
+      return {
+        stdout: fakeStdout,
+        exited: Promise.resolve(1),
+        kill: () => {},
+      } as unknown as ReturnType<typeof Bun.spawn>;
+    }) as typeof Bun.spawn);
+    try {
+      const out = await allTrashFilesDirs(undefined, "darwin");
+      expect(captured?.timeout).toBe(2_000);
+      expect(out[0]).toBe(trashFilesDir("darwin"));
+      expect(out.length).toBe(1); // empty mount text -> no volumes, home only
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
 describe("countTrashItems", () => {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  test("sums home plus mounted per-mount trashes", () => {
+  test("sums home plus mounted per-mount trashes", async () => {
     const mnt = path.join(SANDBOX, "usb");
     const files = path.join(mnt, `.Trash-${uid}`, "files");
     mkdirSync(files, { recursive: true });
@@ -482,7 +526,7 @@ describe("countTrashItems", () => {
       }
     })();
     if (before < 0) return; // home unreadable — covered by the -1 test below
-    expect(countTrashItems(`dev ${mnt} ext4 rw 0 0`, "linux")).toBe(before + 2);
+    expect(await countTrashItems(`dev ${mnt} ext4 rw 0 0`, "linux")).toBe(before + 2);
   });
 });
 
