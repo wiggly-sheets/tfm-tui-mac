@@ -9,6 +9,7 @@ import {
   pointPaneAt,
   setActivePane,
   togglePane,
+  viewModeFor,
 } from "./panes";
 
 describe("pane pair", () => {
@@ -183,5 +184,28 @@ describe("merged map facade", () => {
     expect(() => f.set("b", 2)).toThrow("read-only");
     expect(() => f.delete("a")).toThrow("read-only");
     expect(() => f.clear()).toThrow("read-only");
+  });
+});
+
+describe("viewModeFor (per-pane view mode)", () => {
+  const isTty = () => false;
+
+  test("returns the pane's stored mode when set", () => {
+    expect(viewModeFor({ viewMode: "list" }, "grid", isTty)).toBe("list");
+    expect(viewModeFor({ viewMode: "columns" }, "grid", isTty)).toBe("columns");
+  });
+
+  test("falls back to the global default when the pane stores none", () => {
+    expect(viewModeFor({}, "grid", isTty)).toBe("grid");
+    expect(viewModeFor({}, "list", isTty)).toBe("list");
+  });
+
+  test("tty forces list off the grid (no icon tiles on the console)", () => {
+    const tty = () => true;
+    expect(viewModeFor({ viewMode: "grid" }, "grid", tty)).toBe("list");
+    expect(viewModeFor({}, "grid", tty)).toBe("list");
+    // list and columns are both text-cell layouts and survive the console
+    expect(viewModeFor({ viewMode: "list" }, "grid", tty)).toBe("list");
+    expect(viewModeFor({ viewMode: "columns" }, "grid", tty)).toBe("columns");
   });
 });

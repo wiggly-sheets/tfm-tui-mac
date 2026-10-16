@@ -10,6 +10,7 @@ import { RECENT_URI, STARRED_URI } from "../fs/uri";
 import type { SortMode } from "../lib/sort";
 import { naturalAscFor } from "../lib/sort";
 import type { Config } from "../config/config";
+import type { ViewMode } from "../config/config-schema";
 import type { Tab } from "./tabs";
 import { debounced } from "../lib/uiutil";
 import { readRestoredSession, saveSession, type PaneTabs } from "../fs/session";
@@ -25,6 +26,10 @@ export type AppState = {
   // one-shot: a launch FILE path (`tfm some/file.txt`) the first grid build
   // highlights, then clears (see ui-grid's rebuild tail)
   pendingSelect?: string | null;
+  // per-pane view mode. Undefined = fall back to the global [ui] viewMode
+  // default (the schema row's value, which persists across panes). The tty
+  // console forces list/columns only (no icon tiles) — see viewModeFor.
+  viewMode?: ViewMode;
 };
 
 // boot state: the start dir is its own one-entry history; sort seeds from
@@ -43,6 +48,7 @@ export const initialAppState = (
     showHidden: config.ui.showHidden,
     sortBy,
     sortAsc: naturalAscFor(sortBy),
+    viewMode: config.ui.viewMode,
     pendingSelect,
   };
 };

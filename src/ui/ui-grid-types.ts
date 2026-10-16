@@ -5,7 +5,7 @@
 
 import type { Theme } from "../config/config";
 import type { ScrollerLike } from "../lib/node-like";
-import type { HoverLiftOpts, WrapMode } from "../config/config-schema";
+import type { HoverLiftOpts, ViewMode, WrapMode } from "../config/config-schema";
 import type { Entry } from "../fs/listing";
 import type { TileMouseHandlers } from "../input/grid-input";
 import type { Selection } from "../input/selection";
@@ -50,7 +50,7 @@ export type GridRendererCtx = {
   colors(): Theme;
   previewEnabled(): boolean;
   previewWidth(): number;
-  viewMode(): "grid" | "list";
+  viewMode(): ViewMode;
   // raster-affecting state ([ui] icons + tty mode + force-glyph): tiles paint a
   // raster or a bare glyph without the listing changing, so without this the
   // rebuild early-outs and a graphics-mode toggle visibly does nothing until
@@ -141,6 +141,9 @@ export type GridRendererCtx = {
   selection: Selection;
   entryMouseHandlers(entry: Entry, key: string, idx: number): TileMouseHandlers;
   isCutKey(key: string): boolean;
+  // open a file by path (columns view's Enter on a file). Absent = files
+  // can't be launched from the columns renderer (older fakes keep working).
+  openFileDefault?(p: string): void;
   // misc hooks
   waitForResolution(): Promise<void>;
   clearRenameEdit(): void;

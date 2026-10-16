@@ -3,7 +3,13 @@
 // with no dependency on nav.ts — nav.ts imports it, not the other way round.
 // Pure data: no renderer, no fs, no config. ---
 
+import type { ViewMode } from "../config/config-schema";
+
 export type PaneIndex = 0 | 1;
+
+// Re-exported from the layout tree module so the wiring layer can import
+// `PaneId` from here (its historical home) without a second import path.
+export type { PaneId } from "./layout";
 
 export type PanePair<T> = {
   states: [T, T];
@@ -39,6 +45,19 @@ export const pointPaneAt = <T extends { history: string[]; histIdx: number; cwd:
 
 export const togglePane = <T>(p: PanePair<T>): void => {
   p.active = otherPane(p);
+};
+
+// Per-pane view mode: the pane's own stored mode wins, falling back to the
+// global [ui] viewMode default. The tty console can't paint icon tiles (no
+// graphics, no Nerd PUA), so it forces list/columns only — grid never renders
+// there. `isTty` is a live predicate (read at call time) so a console flip
+// applies without a rebuild of this helper.
+export const viewModeFor = (state: { viewMode?: ViewMode }, defaultMode: ViewMode, isTty: () => boolean): ViewMode => {
+  const mode = (state.viewMode ?? defaultMode) as ViewMode;
+  // tty: list and columns are both text-cell layouts, so both survive the
+  // console; grid needs rasters + PUA glyphs and is forced off
+  if (isTty() && mode === "grid") return "list";
+  return mode;
 };
 
 // A stable facade over whichever pane is active: property reads/writes forward
@@ -82,6 +101,16 @@ export const activeFacade = <T extends object>(get: () => T, overrides?: Partial
     ownKeys: () => Reflect.ownKeys(get()),
     getOwnPropertyDescriptor: (_t, prop) => Reflect.getOwnPropertyDescriptor(get(), prop),
   });
+
+// Typed Map.get that throws on a miss instead of returning `undefined`. The
+// wiring layer indexes per-leaf maps (selections, toolbars, tabModels, …) and
+// every miss is a programming error, so a throw beats a `!` assertion the linter
+// forbids.
+export const getMap = <K, V>(m: Map<K, V>, key: K): V => {
+  const v = m.get(key);
+  if (!v) throw new Error(`missing map entry ${String(key)}`);
+  return v;
+};
 
 // A stable Map view over whichever pane is active: any Map operation forwards
 // to the active pane's map, so a reference captured once keeps tracking the

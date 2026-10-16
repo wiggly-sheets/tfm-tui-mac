@@ -22,7 +22,7 @@ import { cancelBand } from "../input/grid-input";
 import { destroyChildren, errMessage } from "../lib/uiutil";
 import { dlog } from "../app/log";
 import { makeUrlOpener } from "../fs/open-url";
-import { pointPaneAt } from "../app/panes";
+import { pointPaneAt, viewModeFor } from "../app/panes";
 import {
   AmbiguousPluginError,
   derivePluginName,
@@ -253,6 +253,9 @@ export const wireSettings = (deps: {
     warn: (message, title) => chrome.notify(message, title ?? "tfm"),
     // console mode: the theme row is display-only (static palette paints)
     isTtyMode: core.isTtyMode,
+    // per-pane view mode: the ACTIVE pane's stored mode, so the view-mode
+    // cycle row shows what ctrl+g will flip next (not the global default)
+    activeViewMode: () => viewModeFor(core.panes.states[core.panes.active], core.config.ui.viewMode, core.isTtyMode),
     plugins: () => plugins.plugins,
     // on/off toggle: register or drop the plugin's slots right away, then
     // repaint so the change is visible without a navigation
@@ -370,13 +373,13 @@ export const wireRetheme = (deps: {
     syncTerminalTheme: fileops.terminal.syncTerminalTheme,
     syncTerminalHeight: () => fileops.terminal.syncTerminalHeight(),
     repaintButtons: () => {
-      for (const t of chrome.toolbars) t.repaintButtons();
+      for (const t of chrome.toolbars.values()) t.repaintButtons();
     },
     // grid scrollbar bars bake thumb/track colors at boot — repaint the
     // live Sliders on a theme flip (a rebuild would drop the scroll pos)
     restyleScrollbars: () => {
       const m = scrollbarTrackColors(core.colors);
-      for (const ref of core.scrollerRefs) {
+      for (const ref of core.scrollerRefs.values()) {
         const s = ref.current;
         if (!s) continue;
         try {
@@ -385,10 +388,10 @@ export const wireRetheme = (deps: {
       }
     },
     renderCrumbs: () => {
-      for (const t of chrome.toolbars) t.renderCrumbs();
+      for (const t of chrome.toolbars.values()) t.renderCrumbs();
     },
     refreshNav: () => {
-      for (const t of chrome.toolbars) t.refreshNav();
+      for (const t of chrome.toolbars.values()) t.refreshNav();
     },
     escMenu: settings.escMenu,
     fileMenuIsOpen: chrome.menu.isFileMenuOpen,
