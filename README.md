@@ -38,20 +38,24 @@ https://github.com/user-attachments/assets/b47c7136-642c-4c85-8b2a-dcab1bd0b37b
 ## Features
 
 - Mouse: click, rubber-band select, right-click menus, drag and drop.
-- Browse files in grid or list view.
+- Browse files in grid, list or Miller (Finder-style) columns view.
 - Sidebar with places, bookmarks, drives, trash, recent, starred.
+- Toggleable right-hand info sidebar with details for the current selection.
+- Go to Folder quick jump, plus Cmd/Super key bindings.
 - Search as you type, including inside subfolders.
 - Sort by name, size, date.
 - Copy, move, paste, duplicate, rename.
 - Bulk rename multiple files at once.
 - New file / new folder inline.
-- Drag and drop between panes and from other apps.
+- Drag and drop inside any terminal (OSC 72 on kitty, press-hold fallback elsewhere) and from other apps.
 - Trash, restore, delete forever, empty trash.
 - Undo / redo file operations.
 - Preview text, code, images, videos, folders.
 - Open files + Open With app picker.
 - Properties dialog with permissions editing.
-- Tabs + dual pane.
+- Tabs + panes: dual pane with sync browsing, and a mixed vertical/horizontal
+  split tree.
+- Optional mouse drag-resize for the sidebar, pane split and preview.
 - Connect to network servers.
 - Extract and compress archives.
 - Embedded terminal.
@@ -63,7 +67,8 @@ https://github.com/user-attachments/assets/b47c7136-642c-4c85-8b2a-dcab1bd0b37b
 
 ## Requirements
 
-- Linux or macOS (Apple Silicon / arm64).
+- Linux (x86_64 / arm64) or macOS (Intel / Apple Silicon; a lipo universal
+  binary is released too).
 - Any terminal (need image support for the full experience).
 - Everything below is optional.
   - Linux: `xdg-open` (opening files) · `gio` (starred files and servers) · `udisksctl` (USB drives) · `wl-clipboard` / `xclip` (copy and paste with other apps). macOS covers those with built-in `open`, `diskutil`, `pbcopy` / `pbpaste`.
@@ -122,17 +127,32 @@ bun run check && bun test
 bun run compile && cp dist/tfm ~/.local/bin/
 ```
 
+Cross-compile release-target binaries from one host:
+
+```bash
+bun run scripts/build.ts linux-x64 mac-arm64   # any subset
+bun run scripts/build.ts all                   # full matrix
+```
+
+Targets: `linux-x64`, `linux-arm64`, `mac-x64`, `mac-arm64`, `mac-universal`
+(`mac-universal` lipos both darwin slices into `dist/tfm-universal-macos` and
+needs a macOS host). The same targets are wired as `bun run build:<target>`
+scripts in `package.json`.
+
 ## Keys
 
 - `enter` open · `f2` rename · `backspace`/`alt+up` up · `alt+home` home · `escape` menu · `f1` help
 - `ctrl+c/x/v/d` copy/cut/paste/duplicate · `ctrl+z/y` undo/redo
 - `tab` switch focused pane · `f5`/`f6` copy/move to the other pane (dual pane)
+- `ctrl+shift+h`/`ctrl+shift+v` split pane right/below · `ctrl+shift+w` close pane
 - `ctrl+t/w` new/close tab · `ctrl+tab` switch tab (per pane)
 - `delete` trash · `alt+enter` properties · `ctrl+q` quit
 - `ctrl+a` select all · `space` toggle · `shift+arrows` extend selection
 - `alt+left/right` history back/forward · `ctrl+shift+n` / `ctrl+alt+n` new folder/file
-- `ctrl+shift+d` dual pane · `ctrl+=/-` zoom · `ctrl+r` reload places · `ctrl+alt+r` restart
-- `ctrl+h` hidden · `ctrl+l` path bar · `ctrl+g` grid/list · `f3` preview · `ctrl+\``/`f4` terminal · `ctrl+shift+s` connect to server
+- `ctrl+shift+d` dual pane · `ctrl+shift+b` sync browsing · `ctrl+=/-` zoom · `ctrl+r` reload places · `ctrl+alt+r` restart
+- `ctrl+h` hidden · `ctrl+l` path bar · `ctrl+b` sidebar · `shift+cmd+g` go to folder
+- `ctrl+g` cycle view (grid/list/columns) · `f3` preview · `f7` info sidebar · `alt+t` next theme
+- `alt+s` cycle sort · `alt+shift+s` reverse sort · `ctrl+\``/`f4` terminal · `ctrl+shift+s` connect to server
 - `arrows` move · `pageup`/`pagedown` page · `home`/`end` first/last
 
 Everything is remappable: `esc` → Settings → keys.
@@ -162,11 +182,15 @@ See [docs/plugins.md](docs/plugins.md).
 
 ## Notes
 
-- Cross-app drag & drop is kitty-only.
+- Cross-app drag & drop is kitty-only; internal drag works on every terminal
+  (OSC 72 on kitty, press-hold fallback elsewhere).
 - Mouse on the Linux console (TTY) needs `gpm` running.
-- macOS is Apple Silicon only: trash, servers, tags and file opens integrate
-  with Finder natively (`trash`, `open`, `diskutil`); `tty-mode` has no Linux
-  console there, so `auto` only fires for dumb/vt terms.
+- macOS ships for Intel, Apple Silicon and a universal binary: trash, servers,
+  tags and file opens integrate with Finder natively (`trash`, `open`,
+  `diskutil`); `tty-mode` has no Linux console there, so `auto` only fires for
+  dumb/vt terms.
+- Mouse drag-resize of the sidebar, pane split and preview is opt-in
+  (`[ui] mouse-resize-*`, all off by default).
 - Icons can show a black box behind open menus or while rubber-band selecting.
 - Custom kitty themes can misbehave.
 

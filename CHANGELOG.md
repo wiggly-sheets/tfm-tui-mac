@@ -10,7 +10,12 @@ macOS fixes in this release:
 
 - Renames work correctly on case-insensitive APFS.
 - Writing a file no longer clobbers its Finder tags.
-- Copy preserves extended attributes.
+- Copy preserves extended attributes (Finder tags, quarantine, resource forks)
+  on a bounded background lane, so per-file progress never waits on the
+  attribute spawns.
+- Finder tag sync uses the `tag` CLI only (writing the tag attribute directly
+  would corrupt it); with no CLI installed tfm leaves the attribute untouched.
+- `/System/Applications` is searched for bundled apps.
 
 Icon rendering fix in this release:
 
@@ -19,6 +24,45 @@ Icon rendering fix in this release:
   sixel placements reserved cell space and rendered blank. kitty, WezTerm and
   Ghostty keep color rasters; tmux, the Linux console and terminals with no
   graphics protocol keep their glyphs.
+
+Build and packaging in this release:
+
+- `scripts/build.ts` builds any subset of the release targets (`linux-x64`,
+  `linux-arm64`, `mac-x64`, `mac-arm64`, `mac-universal`) from one host, or
+  `all` for the full matrix. `mac-universal` lipos both darwin slices into
+  `dist/tfm-universal-macos` (macOS host required).
+- Release CI ships macOS x64, arm64 and universal binaries; `install.sh`
+  recognizes `Darwin-x86_64`.
+
+Keyboard and navigation in this release:
+
+- Cmd/Super is a distinct modifier (`cmd` / `super` / `command`) alongside alt.
+- Go to Folder quick-jump popup (`shift+cmd+g`, remappable).
+- New shortcuts: `ctrl+b` toggle sidebar, `alt+t` next theme, `alt+s` cycle
+  sort, `alt+shift+s` reverse sort.
+
+Panes and view in this release:
+
+- Per-pane view modes plus a new Miller columns view; `ctrl+g` cycles the
+  active pane's mode (grid → list → columns).
+- Split panes: `ctrl+shift+h`/`ctrl+shift+v` split the focused pane side by
+  side or stacked, `ctrl+shift+w` closes it (no-op at one pane), `tab` cycles
+  focus. The layout is a mixed vertical/horizontal tree of panes and lives in
+  memory only, so it restarts clean. `[ui] dual-pane` still reconciles:
+  turning it on splits to at least two panes, turning it off closes `p1` only
+  (manual splits stay).
+- Sync browsing (`[ui] sync-browsing`, off by default, `ctrl+shift+b`): entering
+  a directory in the active pane opens it in the other pane.
+- Toggleable right-hand info sidebar (`[ui] info-sidebar`, off by default, `f7`)
+  showing details for the current selection; it shares the right column with the
+  preview.
+
+Interaction in this release:
+
+- Internal drag and drop on every terminal (OSC 72 on kitty, press-hold
+  fallback elsewhere).
+- Opt-in mouse drag-resize: `[ui] mouse-resize-sidebar`, `mouse-resize-split`
+  and `mouse-resize-preview`, all off by default.
 
 ## 1.0.0 — first stable release
 
