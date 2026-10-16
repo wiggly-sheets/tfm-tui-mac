@@ -32,7 +32,10 @@ export type ArchiveFormat =
 // every format we can create we can also list/extract
 export type CompressionFormat = ArchiveFormat;
 export type ToolSpec = { tool: string; args: string[] };
-export type ArchiveRunResult = { code: number; stdout: string; stderr: string };
+// `bytes` is set only for a raw run (opts.maxBytes): one member's content
+// streamed out of the container for the preview pane (text capture would
+// corrupt binary and cap it at 256KB).
+export type ArchiveRunResult = { code: number; stdout: string; stderr: string; bytes?: Uint8Array };
 export type ArchiveRunOpts = {
   cwd?: string;
   // every line of stdout AND stderr, for progress (both pipes are streamed;
@@ -56,6 +59,11 @@ export type ArchiveRunOpts = {
   // ignores SIGKILL until resumed) and resolves code -1 like any spawn failure.
   timeoutMs?: number;
   onLoss?: (loss: { exec: number; links: number }) => void;
+  // raw stdout mode: collect BYTES (up to this many, the head of the stream)
+  // instead of decoded text, and resolve them as `bytes` — one archive member
+  // for the preview reader. The child is not killed at the cap: the tail is
+  // simply dropped (a preview shows the head anyway).
+  maxBytes?: number;
 };
 export type ArchiveRun = (spec: ToolSpec, opts?: ArchiveRunOpts) => Promise<ArchiveRunResult>;
 type SpawnFn = (cmd: string, args: string[], opts: SpawnOptions, onFail: (err: Error) => void) => ChildProcess;
@@ -276,40 +284,113 @@ export const selectArchiveLane = (
 // directly. Both never throw — like listArchiveEntries, corruption yields 0
 // so the op proceeds with no total instead of dying on a count.
 
+// one member of a container: the browser's row (name/isDir/size) and the
+// preview reader's key. `name` is normalized — "/" separated, no leading "./",
+// no trailing "/" — so the spawn tools match it back (`tar -t` prints "./x",
+// `unzip -Z1` prints "x").
+export type ArchiveEntryInfo = {
+  name: string;
+  isDir: boolean;
+  size?: number;
+  symlink?: boolean;
+  // tar lanes only: a zip link stores its target as the member's CONTENT
+  linkTarget?: string;
+};
+
+// --- zip-slip guard: an absolute, empty or ".."-escaping member name lands
+// OUTSIDE the extraction root (the spawn tools write such members relative to
+// the staging dir). fileops refuses an archive holding one before any tool
+// runs; the js lane applies the same rule per entry. ---
+export const isUnsafeEntryName = (name: string): boolean =>
+  !name || name.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(name) || name.split("/").includes("..");
+
+// why a member is refused (null = safe). A symlink is refused only when its
+// target leaves the root: an internal link is legitimate, and the staging
+// sweep still cuts the links a tool wrote outside it.
+export const unsafeEntryReason = (e: ArchiveEntryInfo): string | null => {
+  if (isUnsafeEntryName(e.name)) return `unsafe member path ${e.name}`;
+  const t = e.linkTarget;
+  if (e.symlink && t) {
+    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(e.name), t));
+    if (path.posix.isAbsolute(t) || resolved === ".." || resolved.startsWith("../"))
+      return `unsafe symlink ${e.name} -> ${t}`;
+  }
+  return null;
+};
+
 // tar: 512-byte headers, size at 124..135 (octal, null/space padded). pax
 // extended headers (typeflags 'x'/'g') are skipped like `tar -t` skips them —
 // counting them would overshoot both tar's listing and Bun.Archive.extract's
 // return (the round-trip totals test pins the equality).
+// one header at `off`: the single walk step behind the count AND the browser
+// listing. "end" = the zero blocks (or the byte-aligned end of the container),
+// "bad" = unparseable — both readers below treat bad as an all-or-nothing
+// failure (a plausible-looking partial listing is worse than none).
+type TarStep =
+  | { kind: "end" }
+  | { kind: "bad" }
+  | { kind: "entry"; info: ArchiveEntryInfo; dataOff: number; nextOff: number };
+
+const tarStep = (bytes: Uint8Array, off: number): TarStep => {
+  if (off === bytes.length) return { kind: "end" };
+  if (off + 512 > bytes.length) return { kind: "bad" };
+  let zero = true;
+  for (let i = 0; i < 512; i++) {
+    if (bytes[off + i] !== 0) {
+      zero = false;
+      break;
+    }
+  }
+  if (zero) return { kind: "end" };
+  // header-relative field read: stop at the field's null/space pad
+  const field = (start: number, len: number): string => {
+    let end = off + start;
+    const stop = off + start + len;
+    while (end < stop && bytes[end] !== 0 && bytes[end] !== 0x20) end++;
+    return Buffer.from(bytes.slice(off + start, end)).toString("latin1");
+  };
+  const size = parseInt(field(124, 12), 8);
+  // base-256 (GNU >8GB) sizes can't occur on the fallback path (the fileops
+  // size guard refuses long before) — treat as corrupt, not a lie
+  if (!Number.isSafeInteger(size) || size < 0) return { kind: "bad" };
+  const type = String.fromCharCode(bytes[off + 156] ?? 0);
+  // ustar prefix (fields >100 chars): tar joins it like GNU/bsdtar do, so a
+  // long member name is not listed as its first 100 bytes
+  const raw = field(0, 100);
+  const prefix = field(345, 155);
+  const name = (prefix ? `${prefix}/${raw}` : raw).replace(/^\.\//, "");
+  const nextOff = off + 512 + Math.ceil(size / 512) * 512;
+  if (nextOff > bytes.length) return { kind: "bad" };
+  return {
+    kind: "entry",
+    info: {
+      name: type === "5" ? name.replace(/\/+$/, "") : name,
+      isDir: type === "5" || name.endsWith("/"),
+      size,
+      symlink: type === "2",
+      ...(type === "2" ? { linkTarget: field(157, 100) } : {}),
+    },
+    dataOff: off + 512,
+    nextOff,
+  };
+};
+
+// member list; [] on corruption like the count below
+export const readTarEntries = (bytes: Uint8Array): ArchiveEntryInfo[] => {
+  const out: ArchiveEntryInfo[] = [];
+  for (let off = 0; ; ) {
+    const s = tarStep(bytes, off);
+    if (s.kind === "end") return out;
+    if (s.kind === "bad") return [];
+    // eslint-disable-next-line no-bitwise
+    if (bytes[off + 156] !== 0x78 && bytes[off + 156] !== 0x67) out.push(s.info); // 'x' / 'g'
+    off = s.nextOff;
+  }
+};
+
 export const countTarEntries = (bytes: Uint8Array): number => {
   try {
-    let off = 0;
-    let n = 0;
-    for (;;) {
-      if (off === bytes.length) return n;
-      if (off + 512 > bytes.length) return 0;
-      let zero = true;
-      for (let i = 0; i < 512; i++) {
-        if (bytes[off + i] !== 0) {
-          zero = false;
-          break;
-        }
-      }
-      if (zero) return n;
-      // all header-relative: bare indices only work for the first header
-      // (bit us: aligned sizes made every test pass while every later
-      // header re-read block 0's size and walked off into data blocks)
-      let end = off + 124;
-      while (end < off + 136 && bytes[end] !== 0 && bytes[end] !== 0x20) end++;
-      const size = parseInt(Buffer.from(bytes.slice(off + 124, end)).toString("latin1"), 8);
-      // base-256 (GNU >8GB) sizes can't occur on the fallback path (the
-      // fileops size guard refuses long before) — treat as corrupt, not a lie
-      if (!Number.isSafeInteger(size) || size < 0) return 0;
-      const type = bytes[off + 156];
-      off += 512 + Math.ceil(size / 512) * 512;
-      if (off > bytes.length) return 0;
-      // eslint-disable-next-line no-bitwise
-      if (type !== 0x78 && type !== 0x67) n++; // 'x' / 'g'
-    }
+    return readTarEntries(bytes).length;
   } catch {
     return 0;
   }
@@ -320,6 +401,15 @@ export const countTarEntries = (bytes: Uint8Array): number => {
 // download yields 0 instead of a plausible lie. Zip64 (0xFFFF counts)
 // yields 0 — the op still proceeds, just with no total.
 export const countZipEntries = (bytes: Uint8Array): number => readZipEntries(bytes)?.length ?? 0;
+
+// member list from the same central directory (the js lane's browser source)
+export const readZipEntryInfos = (bytes: Uint8Array): ArchiveEntryInfo[] | null =>
+  readZipEntries(bytes)?.map((e) => ({
+    name: e.dir ? e.name.replace(/\/+$/, "") : e.name,
+    isDir: e.dir,
+    size: e.size,
+    symlink: e.symlink,
+  })) ?? null;
 
 // basename + ext-aware "(copy)" naming: uniqueTarget would split "foo.tar.gz"
 // as "foo.tar" + ".gz" and yield "foo.tar (copy).gz"
@@ -400,6 +490,10 @@ export const runArchiveTool = (spec: ToolSpec, opts: ArchiveRunOpts = {}): Promi
     const spawnFn: SpawnFn = opts.spawn ?? spawnSafe;
     let stdout = "";
     let stderr = "";
+    // raw mode: stdout is collected as bytes, capped at maxBytes (the head)
+    const cap = opts.maxBytes !== undefined && opts.maxBytes > 0 ? opts.maxBytes : 0;
+    const chunks: Buffer[] = [];
+    let held = 0;
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const finish = (code: number): void => {
@@ -408,7 +502,7 @@ export const runArchiveTool = (spec: ToolSpec, opts: ArchiveRunOpts = {}): Promi
       if (timer !== null) clearTimeout(timer);
       stdoutCounter.flush();
       stderrCounter.flush();
-      resolve({ code, stdout, stderr });
+      resolve({ code, stdout, stderr, ...(cap ? { bytes: Buffer.concat(chunks) } : {}) });
     };
     const stdoutCounter = makeLineCounter((l) => opts.onLine?.(l));
     const stderrCounter = makeLineCounter((l) => opts.onLine?.(l));
@@ -437,6 +531,14 @@ export const runArchiveTool = (spec: ToolSpec, opts: ArchiveRunOpts = {}): Promi
       }, opts.timeoutMs);
     }
     child.stdout?.on("data", (c: Buffer | string) => {
+      if (cap) {
+        if (held >= cap) return; // head only: the tail is dropped
+        const b = Buffer.isBuffer(c) ? c : Buffer.from(c);
+        const take = Math.min(b.length, cap - held);
+        chunks.push(b.subarray(0, take));
+        held += take;
+        return;
+      }
       const s = typeof c === "string" ? c : c.toString();
       stdout = appendCapped(stdout, s);
       stdoutCounter.push(s);
@@ -930,4 +1032,168 @@ export const runArchiveTask: ArchiveTaskRun = async (task, opts = {}) => {
   const need =
     task.fmt === "7z" ? "7z" : defOf(task.fmt).need.length ? defOf(task.fmt).need.join(", ") : "zip/unzip/7z";
   return { code: 127, stdout: "", stderr: `cannot handle .${task.fmt} archives (missing ${need})` };
+};
+
+// --- Archive browsing: list a container's members and read ONE member's bytes
+// (the folder view in the grid and the preview pane's reader). Listing is
+// best-effort: null when the lane cannot list (darwin's ditto fallback has no
+// list mode, a corrupt container) so the caller keeps plain-file behavior
+// instead of showing a wrong empty folder. ---
+
+// one listing line -> member, null = skip. `tar -t` and `unzip -Z1` print bare
+// names; `7z l -ba` prints "<date> <time> <attr> <size> <packed> <name>".
+export const parseListingLine = (fmt: ArchiveFormat, line: string): ArchiveEntryInfo | null => {
+  const kind = defOf(fmt).kind;
+  if (kind !== "tar") {
+    const m = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+(\S+)\s+(\d+)\s+\d+\s+(.+)$/.exec(line.trim());
+    if (m) {
+      const attrs = m[1] ?? "";
+      const raw = (m[3] ?? "").replace(/^\.\//, "");
+      const isDir = attrs.startsWith("D") || raw.endsWith("/");
+      const name = isDir ? raw.replace(/\/+$/, "") : raw;
+      // attrs carry no trustworthy link flag across 7z versions — a link is
+      // only refused when the tar lanes hand us its target (unsafeEntryReason)
+      return name ? { name, isDir, size: Number(m[2]) } : null;
+    }
+    if (kind === "7z") return null; // an option banner or a summary line
+  }
+  return nameEntryLine(line);
+};
+
+const nameEntryLine = (line: string): ArchiveEntryInfo | null => {
+  const t = line.replace(/\r$/, "").trim().replace(/^\.\//, "");
+  if (!t) return null;
+  const isDir = t.endsWith("/");
+  const name = isDir ? t.replace(/\/+$/, "") : t;
+  return name ? { name, isDir } : null;
+};
+
+// member list: tool listing when tools exist, in-process header walk on the js
+// lane. Never throws (missing/unreadable file -> null).
+export const listArchiveContents = async (
+  fmt: ArchiveFormat,
+  file: string,
+  run: ArchiveRun = runArchiveTool,
+  which: WhichFn = Bun.which,
+  platform: string = process.platform,
+): Promise<ArchiveEntryInfo[] | null> => {
+  if (selectArchiveLane(fmt, "extract", which, platform) === "js") return listJsContents(fmt, file);
+  const tool = listTool(fmt, which, platform);
+  // ditto extracts but cannot list: no folder view (honest null, same as its 0 count)
+  if (tool !== "unzip" && tool !== "tar" && tool !== "7z") return null;
+  const out: ArchiveEntryInfo[] = [];
+  const res = await run(
+    { tool, args: listArgs(fmt, file, which, platform) },
+    {
+      onLine: (line) => {
+        const e = parseListingLine(fmt, line);
+        if (e) out.push(e);
+      },
+    },
+  );
+  if (res.code !== 0 && res.code !== 1) return null;
+  return out;
+};
+
+const listJsContents = async (fmt: ArchiveFormat, file: string): Promise<ArchiveEntryInfo[] | null> => {
+  try {
+    // same guard as every other js lane: never load a container that could OOM
+    const st = statSync(file, { throwIfNoEntry: false });
+    if (!st || st.size > JS_ARCHIVE_MEMORY_LIMIT) return null;
+    const bytes = await Bun.file(file).bytes();
+    if (fmt === "zip") return readZipEntryInfos(bytes);
+    return readTarEntries(fmt === "tar" ? bytes : Bun.gunzipSync(bytes));
+  } catch {
+    return null;
+  }
+};
+
+// the first unsafe member of an archive (null = safe OR unlistable). Unlistable
+// archives pass: the lanes that cannot list cannot be refused honestly either,
+// and the staging snapshot sweep stays the backstop there.
+export const firstUnsafeMember = async (
+  fmt: ArchiveFormat,
+  file: string,
+  run: ArchiveRun = runArchiveTool,
+  which: WhichFn = Bun.which,
+  platform: string = process.platform,
+): Promise<string | null> => {
+  const list = await listArchiveContents(fmt, file, run, which, platform);
+  if (!list) return null;
+  for (const e of list) {
+    const why = unsafeEntryReason(e);
+    if (why) return why;
+  }
+  return null;
+};
+
+// preview read cap: the head of an oversized member is enough for a preview
+// (the spawn lanes stream it, the js lanes hold the container in RAM anyway)
+export const ENTRY_READ_MAX_BYTES = 1024 * 1024;
+
+// the argv that streams ONE member to stdout
+export const entryReadPlan = (
+  fmt: ArchiveFormat,
+  file: string,
+  name: string,
+  which: WhichFn = Bun.which,
+  platform: string = process.platform,
+): ToolSpec => {
+  const def = defOf(fmt);
+  // `--`: a member named "-v" would otherwise be parsed as an option (probed:
+  // both bsdtar and Info-ZIP unzip honor it, and both match the normalized name)
+  if (def.kind === "tar") return { tool: "tar", args: ["-x", "-O", "-f", file, "--", name] };
+  if (def.kind === "7z") return { tool: "7z", args: ["x", "-so", "-y", file, "--", name] };
+  return zipExtractTool(which, platform) === "unzip"
+    ? { tool: "unzip", args: ["-p", "--", file, name] }
+    : { tool: "7z", args: ["x", "-so", "-y", file, "--", name] };
+};
+
+// ONE member's bytes, for the preview pane. null = unreadable (no listing tool
+// for the format, member missing, traversal name refused). The caller reads an
+// archive member, never an fs path, so the name is validated first.
+export const readArchiveEntry = async (
+  fmt: ArchiveFormat,
+  file: string,
+  name: string,
+  opts: { run?: ArchiveRun; which?: WhichFn; platform?: string; maxBytes?: number } = {},
+): Promise<Uint8Array | null> => {
+  if (isUnsafeEntryName(name)) return null;
+  const which = opts.which ?? Bun.which;
+  const platform = opts.platform ?? process.platform;
+  const maxBytes = opts.maxBytes ?? ENTRY_READ_MAX_BYTES;
+  if (selectArchiveLane(fmt, "extract", which, platform) === "js") return readJsEntry(fmt, file, name, maxBytes);
+  const run = opts.run ?? runArchiveTool;
+  const res = await run(entryReadPlan(fmt, file, name, which, platform), { maxBytes });
+  return res.code === 0 && res.bytes ? res.bytes : null;
+};
+
+const readJsEntry = async (
+  fmt: ArchiveFormat,
+  file: string,
+  name: string,
+  maxBytes: number,
+): Promise<Uint8Array | null> => {
+  try {
+    const st = statSync(file, { throwIfNoEntry: false });
+    if (!st || st.size > JS_ARCHIVE_MEMORY_LIMIT) return null;
+    const raw = await Bun.file(file).bytes();
+    if (fmt === "zip") {
+      const { unzipSync } = await import("fflate");
+      // filter, not a full inflate: only the requested member is decoded
+      const one = unzipSync(raw, { filter: (f) => f.name === name });
+      const data = one[name];
+      return data ? data.slice(0, maxBytes) : null;
+    }
+    const tar = fmt === "tar" ? raw : Bun.gunzipSync(raw);
+    for (let off = 0; ; ) {
+      const s = tarStep(tar, off);
+      if (s.kind !== "entry") return null;
+      if (s.info.name === name && !s.info.isDir)
+        return tar.slice(s.dataOff, s.dataOff + Math.min(s.info.size ?? 0, maxBytes));
+      off = s.nextOff;
+    }
+  } catch {
+    return null;
+  }
 };

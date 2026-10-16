@@ -10,7 +10,15 @@ import { chmod } from "node:fs/promises";
 import { spawnSafe } from "../fs/spawn-safe";
 import { addExecBits, classifyPath, executableChoiceLabels, type ExecutableInfo } from "../fs/executable";
 import { registerSyntaxParsers } from "../ui/syntax";
-import { availableCompressionFormats, canExtract, compressionExt, compressionHint } from "../fs/archive";
+import {
+  availableCompressionFormats,
+  canExtract,
+  compressionExt,
+  compressionHint,
+  detectArchiveFormat,
+  listArchiveContents,
+  type ArchiveEntryInfo,
+} from "../fs/archive";
 import { appsForFile, launchApp } from "../fs/apps";
 import { runSudo, sudoCatArgv } from "../fs/elevate";
 import type { makePick } from "../ui/ui-pick";
@@ -342,6 +350,36 @@ export const wireGrid = (deps: {
       }),
     });
   const hoverAnims = makeLeafRegistry(core.panes, (id) => makeHoverAnimator(id));
+
+  // --- Archive folder view (fs/archive lists the members, app/archive-nav owns
+  // the model). ONE container is cached, keyed on its mtime: every repaint
+  // re-asks, and a tar listing decompresses the whole container. A container
+  // longer than the js fallback's memory ceiling is refused by the engine, so
+  // the cache never holds more than one listing. ---
+  let archiveCache: { archive: string; sig: string; entries: ArchiveEntryInfo[] | null } | null = null;
+  const archiveMembers = async (archive: string): Promise<ArchiveEntryInfo[] | null> => {
+    const fmt = detectArchiveFormat(archive);
+    if (!fmt) return null;
+    let sig: string;
+    try {
+      const st = statSync(archive);
+      if (!st.isFile()) return null;
+      sig = String(st.mtimeMs);
+    } catch {
+      return null;
+    }
+    if (archiveCache && archiveCache.archive === archive && archiveCache.sig === sig) return archiveCache.entries;
+    const entries = await listArchiveContents(fmt, archive);
+    archiveCache = { archive, sig, entries };
+    return entries;
+  };
+  const archiveBrowse = (id: PaneId) => ({
+    // columns view has its own listing path (ui-columns) and would show an
+    // unreadable folder for an archive location: there the tile stays a file
+    enterable: (name: string): boolean =>
+      viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode) !== "columns" && canExtract(name),
+    list: archiveMembers,
+  });
   const makeRenderer = (id: PaneId) =>
     makeGridRenderer({
       termW: () => chrome.renderer.terminalWidth,
@@ -415,6 +453,7 @@ export const wireGrid = (deps: {
       // 2s park here stalled EVERY navigation on the console.
       waitForResolution: () => core.resolutionGate.wait(),
       clearRenameEdit: rename.clearRenameEdit,
+      archive: archiveBrowse(id),
     });
   const renderers = makeLeafRegistry(core.panes, (id) => makeRenderer(id));
 

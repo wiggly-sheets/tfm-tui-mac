@@ -52,6 +52,7 @@ import {
   compressionExt,
   countArchiveEntries,
   detectArchiveFormat,
+  firstUnsafeMember,
   runArchiveTask,
   runArchiveTool,
   uniqueArchiveTarget,
@@ -1294,6 +1295,18 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
         const fmt = detectArchiveFormat(file);
         if (!fmt || !existsSync(file)) {
           skipped++;
+          continue;
+        }
+        // zip-slip preflight: a tool handed `../evil` writes it relative to the
+        // staging dir, i.e. OUTSIDE it — and the snapshot sweep below only
+        // covers destDir and its parent. An archive holding an absolute, `..`
+        // or escaping-symlink member is refused before any tool runs: nothing
+        // from a hostile member list is trusted. Unlistable archives pass here
+        // (the js lane and the staging sweep stay the backstop).
+        const unsafe = await firstUnsafeMember(fmt, file, runArchive, archiveWhich, platform);
+        if (unsafe) {
+          failed++;
+          failWhy.add(`${path.basename(file)}: ${unsafe}`);
           continue;
         }
         const stage = path.join(destDir, `.tfm-extract-${process.pid}-${Math.random().toString(36).slice(2, 10)}`);

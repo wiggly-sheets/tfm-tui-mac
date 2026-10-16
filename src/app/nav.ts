@@ -6,7 +6,9 @@
 
 import path from "node:path";
 import { statSync } from "node:fs";
-import { RECENT_URI, STARRED_URI } from "../fs/uri";
+import { isVirtualUri } from "../fs/uri";
+import { detectArchiveFormat } from "../fs/archive";
+import { archiveUri } from "./archive-nav";
 import type { SortMode } from "../lib/sort";
 import { naturalAscFor } from "../lib/sort";
 import type { Config } from "../config/config";
@@ -70,6 +72,14 @@ type NavHooks = {
 };
 
 export const makeNav = (state: AppState, hooks: NavHooks) => {
+  // a regular FILE (an archive) — a dangling/unreadable one never enters
+  const isFile = (p: string): boolean => {
+    try {
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
   const canBack = () => state.histIdx > 0;
   const canFwd = () => state.histIdx < state.history.length - 1;
   // history-button/back-key moves are navigations too — plugins watching
@@ -100,21 +110,25 @@ export const makeNav = (state: AppState, hooks: NavHooks) => {
     debugLog(`navigate -> ${dir}`);
     hooks.exitPathEdit();
     hooks.closeFileMenuIfOpen();
-    if (dir === RECENT_URI || dir === STARRED_URI) {
-      if (dir === state.cwd) {
+    // an archive file opens AS A FOLDER (the grid marks archive tiles as dirs,
+    // so Enter and double-click land here); the resulting location is virtual
+    // like recent:// and takes the same branch.
+    const entered = !isVirtualUri(dir) && detectArchiveFormat(dir) && isFile(dir) ? archiveUri(dir) : dir;
+    if (isVirtualUri(entered)) {
+      if (entered === state.cwd) {
         hooks.renderAll();
         return;
       }
-      pushHistory(dir);
+      pushHistory(entered);
       hooks.clearSearch();
       hooks.renderAll();
-      emitNavigate(dir);
-      hooks.onSyncFollow?.(dir);
+      emitNavigate(entered);
+      hooks.onSyncFollow?.(entered);
       return;
     }
     let target: string;
     try {
-      target = path.resolve(dir);
+      target = path.resolve(entered);
       if (!statSync(target).isDirectory()) return;
     } catch {
       return;

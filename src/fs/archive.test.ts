@@ -28,13 +28,18 @@ import {
   detectArchiveFormat,
   extractPlan,
   isArchiveEntryLine,
+  isUnsafeEntryName,
+  listArchiveContents,
   listArchiveEntries,
   makeLineCounter,
   parseToolLine,
+  readArchiveEntry,
   runArchiveTask,
   runArchiveTool,
   selectArchiveLane,
+  unsafeEntryReason,
   uniqueArchiveTarget,
+  firstUnsafeMember,
 } from "./archive";
 
 type FakeChild = EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill: () => void; pid: number };
@@ -1052,6 +1057,131 @@ describe("js zip traversal guards", () => {
     }
   });
 });
+describe("unsafe entry names (zip-slip / symlink-escape preflight)", () => {
+  test("absolute, empty and ..-escaping member names are unsafe", () => {
+    expect(isUnsafeEntryName("../evil.txt")).toBe(true);
+    expect(isUnsafeEntryName("a/../../evil.txt")).toBe(true);
+    expect(isUnsafeEntryName("/abs.txt")).toBe(true);
+    expect(isUnsafeEntryName("C:/Windows/evil.txt")).toBe(true);
+    expect(isUnsafeEntryName("")).toBe(true);
+    // a member named exactly ".." is an escape just like "../x"
+    expect(isUnsafeEntryName("..")).toBe(true);
+  });
+
+  test("safe member names pass", () => {
+    expect(isUnsafeEntryName("a.txt")).toBe(false);
+    expect(isUnsafeEntryName("sub/b.txt")).toBe(false);
+    expect(isUnsafeEntryName("a..b.txt")).toBe(false);
+    expect(isUnsafeEntryName("a/../b.txt".replace("../", "x"))).toBe(false);
+  });
+
+  test("unsafeEntryReason names the offender, null for safe members", () => {
+    expect(unsafeEntryReason({ name: "../evil.txt", isDir: false })).toBe("unsafe member path ../evil.txt");
+    expect(unsafeEntryReason({ name: "/abs.txt", isDir: false })).toBe("unsafe member path /abs.txt");
+    expect(unsafeEntryReason({ name: "a.txt", isDir: false, size: 1 })).toBeNull();
+    expect(unsafeEntryReason({ name: "sub", isDir: true })).toBeNull();
+  });
+
+  test("a symlink is refused only when its target leaves the archive root", () => {
+    // internal link: legitimate
+    expect(unsafeEntryReason({ name: "sub/link", isDir: false, symlink: true, linkTarget: "../a.txt" })).toBeNull();
+    // target climbs above the root: refused
+    const up = unsafeEntryReason({ name: "sub/link", isDir: false, symlink: true, linkTarget: "../../evil" });
+    expect(up).toBe("unsafe symlink sub/link -> ../../evil");
+    // absolute target: refused even from the root
+    expect(unsafeEntryReason({ name: "link", isDir: false, symlink: true, linkTarget: "/etc/passwd" })).toBe(
+      "unsafe symlink link -> /etc/passwd",
+    );
+    // a non-symlink member with a linkTarget is plain data: no link check
+    expect(unsafeEntryReason({ name: "note.txt", isDir: false, linkTarget: "../outside" })).toBeNull();
+  });
+});
+
+describe("readArchiveEntry (preview reader)", () => {
+  const none = () => null;
+
+  test("traversal and absolute member names are refused before any read", async () => {
+    for (const name of ["../evil.txt", "/abs.txt", ""]) {
+      expect(await readArchiveEntry("zip", "/nonexistent/a.zip", name, { which: none })).toBeNull();
+      expect(await readArchiveEntry("tar", "/nonexistent/a.tar", name, { which: none })).toBeNull();
+    }
+  });
+
+  test("reads the requested member's head from a zip, capped at maxBytes", async () => {
+    const { zipSync } = await import("fflate");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-entry-"));
+    try {
+      const body = "x".repeat(5000);
+      const bytes = zipSync({ "a.txt": new TextEncoder().encode(body), "sub/b.txt": new TextEncoder().encode("yo") });
+      const arch = path.join(dir, "a.zip");
+      writeFileSync(arch, Buffer.from(bytes));
+      expect(await readArchiveEntry("zip", arch, "a.txt", { which: none })).toEqual(new TextEncoder().encode(body));
+      expect(await readArchiveEntry("zip", arch, "sub/b.txt", { which: none })).toEqual(new TextEncoder().encode("yo"));
+      expect(await readArchiveEntry("zip", arch, "missing.txt", { which: none })).toBeNull();
+      const head = await readArchiveEntry("zip", arch, "a.txt", { which: none, maxBytes: 100 });
+      expect(head).toEqual(new TextEncoder().encode(body).slice(0, 100));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reads the requested member from a tar, capped at maxBytes", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-entrytar-"));
+    try {
+      const tar = tarBytes(); // a.txt="hi", sub/, sub/b.txt="x"*600
+      const arch = path.join(dir, "a.tar");
+      writeFileSync(arch, Buffer.from(tar));
+      expect(await readArchiveEntry("tar", arch, "a.txt", { which: none })).toEqual(new TextEncoder().encode("hi"));
+      expect(await readArchiveEntry("tar", arch, "sub/b.txt", { which: none })).toEqual(
+        new TextEncoder().encode("x".repeat(600)),
+      );
+      const head = await readArchiveEntry("tar", arch, "sub/b.txt", { which: none, maxBytes: 16 });
+      expect(head).toEqual(new TextEncoder().encode("x".repeat(16)));
+      // dir members have no content: null, not an error
+      expect(await readArchiveEntry("tar", arch, "sub", { which: none })).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("listArchiveContents / firstUnsafeMember (spawn lane)", () => {
+  const whichUnzip = which("unzip");
+
+  test("parses the listing into members (unzip -Z1 prints bare names)", async () => {
+    const run = async (_spec: unknown, opts?: { onLine?: (l: string) => void }) => {
+      opts?.onLine?.("./a.txt");
+      opts?.onLine?.("sub/");
+      opts?.onLine?.("sub/b.txt");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const list = await listArchiveContents("zip", "x.zip", run, whichUnzip);
+    expect(list).toEqual([
+      { name: "a.txt", isDir: false },
+      { name: "sub", isDir: true },
+      { name: "sub/b.txt", isDir: false },
+    ]);
+  });
+
+  test("firstUnsafeMember refuses a zip-slip archive before any tool runs", async () => {
+    const run = async (_spec: unknown, opts?: { onLine?: (l: string) => void }) => {
+      opts?.onLine?.("ok.txt");
+      opts?.onLine?.("../evil.txt");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    expect(await firstUnsafeMember("zip", "x.zip", run, whichUnzip)).toBe("unsafe member path ../evil.txt");
+    const safeRun = async (_spec: unknown, opts?: { onLine?: (l: string) => void }) => {
+      opts?.onLine?.("ok.txt");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    expect(await firstUnsafeMember("zip", "x.zip", safeRun, whichUnzip)).toBeNull();
+    // an unlistable archive (corrupt / ditto-only) passes: the lanes that
+    // cannot list cannot be refused honestly (the staging sweep is the backstop)
+    const deadRun = async () => ({ code: 2, stdout: "", stderr: "bad" });
+    expect(await firstUnsafeMember("zip", "x.zip", deadRun, whichUnzip)).toBeNull();
+  });
+});
+
 const roundTrip = async (fmt: Parameters<typeof compressPlan>[0], need: string[]): Promise<void> => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-archint-"));
   try {

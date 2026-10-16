@@ -14,6 +14,7 @@
 // so the pick overlay runs exactly what the keypress would. ---
 import path from "node:path";
 import { RECENT_URI, STARRED_URI } from "../fs/uri";
+import { archiveParent } from "../app/archive-nav";
 import { loadSystemPlaces } from "../fs/places";
 import type { KeyAction } from "../config/config-schema";
 import { KEY_SCHEMA } from "../config/config-schema";
@@ -546,6 +547,13 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     else if (!ctx.isVirtualCwd()) ctx.openProperties([ctx.state.cwd]);
   };
   const doParentDir = (): void => {
+    // an archive location has a real parent chain: up walks the member dirs,
+    // then leaves the archive at its root ("" = not an archive)
+    const up = archiveParent(ctx.state.cwd);
+    if (up) {
+      ctx.navigate(up);
+      return;
+    }
     // virtual views have no fs parent (path.resolve would shred the URI)
     if (ctx.isVirtualCwd()) {
       ctx.navigate(ctx.home);
