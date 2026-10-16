@@ -55,6 +55,9 @@ const fail = (msg: string): never => {
 };
 let pendingSelect: string | null = null;
 let explicitPath = false;
+// [ui] exit-cwd "default": the launch directory, captured before the PATH
+// chdir below (by quit time process.cwd() is whatever the panes browsed to).
+const launchCwd = process.cwd();
 const target = cli.paths[0];
 if (cli.paths.length > 1) console.error(`tfm: only the first path is used: ${target}`);
 if (target === "") fail("tfm: empty path");
@@ -118,9 +121,26 @@ const core = wireCore({
   pendingSelect,
 });
 
+// --- CLI overrides: applied on the live config/state before the widgets that
+// read them are built. They ride the same live config the f3/f7 toggles and the
+// settings rows write (no second override channel), so a later save persists
+// them exactly like a toggle would shown in the GUI.
+// --view: the active pane's initial mode (per-pane state, not [ui] view-mode).
+if (cli.view) core.state.viewMode = cli.view;
+// --restore must clear BOTH gates: the explicit-PATH rule below and the
+// [ui] restore-session switch, which is off by default.
+if (cli.restore === true) core.config.ui.restoreSession = true;
+// --preview/--info: the same flags f3/f7 flip; wireChrome reads them once when
+// it builds the right-hand panes, so seed them before that. geometry mirrors
+// the config here (its boot value was computed inside wireCore).
+if (cli.preview) core.config.ui.previewEnabled = true;
+if (cli.info) core.config.ui.infoSidebar = true;
+if (cli.preview || cli.info) core.geometry.previewEff = core.config.ui.previewWidth;
+
 // --- nav: renderAll, quit, status, history, tabs, session, type-to-search ---
 const nav = wireNav({
   core,
+  launchCwd,
   getChrome: () => chrome,
   getDnd: () => dnd,
   getGridFoundation: () => gridFoundation,
@@ -290,9 +310,16 @@ wireBoot({
   grid,
   fileops,
   bootStart,
-  skipSessionRestore: explicitPath,
+  // an explicit PATH suppresses session restore (the user asked for a location);
+  // --restore/--no-restore override that rule both ways
+  skipSessionRestore: cli.restore === null ? explicitPath : !cli.restore,
   mountSlots: () => plugins.mountSlots(),
-  afterLayout: () => hover.refresh(),
+  afterLayout: () => {
+    hover.refresh();
+    // --terminal: the boot layout owns the pane host, so open it once the
+    // layout is mounted (openTerminalHere no-ops on a missing host)
+    if (cli.terminal) fileops.terminal.openTerminalHere();
+  },
   playSidebarIntro: () => chrome.sidebarIntro.play(),
   playTopbarIntro: () => chrome.topbarIntro.play(),
   // system theme: terminal colors land before the first layout bakes them in

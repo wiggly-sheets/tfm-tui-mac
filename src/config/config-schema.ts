@@ -157,6 +157,18 @@ export type Theme = {
 
 export type ViewMode = "grid" | "list" | "columns";
 
+// breadcrumb-bar placement ([ui] pathbar-position): where the toolbar row sits
+// inside each pane column. Cold-boot only — the pane column DOM order is baked
+// when the leaf is built, so the rows are restart-flagged.
+export type PathbarPosition = "top" | "bottom" | "hidden";
+
+// shell hand-back ([ui] exit-cwd): which directory the wrapper that set
+// $TFM_CWD_FILE lands in once tfm exits. A TUI child can never move its parent
+// shell, so the directory travels through that file. `default` = the launch
+// directory (a no-op for the shell that started tfm); `active-pane` = the
+// active pane's directory. Nothing is written when $TFM_CWD_FILE is unset.
+export type ExitCwdMode = "default" | "active-pane";
+
 // line-wrap vocabulary ([ui] wrap-mode): how over-long lines render
 // everywhere (grid tile labels, code preview, markdown). none cuts,
 // char slices mid-token, word breaks at spaces (spaceless runs still slice).
@@ -250,6 +262,7 @@ export type UiConfig = {
   hoverCloseDelayMs: number;
   hoverAnimMs: number;
   restoreSession: boolean;
+  exitCwd: ExitCwdMode;
   persistUndo: boolean;
   followTerminal: boolean;
   transparentBg: TransparentBgMode;
@@ -268,6 +281,7 @@ export type UiConfig = {
   sidebarShowNetwork: boolean;
   uiStyle: UiStyle;
   tabBar: boolean;
+  pathbarPosition: PathbarPosition;
   viewMode: ViewMode;
   toastDurationMs: number;
   typeToSearch: boolean;
@@ -488,6 +502,20 @@ const UI_ROWS: SchemaRow[] = [
     blurb: "Always show the tab strip",
     group: "layout",
     subsection: "view",
+  },
+  {
+    kind: "enum",
+    section: "ui",
+    tomlKey: "pathbar-position",
+    prop: "pathbarPosition",
+    values: ["top", "bottom", "hidden"],
+    def: "top",
+    doc: '"top" = the breadcrumb path bar sits above the file list (default); "bottom" = below it; "hidden" = no path bar',
+    label: "path bar",
+    blurb: "Where the breadcrumb path bar sits",
+    group: "layout",
+    subsection: "view",
+    restart: true,
   },
   {
     kind: "int",
@@ -1848,6 +1876,19 @@ const UI_ROWS: SchemaRow[] = [
     doc: "true = undo history survives restarts (journal under $XDG_STATE_HOME/tfm/, entries expire after 7 days)",
     label: "persistent undo",
     blurb: "Undo still works after a restart",
+    group: "files",
+    subsection: "session",
+  },
+  {
+    kind: "enum",
+    section: "ui",
+    tomlKey: "exit-cwd",
+    prop: "exitCwd",
+    values: ["default", "active-pane"],
+    def: "default",
+    doc: 'where the shell wrapper that set $TFM_CWD_FILE lands on exit: "default" = the directory tfm was launched in; "active-pane" = the active pane\'s directory. Nothing is written when $TFM_CWD_FILE is unset',
+    label: "exit directory",
+    blurb: "Hand the folder back to the shell on exit",
     group: "files",
     subsection: "session",
   },

@@ -21,7 +21,7 @@ import { makeChrome } from "../ui/ui-chrome";
 import { makeToolbar, toolbarItemIds, crumbItemIds } from "../ui/ui-toolbar";
 import { getMap, makeLeafRegistry, type PaneId } from "../app/panes";
 import { leafRectsOf } from "../app/layout";
-import { buildAppContainer, buildTitle } from "../ui/ui-boot-layout";
+import { buildAppContainer, buildTitle, setPathbarPosition } from "../ui/ui-boot-layout";
 import { warmEmbeddedIcons } from "../ui/icons";
 import type { NodeLike } from "../lib/node-like";
 import { makeNotify } from "../ui/notify";
@@ -209,6 +209,9 @@ export const wireChrome = async (deps: {
   // --- Toolbars — widget lives in ./ui-toolbar (nav buttons, crumbs, inline
   // path edit, sort/search buttons). ONE PER PANE, each with its own id prefix
   // so the nodes can coexist in the renderable registry. ---
+  // [ui] pathbar-position: wiring/panes bakes the column child order from this
+  // seam (it builds the columns, this wiring owns the config).
+  setPathbarPosition(() => core.config.ui.pathbarPosition);
   const makePaneToolbar = (id: PaneId) =>
     makeToolbar({
       prefix: `tfm-${id}-`,

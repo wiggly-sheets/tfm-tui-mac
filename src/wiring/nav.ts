@@ -5,8 +5,9 @@
 // the old flat wiring used, just parameterized. ---
 
 import { makeRenderAll } from "../app/render-all";
-import { makeQuit } from "../app/quit";
+import { makeQuit, resolveExitCwd } from "../app/quit";
 import { makeRestart, restartArgs } from "../app/restart";
+import { writeFileSync } from "node:fs";
 import { sharedOpQueue } from "../lib/op-queue";
 import { makeStatus } from "../ui/ui-status";
 import { makeNav, makeSessionSync } from "../app/nav";
@@ -32,6 +33,9 @@ export const wireNav = (deps: {
   getTermHasFocus: () => boolean;
   getTerm: () => { closeTerminalPane(): void };
   getWatcher: () => { syncCwdWatcher(): void };
+  // [ui] exit-cwd: the directory tfm was launched in (index captures it before
+  // the launch PATH chdir) — what the `default` hand-back writes out.
+  launchCwd: string;
   // plugin teardown at quit (wired after nav; lazy getter). Best-effort sync.
   getPlugins?: () => {
     deactivateAll(): void;
@@ -39,9 +43,18 @@ export const wireNav = (deps: {
     disposeSlots?(): void;
   };
 }) => {
-  const { core, getChrome, getDnd, getGridFoundation, getGrid, getTermHasFocus, getTerm, getWatcher, getPlugins } =
-    deps;
-
+  const {
+    core,
+    launchCwd,
+    getChrome,
+    getDnd,
+    getGridFoundation,
+    getGrid,
+    getTermHasFocus,
+    getTerm,
+    getWatcher,
+    getPlugins,
+  } = deps;
   // --- renderAll orchestration lives in ./render-all (tested): tab-sync +
   // cwd-sync, then the named steps in insertion order, each guarded. ---
   const renderAll = makeRenderAll({
@@ -111,6 +124,14 @@ export const wireNav = (deps: {
       // the session (the old guard silently dropped BOTH panes' real-dir tabs)
       syncTabsFromState();
       saveSessionSync(paneTabs(), core.panes.activeId === "p1" ? 1 : 0);
+    },
+    // [ui] exit-cwd: a menu-style child can't chdir its parent shell, so the
+    // directory travels through $TFM_CWD_FILE for the wrapper to read. Never
+    // written when the variable is unset (plain `tfm` exits write nothing).
+    writeCwdFile: () => {
+      const file = process.env.TFM_CWD_FILE;
+      if (!file) return;
+      writeFileSync(file, resolveExitCwd(core.config.ui.exitCwd, core.state.cwd, launchCwd, core.isVirtualCwd()));
     },
     destroy: () => getChrome().renderer.destroy(),
     exit: (code: number) => process.exit(code),

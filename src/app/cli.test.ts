@@ -77,6 +77,48 @@ describe("parseArgs", () => {
     expect(parseArgs(["tfm", "-c"]).error).toBe("option '-c' needs a value");
     expect(parseArgs(["tfm", "--config="]).error).toBe("option '--config' needs a value");
   });
+
+  test("-C/--cwd is the explicit start directory, folded into paths", () => {
+    expect(parseArgs(["tfm", "-C", "/tmp/x"]).paths).toEqual(["/tmp/x"]);
+    expect(parseArgs(["tfm", "--cwd", "/tmp/x"]).paths).toEqual(["/tmp/x"]);
+    expect(parseArgs(["tfm", "--cwd=/tmp/x"]).paths).toEqual(["/tmp/x"]);
+    expect(parseArgs(["tfm", "--cwd=/tmp/x", "--debug"]).paths).toEqual(["/tmp/x"]);
+    expect(parseArgs(["tfm", "-C"]).error).toBe("option '-C' needs a value");
+    expect(parseArgs(["tfm", "--cwd"]).error).toBe("option '--cwd' needs a value");
+    expect(parseArgs(["tfm", "--cwd="]).error).toBe("option '--cwd' needs a value");
+  });
+
+  test("--restore/--no-restore set the override; absent stays null", () => {
+    expect(parseArgs(["tfm"]).restore).toBeNull();
+    expect(parseArgs(["tfm", "--restore"]).restore).toBe(true);
+    expect(parseArgs(["tfm", "--no-restore"]).restore).toBe(false);
+  });
+
+  test("--view takes grid|list|columns in both spellings", () => {
+    expect(parseArgs(["tfm", "--view=list"]).view).toBe("list");
+    expect(parseArgs(["tfm", "--view", "columns"]).view).toBe("columns");
+    expect(parseArgs(["tfm", "--view=grid"]).view).toBe("grid");
+    expect(parseArgs(["tfm"]).view).toBeNull();
+    expect(parseArgs(["tfm", "--view=tiles"]).error).toBe("option '--view' must be grid, list or columns");
+    expect(parseArgs(["tfm", "--view", "tiles"]).error).toBe("option '--view' must be grid, list or columns");
+    expect(parseArgs(["tfm", "--view"]).error).toBe("option '--view' needs a value");
+  });
+
+  test("--preview/--info/--terminal are plain switches", () => {
+    const r = parseArgs(["tfm", "--preview", "--info", "--terminal"]);
+    expect([r.preview, r.info, r.terminal]).toEqual([true, true, true]);
+    expect([parseArgs(["tfm"]).preview, parseArgs(["tfm"]).info, parseArgs(["tfm"]).terminal]).toEqual([
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  test("new flags after -- are paths", () => {
+    const r = parseArgs(["tfm", "--", "--view=list"]);
+    expect(r.view).toBeNull();
+    expect(r.paths).toEqual(["--view=list"]);
+  });
 });
 
 describe("usageText", () => {
@@ -87,6 +129,13 @@ describe("usageText", () => {
     expect(u).toContain("--version");
     expect(u).toContain("--debug");
     expect(u).toContain("--config");
+    expect(u).toContain("--cwd");
+    expect(u).toContain("--no-restore");
+    expect(u).toContain("--restore");
+    expect(u).toContain("--view=MODE");
+    expect(u).toContain("--preview");
+    expect(u).toContain("--info");
+    expect(u).toContain("--terminal");
     expect(u).toContain("PATH");
   });
 });

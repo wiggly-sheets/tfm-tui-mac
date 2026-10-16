@@ -211,6 +211,7 @@ describe("serializeConfig", () => {
     expect(new Set(flagged)).toEqual(
       new Set([
         "restoreSession",
+        "pathbarPosition",
         "showLaunchTime",
         "sidebarAnimation",
         "sidebarAnimationStyle",

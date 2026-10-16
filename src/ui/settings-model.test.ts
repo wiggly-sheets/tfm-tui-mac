@@ -286,6 +286,7 @@ describe("settingGroups shape", () => {
       "view mode",
       "wrap mode",
       "tab bar",
+      "path bar",
       "##sidebar",
       "sidebar width",
       "show sidebar",
@@ -358,6 +359,7 @@ describe("settingGroups shape", () => {
       "##session",
       "restore session",
       "persistent undo",
+      "exit directory",
     ]);
     // theme rides under the look header (its presets are the look), then
     // the compatibility pair — plain words only ("chrome" is jargon, and the
@@ -1115,6 +1117,7 @@ describe("dependent rows hide behind their master toggle (progressive disclosure
       "view mode",
       "wrap mode",
       "tab bar",
+      "path bar",
       "##sidebar",
       "sidebar width",
       "show sidebar",
