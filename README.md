@@ -169,6 +169,17 @@ See [config.example.toml](config.example.toml).
 Config and cache/state directories follow the XDG conventions on macOS too
 (`~/.config/tfm`, `~/.cache`).
 
+## Settings
+
+`escape` opens the menu; pick **Settings** for the in-app GUI. The root menu
+also lists Plugins (once a plugin contributes rows), Help and About.
+
+- Rows come from the same `[ui]` schema as `config.toml`, grouped by category:
+  step numbers, toggle booleans, pick enums, choose a theme preset.
+- **keys** rows capture a new binding on `enter`, and reject a conflicting one.
+- **reset to defaults** puts every setting back.
+- **edit config.toml…** opens the file in your editor, not an in-app editor.
+
 ## Plugins
 
 `esc` → Plugins or:
