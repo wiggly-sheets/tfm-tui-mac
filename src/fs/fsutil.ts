@@ -13,7 +13,7 @@ import {
   type XattrDeps,
   type XattrRun,
 } from "./darwin";
-import { execFile, execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 // execFile captures stdout; a non-zero exit (missing/unwritable attribute) is
@@ -168,7 +168,12 @@ export const trashFilesSubdir = (root: string, platform: string = process.platfo
 
 // best-effort count of home-trash entries for the empty-trash confirm
 // prompt. -1 when the trash is unreadable (prompt omits the count then).
-export const countTrashItems = (mountsText?: string, platform: string = process.platform): number => {
+// Async on darwin because the mount probe must never block the TUI (a hung
+// network mount could freeze the event loop for up to 10 seconds with execSync).
+export const countTrashItems = async (
+  mountsText?: string,
+  platform: string = process.platform,
+): Promise<number> => {
   let home: string[];
   try {
     home = readdirSync(trashFilesDir(platform));
@@ -178,7 +183,7 @@ export const countTrashItems = (mountsText?: string, platform: string = process.
   let n = home.length;
   // per-mount trashes hold real entries too — the confirm count must not
   // under-report them ($topdir/.Trash-$uid on Linux, /Volumes/.Trashes on mac)
-  for (const dir of allTrashFilesDirs(mountsText, platform)) {
+  for (const dir of await allTrashFilesDirs(mountsText, platform)) {
     try {
       if (path.resolve(dir) === path.resolve(trashFilesDir(platform))) continue;
     } catch {
@@ -199,7 +204,14 @@ export const countTrashItems = (mountsText?: string, platform: string = process.
 // missing dirs are still listed (callers readdir best-effort) — only the
 // parse itself must never throw. mountsText is an injectable seam (tests pass
 // a fake table; production reads /proc/mounts or runs `mount`).
-export const allTrashFilesDirs = (mountsText?: string, platform: string = process.platform): string[] => {
+//
+// Async on darwin: `mount` is spawned with a bounded timeout so a hung
+// network mount cannot freeze the TUI. On Linux, /proc/mounts is read
+// synchronously (no spawn needed).
+export const allTrashFilesDirs = async (
+  mountsText?: string,
+  platform: string = process.platform,
+): Promise<string[]> => {
   const home = trashFilesDir(platform);
   const out = [home];
   const seen = new Set<string>();
@@ -210,8 +222,20 @@ export const allTrashFilesDirs = (mountsText?: string, platform: string = proces
   if (isDarwin(platform)) {
     let text = mountsText;
     if (text === undefined) {
+      // shortcut: 2 s timeout on the mount probe — enough for normal mounts,
+      // short enough that a hung network share never freezes the TUI; upgrade
+      // to a per-mount stat-based probe if per-volume trash counts ever need
+      // to be enumerated without a blocking `mount` call
+      const MOUNT_TIMEOUT_MS = 2_000;
       try {
-        text = execSync("mount", { timeout: 10_000 }).toString();
+        const proc = Bun.spawn(["mount"], {
+          stdout: "pipe",
+          stderr: "ignore",
+          stdin: "ignore",
+          timeout: MOUNT_TIMEOUT_MS,
+        });
+        text = await new Response(proc.stdout).text();
+        await proc.exited;
       } catch {
         return out;
       }

@@ -464,10 +464,12 @@ type TrashConfirmsCtx = {
 };
 
 export const makeTrashConfirms = (ctx: TrashConfirmsCtx, platform: string = process.platform) => {
-  const confirmEmptyTrash = (): void => {
+  const confirmEmptyTrash = async (): Promise<void> => {
     // count is best-effort (home trash only; -1 when unreadable) — the prompt
-    // names the count when known so "empty everything" isn't a blind click
-    const n = countTrashItems(undefined, platform);
+    // names the count when known so "empty everything" isn't a blind click.
+    // Async on darwin: mount probe runs with a bounded timeout so it never
+    // blocks the event loop (a hung network mount would freeze the TUI).
+    const n = await countTrashItems(undefined, platform);
     const what = n >= 0 ? `Empty Trash (${n} item${n === 1 ? "" : "s"})?` : "Empty Trash?";
     ctx.confirm(`${what} This cannot be undone.`, "Empty Trash", () => ctx.emptyTrash(), true);
   };

@@ -289,14 +289,14 @@ describe("makeTrashConfirms", () => {
     return { asked, fired, confirms, runYes: () => onYes?.() };
   };
 
-  test("empty-trash prompt names the count, exact verb and danger flag", () => {
+  test("empty-trash prompt names the count, exact verb and danger flag", async () => {
     const root = sandbox();
     try {
       mkdirSync(path.join(trashDir(), "files"), { recursive: true });
       writeFileSync(path.join(trashDir(), "files", "a"), "1");
       writeFileSync(path.join(trashDir(), "files", "b"), "2");
       const { asked, confirms, runYes, fired } = mkEnv();
-      confirms.confirmEmptyTrash();
+      await confirms.confirmEmptyTrash();
       expect(asked[0]).toEqual({
         message: "Empty Trash (2 items)? This cannot be undone.",
         yesLabel: "Empty Trash",
@@ -309,11 +309,11 @@ describe("makeTrashConfirms", () => {
     }
   });
 
-  test("empty-trash prompt omits the count when the trash is unreadable", () => {
+  test("empty-trash prompt omits the count when the trash is unreadable", async () => {
     const root = sandbox();
     try {
       const { asked, confirms } = mkEnv();
-      confirms.confirmEmptyTrash();
+      await confirms.confirmEmptyTrash();
       expect(asked[0]!.message).toBe("Empty Trash? This cannot be undone.");
     } finally {
       rmSync(root, { recursive: true, force: true });
