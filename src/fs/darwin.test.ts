@@ -20,6 +20,7 @@ import {
   jxaTrashArgs,
   MACOS_FFMPEG_SIDECARS,
   mdlsTagsArgs,
+  mergeTagChange,
   openerBin,
   parseDiskutilListPlist,
   parseMdlsTags,
@@ -344,6 +345,41 @@ describe("finder tags (read + write)", () => {
       ["/opt/homebrew/bin/tag", ["-a", "Red", "/x/a"]],
       ["/opt/homebrew/bin/tag", ["-a", "Red", "/x/b"]],
     ]);
+  });
+});
+
+describe("mergeTagChange", () => {
+  test("add forces the new tag in even when mdls lags", () => {
+    // mdls still shows the old set (Spotlight lag) after a `tag -a`
+    expect(mergeTagChange(["Red", "Blue"], [{ op: "add", tag: "Starred" }])).toEqual(["Blue", "Red", "Starred"]);
+  });
+
+  test("remove forces the tag out even when mdls still lists it", () => {
+    expect(mergeTagChange(["Red", "Starred"], [{ op: "remove", tag: "Starred" }])).toEqual(["Red"]);
+  });
+
+  test("re-read that already reflects the change is a no-op", () => {
+    expect(mergeTagChange(["Red", "Starred"], [{ op: "add", tag: "Starred" }])).toEqual(["Red", "Starred"]);
+  });
+
+  test("multiple changes apply in order", () => {
+    expect(
+      mergeTagChange(
+        ["Red"],
+        [
+          { op: "add", tag: "Blue" },
+          { op: "remove", tag: "Red" },
+        ],
+      ),
+    ).toEqual(["Blue"]);
+  });
+
+  test("empty fresh list with an add yields just the tag", () => {
+    expect(mergeTagChange([], [{ op: "add", tag: "Work" }])).toEqual(["Work"]);
+  });
+
+  test("remove of an absent tag is a no-op", () => {
+    expect(mergeTagChange(["Red"], [{ op: "remove", tag: "Green" }])).toEqual(["Red"]);
   });
 });
 

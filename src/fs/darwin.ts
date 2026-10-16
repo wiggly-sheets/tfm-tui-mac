@@ -306,6 +306,24 @@ export const writeFinderTags = (deps: TagWriteDeps, argvs: string[][]): void => 
   }
 };
 
+export type TagMergeOp = {
+  op: "add" | "remove";
+  tag: string;
+};
+
+// merge user-intended tag changes into a freshly re-read tag list. mdls lags
+// the Spotlight index after a `tag` CLI write, so the re-read is authoritative
+// for everything except the intended change, which is forced in (add) or out
+// (remove). Result is sorted — the Properties list order is deterministic.
+export const mergeTagChange = (fresh: string[], changes: TagMergeOp[]): string[] => {
+  const set = new Set(fresh);
+  for (const c of changes) {
+    if (c.op === "add") set.add(c.tag);
+    else set.delete(c.tag);
+  }
+  return [...set].sort((a, b) => a.localeCompare(b));
+};
+
 // --- extended attributes: Finder tags (com.apple.metadata:_kMDItemUserTags),
 // quarantine, download provenance and resource forks (com.apple.ResourceFork)
 // live in xattrs, which a byte/mode/mtime copy silently drops. `xattr -p -x`

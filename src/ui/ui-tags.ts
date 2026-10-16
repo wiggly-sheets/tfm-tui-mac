@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { destroyChildren } from "../lib/uiutil";
 import { applySurface, btnSurface, rowSurface, type UiStyle } from "./style";
 import type { Theme } from "../config/config";
-import { isDarwin, readFinderTags, tagAddArgs, tagRemoveArgs, writeFinderTags } from "../fs/darwin";
+import { isDarwin, mergeTagChange, readFinderTags, tagAddArgs, tagRemoveArgs, writeFinderTags } from "../fs/darwin";
 import { hoverEvents } from "./ui-slots";
 import type { MaybeNode, NodeLike } from "../lib/node-like";
 import type { PointerStyle } from "../lib/pointer";
@@ -92,10 +92,23 @@ export const mountTagsSection = (ctx: TagsCtx, panel: NodeLike, paths: string[])
     });
   };
 
+  // re-read mdls after a write and merge the user's intended change in, so the
+  // displayed list is accurate even when Spotlight lags the index. Optimistic
+  // update stays as the immediate feedback; the re-read only corrects drift.
+  const syncAfterWrite = (changes: Array<{ op: "add" | "remove"; tag: string }>): void => {
+    void Promise.all(paths.map(read)).then((lists) => {
+      const seen = new Set<string>();
+      for (const l of lists) for (const t of l) seen.add(t);
+      tags = mergeTagChange([...seen], changes);
+      renderList();
+    });
+  };
+
   const removeTag = (tag: string): void => {
     tags = tags.filter((t) => t !== tag);
     write(paths.map((p) => tagRemoveArgs(tag, p)));
     renderList();
+    syncAfterWrite([{ op: "remove", tag }]);
   };
 
   const addTag = (raw: string): void => {
@@ -108,6 +121,7 @@ export const mountTagsSection = (ctx: TagsCtx, panel: NodeLike, paths: string[])
       if (input) input.value = "";
     } catch {}
     renderList();
+    syncAfterWrite([{ op: "add", tag }]);
   };
 
   const inputEl = Input({
