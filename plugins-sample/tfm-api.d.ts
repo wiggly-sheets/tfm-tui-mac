@@ -1,4 +1,4 @@
-// tfm plugin API types (apiVersion 3). For editor autocomplete in a plugin:
+// tfm plugin API types (apiVersion 4). For editor autocomplete in a plugin:
 //
 //   /// <reference path="/abs/path/to/plugins-sample/tfm-api.d.ts" />
 //
@@ -78,6 +78,37 @@ export type TfmApi = {
   hooks: {
     beforeFileOp(fn: TfmFileOpHook): () => void;
   };
+  views: {
+    register(view: TfmPluginView): () => void;
+  };
+  operations: {
+    register(op: TfmPluginOperation): () => void;
+  };
+};
+
+export type TfmPluginViewEntry = { name: string; path: string; isDir: boolean; size?: number };
+
+export type TfmPluginViewCtx = {
+  app: string;
+  version: string;
+  renderer: () => unknown;
+  colors: () => unknown;
+  cwd: string;
+  pane: string;
+  entries: TfmPluginViewEntry[];
+  selection: string[];
+};
+
+export type TfmPluginView = {
+  id: string;
+  label: string;
+  render: (ctx: TfmPluginViewCtx) => unknown;
+};
+
+export type TfmPluginOperation = {
+  id: string;
+  title: string;
+  run: (paths: string[]) => void | Promise<void>;
 };
 
 export type TfmSlotContext = {

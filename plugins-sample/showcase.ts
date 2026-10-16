@@ -1,11 +1,11 @@
 // tfm showcase plugin — copy to ~/.config/tfm/plugins/showcase/showcase.ts and
 // start tfm (or rescan via the esc menu — edits hot-reload live). Demonstrates
-// the v3 surfaces: manifest metadata, events, keybinds, sidebar/empty-area
+// the v4 surfaces: manifest metadata, events, keybinds, sidebar/empty-area
 // menus, preview renderers, confirm/prompt/sticky dialogs, navigation actions,
 // pre-op veto hooks, async activate + deactivate.
 //
 // Full trust like vim plugins: Bun gives you node:fs/child_process — core
-// exposes no process wrappers on purpose. apiVersion 3; minApiVersion gates
+// exposes no process wrappers on purpose. apiVersion 4; minApiVersion gates
 // loading when core is too old.
 //
 // UI slots: import @opentui/core (runtime support is installed for you) and
@@ -17,7 +17,7 @@ const plugin = {
   version: "1.0.0",
   author: "you",
   description: "tfm plugin API tour",
-  apiVersion: 3,
+  apiVersion: 4,
   async activate(api) {
     const store = api.store("showcase");
     // push, not poll: unsubscribe in deactivate or listeners leak across reloads

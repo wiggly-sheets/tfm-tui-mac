@@ -44,7 +44,7 @@ export default {
   version: "1.0.0",
   author: "you",
   description: "example",
-  apiVersion: 3,
+  apiVersion: 4,
   activate(api) {
     const off = api.events.on("navigate", ({ dir }) => api.log(`-> ${dir}`));
     return {
@@ -69,7 +69,7 @@ in `deactivate`, and anything async in an `api.events.on("quit")` listener
 |---|---|
 | `name` | required, `[a-z0-9_-]`, becomes the folder name |
 | `version` / `author` / `description` | optional, shown in the Plugins view |
-| `apiVersion` | warn+load when it differs from core (currently `3`) |
+| `apiVersion` | warn+load when it differs from core (currently `4`) |
 | `minApiVersion` | higher than core → the plugin is rejected |
 
 ## API
@@ -90,9 +90,114 @@ in `deactivate`, and anything async in an `api.events.on("quit")` listener
 - **Hooks (intercept)**: `hooks.beforeFileOp(fn) → unsubscribe`. Return
   `{ skip: true, reason? }` to veto a `copy|move|rename|duplicate|extract|compress|trash|restore|delete-forever|empty`
   before core starts it. Sync-only, first skip wins.
+- **Custom views**: `views.register({ id, label, render(ctx) }) → unsubscribe`.
+  See [Custom views](#custom-views).
+- **FS operations**: `operations.register({ id, title, run(paths) }) → unsubscribe`.
+  See [Custom FS operations](#custom-fs-operations).
 
 Subscribe in `activate` and unsubscribe in `deactivate`, or listeners leak
 across reloads.
+
+## Custom views
+
+A plugin can add a **view mode** to the pane next to `grid | list | columns`.
+`toggleView` (`ctrl+g`) cycles through it too. The renderer receives the pane's
+current listing plus its selection and returns one OpenTUI renderable, which tfm
+mounts in the pane instead of the grid.
+
+`ctx` is stable data plus live getters:
+
+| field | meaning |
+|---|---|
+| `entries` | the pane's listing: `[{ name, path, isDir, size? }]`, `path` absolute |
+| `selection` | selected absolute paths in that pane |
+| `cwd` | the pane's directory |
+| `pane` | the pane id (`p0`, `p1`, …) |
+| `renderer()` | the host `CliRenderer` — build your nodes with it |
+| `colors()` | live theme colors (read inside the renderer: a theme flip repaints) |
+| `app` / `version` | `"tfm"` and the tfm version |
+
+Copy-pasteable renderer: one row of names, the focused ones highlighted.
+
+```ts
+import { Box, TextRenderable } from "@opentui/core";
+
+export default {
+  name: "trees",
+  apiVersion: 4,
+  activate(api) {
+    api.views.register({
+      id: "trees:flat",
+      label: "Flat list",
+      render(ctx) {
+        const selected = new Set(ctx.selection);
+        const box = new Box({ id: "trees-flat", flexDirection: "column", width: "100%" });
+        for (const e of ctx.entries.slice(0, 200)) {
+          box.add(
+            new TextRenderable(ctx.renderer(), {
+              id: `trees-flat-${e.path}`,
+              content: `${e.isDir ? "dir " : "    "}${e.name}`,
+              fg: selected.has(e.path) ? ctx.colors().accent : ctx.colors().foreground,
+            }),
+          );
+        }
+        return box;
+      },
+    });
+    return {};
+  },
+};
+```
+
+Rules:
+
+- **One renderer is returned, synchronously.** A throw (or returning nothing)
+  renders that pane empty — it never takes tfm down.
+- The renderer is called again on every repaint (navigate, selection, resize),
+  so read `ctx.cwd`/`ctx.entries` fresh instead of caching them.
+- Plugin views are **not available on the tty console** (like `grid`): an
+  arbitrary renderable can't be proven safe there.
+- Registrations are validated: a missing `id`/`label`/`render`, a duplicate id
+  or an id over 64 chars is logged and dropped. First registration wins.
+- Views are per pane: each pane remembers its own selected view.
+
+## Custom FS operations
+
+`operations.register({ id, title, run(paths) })` adds one entry to **both** the
+command palette and the file context menu. `run` receives the selected absolute
+paths — the right-click target (or the whole selection when the clicked tile is
+part of it) from the menu, the live selection from the palette — and runs in
+plugin context.
+
+```ts
+import { $ } from "bun";
+
+export default {
+  name: "unzip-here",
+  apiVersion: 4,
+  activate(api) {
+    api.operations.register({
+      id: "unzip-here:extract",
+      title: "Unzip: extract here",
+      async run(paths) {
+        for (const p of paths.filter((x) => x.endsWith(".zip"))) {
+          await $`unzip -o ${p} -d ${p.slice(0, -4)}`.quiet();
+        }
+        api.notify(`extracted ${paths.length}`, "unzip"); // errors become toasts
+        api.navigate(paths[0] ?? api.cwd());
+      },
+    });
+    return {};
+  },
+};
+```
+
+- A throw (or a rejected promise) surfaces as a toast, not a crash.
+- Same validation as views: bad shapes and duplicate ids are logged and dropped.
+- Registrations live with the plugin: unload/reload/remove takes them off the
+  palette and the menu. Disabling the plugin in the Plugins view hides them
+  without a restart.
+
 
 ## UI slots
 
@@ -112,7 +217,7 @@ import { TextRenderable } from "@opentui/core";
 
 export default {
   name: "clock",
-  apiVersion: 3,
+  apiVersion: 4,
   activate(api) {
     return {
       slots: {
@@ -157,5 +262,5 @@ only veto it. (Statusbar / sidebar-footer UI is available via `slots`.)
 
 ```ts
 /// <reference path="./tfm-api.d.ts" />
-export default { name: "x", apiVersion: 3, activate(api: TfmApi) { /* … */ } };
+export default { name: "x", apiVersion: 4, activate(api: TfmApi) { /* … */ } };
 ```

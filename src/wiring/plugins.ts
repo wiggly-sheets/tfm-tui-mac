@@ -5,24 +5,33 @@
 // isolates per plugin. ---
 
 import { Text } from "@opentui/core";
-import { errMessage } from "../lib/uiutil";
+import { destroyChildren, errMessage } from "../lib/uiutil";
 import { stickyClose } from "../ui/notify";
 import path from "node:path";
 import pkg from "../../package.json";
 import { dlog } from "../app/log";
 import type { Command } from "../lib/command";
+import type { ScrollerLike } from "../lib/node-like";
 import { sharedPluginEvents } from "../lib/plugin-events";
 import { sharedPluginHooks } from "../lib/plugin-hooks";
+import { sharedPluginOperations } from "../lib/plugin-operations";
+import { sharedPluginViews } from "../lib/plugin-views";
+import { pluginViewIdOf } from "../app/panes";
+import type { PaneId } from "../app/layout";
+import { listDir, type Entry } from "../fs/listing";
 import { installPluginRuntimeSupport } from "../ui/ui-plugin-runtime";
 import { makePluginSlots } from "../ui/ui-plugin-slots";
 import { KEY_SCHEMA } from "../config/config-schema";
 import { keySpecEqual } from "../config/keyspec";
 import {
   flattenPluginCommands,
+  flattenPluginOperations,
   getPluginCommandBinds,
   isPluginEnabled,
   type PluginApi,
   type PluginStore,
+  type PluginView,
+  type PluginViewCtx,
 } from "../plugins/plugin-api";
 import { makePluginRegistry, makePluginStore, pluginsDir } from "../plugins/plugins";
 import type { CoreWiring } from "./core";
@@ -89,6 +98,99 @@ export const wirePlugins = async (deps: {
     selection: () => gridFoundation.selection.selPaths().map((s) => s.path),
   };
   const slotRegistry = makePluginSlots({ renderer: chrome.renderer, context: slotContext, log: (m) => dlog(m) });
+
+  // --- Custom views (api.views.register): a plugin view is painted in place of
+  // the core renderers for ONE pane. wiring/grid's renderPane calls
+  // pluginViewFor for the decision and renderPluginView for the mount, so the
+  // core render path keeps a one-line seam; the ctrl+g cycle order lives in
+  // app/panes' viewCycle.
+  const views = sharedPluginViews();
+  const enabledViews = (): PluginView[] => views.list().filter((v) => v.enabled);
+
+  // the plugin view selected for this pane, or null (none selected, plugin
+  // gone, or the tty console — an unknown renderable stays off it, like grid)
+  const pluginViewFor = (id: PaneId): PluginView | null => {
+    if (core.isTtyMode()) return null;
+    const wanted = pluginViewIdOf(core.panes.stateOf(id));
+    if (!wanted) return null;
+    return enabledViews().find((v) => v.id === wanted) ?? null;
+  };
+
+  // panes whose last paint was a plugin view: the core renderer's signature
+  // cache cannot see the swap, so its first rebuild after the pane returns to a
+  // core mode must be forced (the plugin mount cleared the pane's content)
+  // shortcut: a grid render's armed loading placeholder ([ui] loading-delay-ms)
+  // can still swap itself in over a freshly mounted view; upgrade if a view
+  // ever flickers to the spinner
+  const pluginViewPanes = new Set<PaneId>();
+
+  const renderPluginView = async (id: PaneId, view: PluginView): Promise<void> => {
+    const scroller: ScrollerLike | null = core.scrollerRefs.get(id)?.current ?? null;
+    if (!scroller) return;
+    const state = core.panes.stateOf(id);
+    let entries: Entry[] = [];
+    try {
+      // the plain listing: the pane's type-to-search filter is a grid concept
+      // and is not applied here (a view paints the folder, not a match set)
+      // shortcut: no listings cache (each repaint lists fresh), upgrade when a
+      // view-heavy plugin repaints hot folders
+      entries = await listDir(state.cwd, state.showHidden, state.sortBy, state.sortAsc);
+    } catch {
+      entries = []; // restricted dir / virtual place: the view paints empty
+    }
+    // a slow listing must not paint over a view switch or navigation that
+    // landed meanwhile (same stale-render guard the grid keeps by generation)
+    if (pluginViewIdOf(core.panes.stateOf(id)) !== view.id || core.scrollerRefs.get(id)?.current !== scroller) return;
+    const sel = gridFoundation.selections.get(id);
+    const ctx: PluginViewCtx = {
+      app: "tfm",
+      version: pkg.version,
+      renderer: () => chrome.renderer,
+      colors: () => core.colors,
+      cwd: state.cwd,
+      pane: id,
+      entries: entries.map((e) => ({
+        name: e.name,
+        path: e.abs ?? path.join(state.cwd, e.name),
+        isDir: e.isDir,
+        ...(e.size === undefined ? {} : { size: e.size }),
+      })),
+      selection: (sel?.selPaths() ?? []).map((s) => s.path),
+    };
+    destroyChildren(scroller.content);
+    try {
+      // no tiles to navigate: the previous grid's keys must not stay
+      // actionable (same contract as the grid's own empty-pane path)
+      sel?.tileRefs.clear();
+      sel?.setFocusKeys([]);
+    } catch {}
+    let node: unknown = null;
+    try {
+      node = view.render(ctx);
+    } catch (err) {
+      // a throwing view renders empty rather than taking the pane down
+      dlog(`plugin view ${view.id} render failed: ${errMessage(err)}`);
+    }
+    if (node === null || node === undefined) return;
+    scroller.content.add(node);
+    pluginViewPanes.add(id);
+    try {
+      core.lookup.stripSelectable();
+    } catch {}
+  };
+
+  // true when the pane was showing a plugin view — the caller must force the
+  // next core render (once), because its cached signature still describes the
+  // grid content the plugin mount destroyed
+  const leftPluginView = (id: PaneId): boolean => pluginViewPanes.delete(id);
+
+  // api.operations: palette entries run with the LIVE selection (read at invoke
+  // time). The same operations join the file context menu in the loader.
+  const pluginOperations = () =>
+    sharedPluginOperations()
+      .list()
+      .filter((o) => o.enabled);
+
   let loaded: Array<{
     commands: Array<{ id: string; title: string; hint?: string; run: () => void }>;
     store: PluginStore;
@@ -132,6 +234,7 @@ export const wirePlugins = async (deps: {
     commands: () => [
       ...tdzSafe(() => getKeymap().commands(), [] as Command[])(),
       ...flattenPluginCommands(loaded.filter(isPluginEnabled)),
+      ...flattenPluginOperations(pluginOperations(), () => gridFoundation.selection.selPaths().map((s) => s.path)),
     ],
     ui: {
       pick: (opts) => {
@@ -219,6 +322,15 @@ export const wirePlugins = async (deps: {
     hooks: {
       beforeFileOp: (fn) => sharedPluginHooks().onBeforeFileOp(fn),
     },
+    // capability registrations: the loader replaces both with per-plugin
+    // scoped versions (own name + live enabled gate). These fallbacks serve
+    // direct api users (tests) and register against the shared registries.
+    views: {
+      register: (view) => sharedPluginViews().register("core", view, { log: (m) => dlog(m) }),
+    },
+    operations: {
+      register: (op) => sharedPluginOperations().register("core", op, { log: (m) => dlog(m) }),
+    },
   };
   const warn = (message: string): void => {
     chrome.notify(message, "plugins");
@@ -284,5 +396,12 @@ export const wirePlugins = async (deps: {
     disposeSlots: () => slotRegistry.dispose(),
     // exposed for tests/consumers that want the built api surface
     api,
+    // custom views: the ctrl+g cycle list + the grid render-path seam
+    pluginViews: () => enabledViews().map((v) => ({ id: v.id, label: v.label })),
+    pluginViewFor,
+    renderPluginView,
+    leftPluginView,
+    // FS operations: the palette list (the menu side lives on LoadedPlugin)
+    pluginOperations,
   };
 };

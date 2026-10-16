@@ -16,11 +16,15 @@ import { makeQuicklook } from "../ui/ui-quicklook";
 import { themePresetIdx, zoomUiPatch } from "../ui/settings";
 import { THEME_PRESETS } from "../config/themes";
 import { cycleSortMode } from "../lib/sort";
-import { viewModeFor } from "../app/panes";
+import { currentViewSlot, nextViewSlot, setPluginViewId, viewCycle, viewModeFor } from "../app/panes";
 import { activeFacade } from "../app/panes";
-import type { ViewMode } from "../config/config-schema";
 import { destroyChildren, errMessage } from "../lib/uiutil";
-import { flattenPluginCommands, getPluginCommandBinds, isPluginEnabled } from "../plugins/plugin-api";
+import {
+  flattenPluginCommands,
+  flattenPluginOperations,
+  getPluginCommandBinds,
+  isPluginEnabled,
+} from "../plugins/plugin-api";
 import { isVirtualUri } from "../fs/uri";
 import { isTrashFilesDir } from "../fs/fsutil";
 import { dlog } from "../app/log";
@@ -66,13 +70,26 @@ export const wireKeymap = (deps: {
     escHintBtn: core.slots.escHintBtn,
     drainIconQueue: core.slots.drainIconQueue,
     commands: () =>
-      [...coreCommands(), ...flattenPluginCommands(plugins.plugins.filter(isPluginEnabled))].map((c) => ({
+      [
+        ...coreCommands(),
+        ...flattenPluginCommands(plugins.plugins.filter(isPluginEnabled)),
+        // plugin FS operations: the palette half of api.operations.register
+        // (the file context menu half is synthesized onto LoadedPlugin.fileMenu)
+        ...flattenPluginOperations(plugins.pluginOperations(), () =>
+          gridFoundation.selection.selPaths().map((s) => s.path),
+        ),
+      ].map((c) => ({
         label: c.title,
         hint: c.hint || undefined,
         run: c.run,
       })),
     onError: (err) => {
-      dlog(`plugin command failed: ${errMessage(err)}`);
+      const msg = `plugin command failed: ${errMessage(err)}`;
+      dlog(msg);
+      // a failing operation (palette half) must be visible, not just logged
+      try {
+        chrome.notify(msg, "plugins");
+      } catch {}
     },
     setPointer,
   });
@@ -299,10 +316,19 @@ export const wireKeymap = (deps: {
     },
     toggleViewMode: () => {
       const s = core.activeState();
-      const current = viewModeFor(s, core.config.ui.viewMode, core.isTtyMode);
-      const order: ViewMode[] = core.isTtyMode() ? ["list", "columns"] : ["grid", "list", "columns"];
-      const next = order[(order.indexOf(current) + 1) % order.length];
-      s.viewMode = next;
+      // cycle = core modes then every registered plugin view (app/panes owns
+      // the order + the tty restriction). Selecting a plugin view clears the
+      // core mode and vice versa, so viewModeFor stays the core fallback.
+      const next = nextViewSlot(
+        viewCycle(core.isTtyMode, plugins.pluginViews()),
+        currentViewSlot(s, core.config.ui.viewMode, core.isTtyMode),
+      );
+      if (typeof next === "string") {
+        setPluginViewId(s, null);
+        s.viewMode = next;
+      } else {
+        setPluginViewId(s, next.pluginView);
+      }
       void grid.renderGrid();
     },
     // single-key sort cycle on the ACTIVE pane's state (same nautilus

@@ -7,12 +7,13 @@
 // (bind accessors below) — no imports beyond types, so ui/ AND fs/ can use
 // it without layering violations or import cycles.
 
-import type { SettingRow } from "../config/config-schema";
+import type { CliRenderer } from "@opentui/core";
+import type { SettingRow, Theme } from "../config/config-schema";
 import type { Command } from "../lib/command";
 import type { PluginEventName, PluginEventPayload } from "../lib/plugin-events";
 import type { FileOpHookDecision, FileOpHookPayload } from "../lib/plugin-hooks";
 
-export const PLUGIN_API_VERSION = 3;
+export const PLUGIN_API_VERSION = 4;
 
 // plugin names become path segments — reject anything that could escape
 export const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/i;
@@ -25,6 +26,47 @@ export const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/i;
 export type PluginStore = {
   get<T>(key: string, fallback: T): T;
   set(key: string, value: unknown): void;
+};
+
+// one directory entry handed to a custom view renderer. `path` is absolute and
+// already joined with the pane's cwd.
+export type PluginViewEntry = { name: string; path: string; isDir: boolean; size?: number };
+
+// what a view renderer receives: the host context (live getters, same shape as
+// the slot context) plus the listing it paints. `entries` is the pane's current
+// directory listing (hidden files and sort order included) and `selection` the
+// absolute paths selected in that pane.
+export type PluginViewCtx = {
+  app: string;
+  version: string;
+  // the host renderer/theme — construct renderables against these (import
+  // "@opentui/core" in the plugin file; tfm installs the runtime support)
+  renderer: () => CliRenderer;
+  colors: () => Theme;
+  cwd: string;
+  // the pane being painted ("p0", "p1", …)
+  pane: string;
+  entries: PluginViewEntry[];
+  selection: string[];
+};
+
+// one custom view mode: it joins the grid|list|columns cycle (ctrl+g) and is
+// painted instead of the core renderers while selected. render() must return
+// ONE synchronous OpenTUI renderable (a throw renders the pane empty).
+export type PluginView = {
+  id: string;
+  label: string;
+  render: (ctx: PluginViewCtx) => unknown;
+};
+
+// one plugin FS operation: a command-palette entry AND a file-context-menu
+// entry. It receives the selection-aware absolute paths (menu: the right-click
+// target or the whole selection when the tile is part of it; palette: the live
+// selection) and runs in plugin context — errors surface as toasts.
+export type PluginOperation = {
+  id: string;
+  title: string;
+  run: (paths: string[]) => void | Promise<void>;
 };
 
 export type PluginApi = {
@@ -78,6 +120,18 @@ export type PluginApi = {
   // on deactivate like events listeners.
   hooks: {
     beforeFileOp(fn: (payload: FileOpHookPayload) => FileOpHookDecision): () => void;
+  };
+  // -- user-driven registration (call at activate top level) --
+  // views.register: a CUSTOM VIEW MODE painted in place of the core renderers
+  // (see PluginView). It joins the ctrl+g cycle after grid|list|columns.
+  // operations.register: an FS operation in the palette + file context menu
+  // (see PluginOperation). Both reject invalid shapes and duplicate ids with a
+  // log entry, and both return an unsubscribe (also run on unload/reload).
+  views: {
+    register(view: PluginView): () => void;
+  };
+  operations: {
+    register(op: PluginOperation): () => void;
   };
 };
 
@@ -186,6 +240,12 @@ export const isPluginEnabled = (plugin: { store: PluginStore }): boolean => {
 export const flattenPluginCommands = (plugins: Array<{ commands: PluginCommand[] }>): Command[] =>
   plugins.flatMap((p) => p.commands.map((c) => ({ ...c, hint: c.hint ?? "" })));
 
+// plugin operations as palette Commands: each runs with the CURRENT selection
+// (selPaths is read at invoke time, never captured), so a palette entry behaves
+// like the same plugin's file-context-menu entry.
+export const flattenPluginOperations = (ops: PluginOperation[], selPaths: () => string[]): Command[] =>
+  ops.map((op) => ({ id: op.id, title: op.title, hint: "", run: () => op.run(selPaths()) }));
+
 // one installed plugin, as the loader hands it to the settings model and
 // the menu builders: its rows, its file-menu builder (null when the plugin
 // contributes none), its commands, and its own store (the model builds the
@@ -207,6 +267,10 @@ export type LoadedPlugin = {
   // slot contributions' unregister (set when the plugin returned `slots`);
   // called on reload/remove/quit so registry entries never leak
   disposeSlots?: (() => void) | null;
+  // unregister for the plugin's api.views/api.operations registrations (the
+  // same teardown points as disposeSlots — a reload must not leave a dead
+  // plugin's view in the ctrl+g cycle or its operation in the menus)
+  disposeCapabilities?: (() => void) | null;
   // the accepted slot contributions (retained so a re-enabled plugin can
   // re-register without re-running activate)
   slots?: Record<string, unknown> | null;
