@@ -61,6 +61,54 @@ export const viewModeFor = (state: { viewMode?: ViewMode }, defaultMode: ViewMod
   return mode;
 };
 
+// --- Custom plugin views -------------------------------------------------
+// A plugin view (api.views.register) is a fourth kind of pane view. It cannot
+// live in `state.viewMode` (a core ViewMode), so the SELECTED plugin view id
+// rides beside it in a WeakMap keyed by the pane's own state object: it
+// follows the pane through the active-state facades (same object) and dies
+// with the pane (stateMap drops it), with no field added to AppState.
+const pluginViewByPane = new WeakMap<object, string>();
+
+export const pluginViewIdOf = (state: object): string | null => pluginViewByPane.get(state) ?? null;
+
+export const setPluginViewId = (state: object, id: string | null): void => {
+  if (id === null) pluginViewByPane.delete(state);
+  else pluginViewByPane.set(state, id);
+};
+
+// One slot of a pane's view cycle: a core ViewMode, or a plugin view id.
+export type ViewSlot = ViewMode | { pluginView: string };
+
+// The cycle order ctrl+g walks: core modes first, then every registered plugin
+// view in load order. A plugin view is an unknown renderable, so — like grid —
+// it stays off the tty console (no graphics/glyph guarantees there).
+export const viewCycle = (isTty: () => boolean, pluginViews: readonly { id: string }[]): ViewSlot[] => {
+  if (isTty()) return ["list", "columns"];
+  return ["grid", "list", "columns", ...pluginViews.map((v) => ({ pluginView: v.id }))];
+};
+
+const viewSlotKey = (s: ViewSlot): string => (typeof s === "string" ? s : `plugin:${s.pluginView}`);
+
+// The slot a pane is showing now: its plugin view when one is selected (a
+// stale id — plugin since removed — falls back to the core mode at the caller),
+// else the core view mode.
+export const currentViewSlot = (
+  state: { viewMode?: ViewMode },
+  defaultMode: ViewMode,
+  isTty: () => boolean,
+): ViewSlot => {
+  const id = pluginViewIdOf(state);
+  return id === null ? viewModeFor(state, defaultMode, isTty) : { pluginView: id };
+};
+
+// The next slot in the cycle. An unknown current slot (stale plugin view id)
+// restarts the cycle at its first entry, so ctrl+g always lands somewhere valid.
+export const nextViewSlot = (cycle: readonly ViewSlot[], current: ViewSlot): ViewSlot => {
+  const i = cycle.findIndex((s) => viewSlotKey(s) === viewSlotKey(current));
+  const next = cycle[(i + 1) % cycle.length];
+  return next ?? cycle[0] ?? "list";
+};
+
 // A stable facade over whichever pane is active: property reads/writes forward
 // to the active state, so consumers that hold one `state`/`selection` reference
 // keep working unchanged while the active pane changes under them. Methods are

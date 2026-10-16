@@ -34,6 +34,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { withTimeout, errMessage } from "../lib/uiutil";
 import { validateKeybindSpec } from "../config/keyspec";
+import { sharedPluginOperations, type PluginOperations } from "../lib/plugin-operations";
+import { sharedPluginViews, type PluginViews } from "../lib/plugin-views";
 import {
   PLUGIN_API_VERSION,
   PLUGIN_NAME_RE,
@@ -382,8 +384,14 @@ export const makePluginRegistry = (deps: {
   // bridge a plugin's `slots` contribution into the OpenTUI slot registry.
   // Returns an unregister fn stored as LoadedPlugin.disposeSlots.
   registerSlots?: (name: string, slots: Record<string, unknown>) => () => void;
+  // capability registries behind api.views / api.operations. Injected for
+  // tests; defaults to the process-wide singletons the wiring reads.
+  views?: PluginViews;
+  operations?: PluginOperations;
 }): PluginRegistry => {
   const { dir, api, warn, registerSlots } = deps;
+  const views = deps.views ?? sharedPluginViews();
+  const operations = deps.operations ?? sharedPluginOperations();
   const plugins: LoadedPlugin[] = [];
   const errors: string[] = [];
   // main-path -> last-seen version; warned keys dedupe repeat toasts across
@@ -445,6 +453,23 @@ export const makePluginRegistry = (deps: {
         return true;
       }
     };
+    // capability registrations (views / operations). The registries own shape +
+    // duplicate validation and log every rejection; the returned unregister is
+    // collected so unload/reload/destroy never leaves a dead plugin's view in
+    // the cycle or its operation in the menus.
+    const disposers: Array<() => void> = [];
+    const disposeCapabilities = (): void => {
+      for (const off of disposers.splice(0)) {
+        try {
+          off();
+        } catch {}
+      }
+    };
+    const capLog = (message: string): void => {
+      try {
+        api.log(message);
+      } catch {}
+    };
     const scopedApi: PluginApi = {
       ...api,
       store: (requested: string) => {
@@ -466,6 +491,20 @@ export const makePluginRegistry = (deps: {
       },
       hooks: {
         beforeFileOp: (fn) => api.hooks.beforeFileOp((payload) => (pluginOn() ? fn(payload) : undefined)),
+      },
+      views: {
+        register: (view) => {
+          const off = views.register(m.name, view, { enabled: pluginOn, log: capLog });
+          disposers.push(off);
+          return off;
+        },
+      },
+      operations: {
+        register: (op) => {
+          const off = operations.register(m.name, op, { enabled: pluginOn, log: capLog });
+          disposers.push(off);
+          return off;
+        },
       },
     };
     // teardown is resolved BEFORE the post-activate validation below: any throw
@@ -556,6 +595,19 @@ export const makePluginRegistry = (deps: {
           },
         ];
       });
+      // api.operations registrations join the FILE CONTEXT MENU through the
+      // plugin's own fileMenu builder seam (no core menu code involved): the
+      // entries get the same selection-aware paths and a throw is contained by
+      // the menu builder exactly like the plugin's own entries.
+      const ops = operations.list().filter((o) => o.plugin === m.name);
+      const ownFileMenu = fileMenu as ((sel: { paths: string[] }) => PluginFileMenuEntry[]) | null;
+      const fileMenuWithOps =
+        ops.length === 0
+          ? ownFileMenu
+          : (sel: { paths: string[] }): PluginFileMenuEntry[] => [
+              ...ops.map((o): PluginFileMenuEntry => ({ label: o.title, run: (paths) => o.run(paths) })),
+              ...(ownFileMenu ? ownFileMenu(sel) : []),
+            ];
       const meta = (v: unknown): string => (typeof v === "string" ? v.slice(0, 200) : "");
       // OpenTUI slot contributions (statusbar / sidebar-footer). Registering is
       // isolated: a throw drops just the slots, never the plugin.
@@ -607,7 +659,7 @@ export const makePluginRegistry = (deps: {
         author: meta(m.author),
         description: meta(m.description),
         rows,
-        fileMenu: fileMenu as ((sel: { paths: string[] }) => PluginFileMenuEntry[]) | null,
+        fileMenu: fileMenuWithOps,
         sidebarMenu: sidebarMenu as
           | ((place: { path?: string | null; scheme?: string }) => PluginFileMenuEntry[])
           | null,
@@ -617,6 +669,7 @@ export const makePluginRegistry = (deps: {
         store: ownStore,
         deactivate,
         disposeSlots,
+        disposeCapabilities,
         slots: Object.keys(clean).length ? clean : null,
         file: originalFile,
       };
@@ -624,7 +677,7 @@ export const makePluginRegistry = (deps: {
       // activate already ran (or the post-activate validation threw): tear the
       // partial instance down or its listeners/timers/slots leak forever — it
       // is never pushed to `plugins`, so deactivateAll can't reach it.
-      await tearPartial(disposeSlots, deactivate);
+      await tearPartial(disposeSlots, deactivate, undefined, disposeCapabilities);
       throw err;
     }
   };
@@ -637,7 +690,11 @@ export const makePluginRegistry = (deps: {
     disposeSlots: (() => void) | null | undefined,
     deactivate: (() => unknown) | null | undefined,
     log?: (err: unknown) => void,
+    disposeCapabilities?: (() => void) | null | undefined,
   ): Promise<void> => {
+    try {
+      disposeCapabilities?.();
+    } catch {}
     try {
       disposeSlots?.();
     } catch {}
@@ -653,11 +710,16 @@ export const makePluginRegistry = (deps: {
   };
 
   const runDeactivate = async (p: LoadedPlugin): Promise<void> => {
-    await tearPartial(p.disposeSlots, p.deactivate, (err) => {
-      try {
-        api.log(`plugin ${p.name} deactivate failed: ${errMessage(err)}`);
-      } catch {}
-    });
+    await tearPartial(
+      p.disposeSlots,
+      p.deactivate,
+      (err) => {
+        try {
+          api.log(`plugin ${p.name} deactivate failed: ${errMessage(err)}`);
+        } catch {}
+      },
+      p.disposeCapabilities,
+    );
   };
 
   // quit teardown: call every deactivate synchronously (promises ignored) so a
@@ -665,6 +727,9 @@ export const makePluginRegistry = (deps: {
   // events.on("quit") — see docs/plugins.md.
   const deactivateAll = (): void => {
     for (const p of [...plugins]) {
+      try {
+        p.disposeCapabilities?.();
+      } catch {}
       try {
         p.disposeSlots?.();
       } catch {}

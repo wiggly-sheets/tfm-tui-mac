@@ -3,13 +3,18 @@ import {
   activeFacade,
   activeMapFacade,
   activeState,
+  currentViewSlot,
   makeLeafRegistry,
   makePanePair,
   mergedMapFacade,
+  nextViewSlot,
   otherState,
+  pluginViewIdOf,
   pointPaneAt,
   setActivePane,
+  setPluginViewId,
   togglePane,
+  viewCycle,
   viewModeFor,
 } from "./panes";
 
@@ -263,5 +268,50 @@ describe("viewModeFor (per-pane view mode)", () => {
     // list and columns are both text-cell layouts and survive the console
     expect(viewModeFor({ viewMode: "list" }, "grid", tty)).toBe("list");
     expect(viewModeFor({ viewMode: "columns" }, "grid", tty)).toBe("columns");
+  });
+});
+
+describe("custom plugin views in the view cycle", () => {
+  const noTty = () => false;
+  const views = [{ id: "a:tree" }, { id: "b:chart" }];
+
+  test("registered views append to the core modes, in load order", () => {
+    expect(viewCycle(noTty, views)).toEqual([
+      "grid",
+      "list",
+      "columns",
+      { pluginView: "a:tree" },
+      { pluginView: "b:chart" },
+    ]);
+  });
+
+  test("the tty console keeps core modes only (a view renderable is unknown)", () => {
+    expect(viewCycle(() => true, views)).toEqual(["list", "columns"]);
+  });
+
+  test("ctrl+g order: grid -> list -> columns -> each plugin view -> grid", () => {
+    const cycle = viewCycle(noTty, views);
+    const state: { viewMode?: "grid" | "list" | "columns" } = { viewMode: "columns" };
+    expect(nextViewSlot(cycle, currentViewSlot(state, "grid", noTty))).toEqual({ pluginView: "a:tree" });
+    setPluginViewId(state, "a:tree");
+    expect(currentViewSlot(state, "grid", noTty)).toEqual({ pluginView: "a:tree" });
+    setPluginViewId(state, "b:chart");
+    expect(nextViewSlot(cycle, currentViewSlot(state, "grid", noTty))).toBe("grid");
+  });
+
+  test("a stale plugin view id (plugin removed) restarts the cycle at grid", () => {
+    const state = { viewMode: "list" as const };
+    setPluginViewId(state, "gone:view");
+    expect(nextViewSlot(viewCycle(noTty, []), currentViewSlot(state, "grid", noTty))).toBe("grid");
+  });
+
+  test("the selected plugin view is per pane (WeakMap keyed by the state object)", () => {
+    const a = { viewMode: "grid" as const };
+    const b = { viewMode: "grid" as const };
+    setPluginViewId(a, "a:tree");
+    expect(pluginViewIdOf(a)).toBe("a:tree");
+    expect(pluginViewIdOf(b)).toBeNull();
+    setPluginViewId(a, null);
+    expect(pluginViewIdOf(a)).toBeNull();
   });
 });

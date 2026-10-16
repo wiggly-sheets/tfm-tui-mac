@@ -46,7 +46,7 @@ describe("tfm plugins CLI", () => {
       expect(code).toBe(0);
       const body = readFileSync(path.join(dir, "cool", "cool.ts"), "utf8");
       expect(body).toContain('name: "cool"');
-      expect(body).toContain("apiVersion: 3");
+      expect(body).toContain("apiVersion: 4");
       // second run refuses to clobber
       const errs: string[] = [];
       expect(await runPluginsCli(["new", "cool"], { dir, out: () => {}, err: (s) => errs.push(s) })).toBe(1);

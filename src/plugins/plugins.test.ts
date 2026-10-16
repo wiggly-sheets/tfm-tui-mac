@@ -73,6 +73,8 @@ const mkApi = (dir: string, notes: string[]): PluginApi => ({
   },
   events: { on: () => () => {} },
   hooks: { beforeFileOp: () => () => {} },
+  views: { register: () => () => {} },
+  operations: { register: () => () => {} },
 });
 
 const mkDir = (): string => mkdtempSync(path.join(os.tmpdir(), "tfm-plugins-test-"));

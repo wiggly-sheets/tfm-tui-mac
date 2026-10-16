@@ -463,16 +463,26 @@ export const wireGrid = (deps: {
 
   const renderPane = (pane: PaneId | 0 | 1): Promise<void> => {
     const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
+    // Custom plugin view (see wiring/plugins): it replaces the core renderers
+    // for this pane. `leftPluginView` reports (once) that the pane came back
+    // from one — its cached paint signature still describes the grid content
+    // the plugin mount destroyed, so that rebuild must be forced.
+    const pv = plugins.pluginViewFor(id);
+    if (pv) return plugins.renderPluginView(id, pv);
+    const force = plugins.leftPluginView(id);
     const mode = viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode);
     if (mode === "columns") {
       return get(columnsRenderers, id).renderColumns();
     }
-    return get(renderers, id).renderGrid();
+    return get(renderers, id).renderGrid(force);
   };
   // [ui] windowed-grid: the boot layout's scrollers get their scrollTop
   // hooked to this (wiring/io) — a slide rebuilds only the row window
   const syncWindowPane = (pane: PaneId | 0 | 1): void => {
     const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
+    // a plugin view is not a grid window: sliding it would rebuild core rows
+    // over the plugin's node
+    if (plugins.pluginViewFor(id)) return;
     const mode = viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode);
     if (mode === "columns") {
       get(columnsRenderers, id).syncWindow();
