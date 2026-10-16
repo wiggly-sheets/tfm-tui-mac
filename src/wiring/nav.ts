@@ -10,6 +10,7 @@ import { makeRestart, restartArgs } from "../app/restart";
 import { sharedOpQueue } from "../lib/op-queue";
 import { makeStatus } from "../ui/ui-status";
 import { makeNav, makeSessionSync } from "../app/nav";
+import type { PaneId } from "../app/layout";
 import { saveSessionSync, type PaneTabs } from "../fs/session";
 import { makeTabs, nextTab as cycleNextTab, prevTab as cyclePrevTab } from "../app/tabs";
 import { makeSearch } from "../input/search";
@@ -46,20 +47,19 @@ export const wireNav = (deps: {
     syncTabFromState: () => syncTabsFromState(),
     scheduleSaveSession: () => scheduleSaveSession(),
     syncPaneCwds: () => {
-      for (const s of core.panes.states) s.cwd = s.history[s.histIdx] ?? s.cwd;
+      for (const s of core.panes.stateMap.values()) s.cwd = s.history[s.histIdx] ?? s.cwd;
     },
     log: (msg) => appendLog(msg),
     steps: {
       cwdWatcher: () => getWatcher().syncCwdWatcher(),
       tabbar: () => {
-        getChrome().chrome.renderTabbar(0);
-        getChrome().chrome.renderTabbar(1);
+        for (const id of core.panes.leafIds()) getChrome().chrome.renderTabbar(id === "p1" ? 1 : 0);
       },
       nav: () => {
-        for (const t of getChrome().toolbars) t.refreshNav();
+        for (const t of getChrome().toolbars.values()) t.refreshNav();
       },
       crumbs: () => {
-        for (const t of getChrome().toolbars) t.renderCrumbs();
+        for (const t of getChrome().toolbars.values()) t.renderCrumbs();
       },
       sidebar: () => getChrome().chrome.renderSidebar(),
       iconQueue: () => {
@@ -104,7 +104,7 @@ export const wireNav = (deps: {
       // starred:// tabs, so quitting from a virtual place must still persist
       // the session (the old guard silently dropped BOTH panes' real-dir tabs)
       syncTabsFromState();
-      saveSessionSync(paneTabs(), core.panes.active);
+      saveSessionSync(paneTabs(), core.panes.activeId === "p1" ? 1 : 0);
     },
     destroy: () => getChrome().renderer.destroy(),
     exit: (code: number) => process.exit(code),
@@ -169,19 +169,26 @@ export const wireNav = (deps: {
   // --- Tabs: ONE model per pane — each pane is a browser-like tab list. The
   // focused pane's model backs the tab keybinds/menu; both get painted. Model
   // lives in ./tabs (pure, tested) — rendering/session I/O stay out. ---
-  const tabModels: [ReturnType<typeof makeTabs>, ReturnType<typeof makeTabs>] = [
-    makeTabs(core.panes.states[0], { onChanged: renderAll, status: setStatusMsg, quit: quitApp }),
-    makeTabs(core.panes.states[1], { onChanged: renderAll, status: setStatusMsg, quit: quitApp }),
-  ];
-  const activeTabModel = () => tabModels[core.panes.active];
-  const syncTabsFromState = (): void => {
-    tabModels[0].syncTabFromState();
-    tabModels[1].syncTabFromState();
+  const tabModels = new Map<PaneId, ReturnType<typeof makeTabs>>();
+  for (const id of core.panes.leafIds())
+    tabModels.set(id, makeTabs(core.panes.stateOf(id), { onChanged: renderAll, status: setStatusMsg, quit: quitApp }));
+  const activeTabModel = () => {
+    const m = tabModels.get(core.panes.activeId);
+    if (!m) throw new Error(`no tab model for active pane ${core.panes.activeId}`);
+    return m;
   };
-  const paneTabs = (): [PaneTabs, PaneTabs] => [
-    { tabs: tabModels[0].list, activeTab: tabModels[0].active },
-    { tabs: tabModels[1].list, activeTab: tabModels[1].active },
-  ];
+  const syncTabsFromState = (): void => {
+    for (const m of tabModels.values()) m.syncTabFromState();
+  };
+  const paneTabs = (): [PaneTabs, PaneTabs] => {
+    const p0 = tabModels.get("p0");
+    const p1 = tabModels.get("p1");
+    if (!p0 || !p1) throw new Error("paneTabs: p0/p1 tab models missing");
+    return [
+      { tabs: p0.list, activeTab: p0.active },
+      { tabs: p1.list, activeTab: p1.active },
+    ];
+  };
   const switchTab = (i: number): void => activeTabModel().switchTab(i);
   const newTab = (dir?: string): void => activeTabModel().newTab(dir);
   const closeTab = (i?: number): void => activeTabModel().closeTab(i);
@@ -192,12 +199,15 @@ export const wireNav = (deps: {
   const { scheduleSaveSession, restoreSession } = makeSessionSync({
     paneTabs,
     syncTabsFromState,
-    adoptPaneTabs: (pane, tabs, activeTab) => tabModels[pane].adoptTabs(tabs, activeTab),
-    adoptDefaultTabs: () => {
-      tabModels[0].adoptTab();
-      tabModels[1].adoptTab();
+    adoptPaneTabs: (pane, tabs, activeTab) => {
+      const m = tabModels.get(pane === 1 ? "p1" : "p0");
+      if (m) m.adoptTabs(tabs, activeTab);
     },
-    activePane: () => core.panes.active,
+    adoptDefaultTabs: () => {
+      tabModels.get("p0")?.adoptTab();
+      tabModels.get("p1")?.adoptTab();
+    },
+    activePane: () => (core.panes.activeId === "p1" ? 1 : 0),
     setActivePane: core.setActivePane,
     config: core.config,
     isVirtualCwd: core.isVirtualCwd,
@@ -209,22 +219,26 @@ export const wireNav = (deps: {
   // Mouse pointer shapes (OSC 22): the single shared tty-guarded sink from
   // wireCore (see there for why per-cluster instances diverged).
   const setPointer = core.setPointer;
-  const mkSearch = (pane: 0 | 1) =>
+  const mkSearch = (id: PaneId) =>
     makeSearch({
       byId: core.lookup.byId,
-      inputId: `tfm-p${pane}-search`,
+      inputId: `tfm-${id}-search`,
       // arrow wrappers: termHasFocus/renderGrid belong to later wirings (TDZ)
       termHasFocus: getTermHasFocus,
-      renderGrid: () => getGrid().renderPane(pane),
+      renderGrid: () => getGrid().renderPane(id),
       setPointer,
     });
-  const searches: [ReturnType<typeof makeSearch>, ReturnType<typeof makeSearch>] = [mkSearch(0), mkSearch(1)];
-  const activeSearch = () => searches[core.panes.active];
+  const searches = new Map<PaneId, ReturnType<typeof makeSearch>>();
+  for (const id of core.panes.leafIds()) searches.set(id, mkSearch(id));
+  const activeSearch = () => {
+    const s = searches.get(core.panes.activeId);
+    if (!s) throw new Error(`no search for active pane ${core.panes.activeId}`);
+    return s;
+  };
   const clearSearch = (): void => activeSearch().clearSearch();
   const beginTypeToSearch = (ch: string): void => activeSearch().beginTypeToSearch(ch);
   const wireSearchInput = (): void => {
-    searches[0].wireSearchInput();
-    searches[1].wireSearchInput();
+    for (const s of searches.values()) s.wireSearchInput();
   };
 
   return {

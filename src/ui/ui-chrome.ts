@@ -221,6 +221,12 @@ export const makeChrome = (ctx: ChromeCtx) => {
         },
         onMouseDrop: () => {
           const keys = gridDrag.keys;
+          // the fallback drag (no-mouse terminals) arms its pickup on a tile
+          // press, so the same place drop must clear the fallback state when
+          // a fallback drop lands here. gridDrag.keys = null clears both the
+          // motion drag and the fallback's keys through its setter.
+          gridDrag.keys = null;
+          gridDrag.fallback = false;
           ctx.finishDrag();
           const target = placeTarget();
           ctx.dlog(

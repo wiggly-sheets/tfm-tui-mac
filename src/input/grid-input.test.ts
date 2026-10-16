@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   commitPendingCtrlToggle,
+  fallbackDrag,
   finishDragState,
   gridDrag,
   makeEntryMouseHandlers,
@@ -16,6 +17,12 @@ beforeEach(() => {
   gridDrag.startY = 0;
   gridDrag.pendingKey = null;
   gridDrag.pendingState = false;
+  gridDrag.fallback = false;
+  fallbackDrag.keys = null;
+  if (fallbackDrag.timer) {
+    clearTimeout(fallbackDrag.timer);
+    fallbackDrag.timer = null;
+  }
 });
 
 const makeCtx = (): GridInputCtx & {
@@ -479,5 +486,66 @@ describe("mouse pointer shapes", () => {
       ["/w/a.txt", true],
       ["/w/a.txt", false],
     ]);
+  });
+});
+
+describe("fallback drag (no-mouse terminals)", () => {
+  // the seam is a getter: absent or returning null = today's behavior
+  const withFallback = (ctx: ReturnType<typeof makeCtx>, pickupMs: number) => {
+    (ctx as any).fallbackDrag = () => ({ pickupMs: () => pickupMs });
+  };
+
+  test("a long-press picks up the live selection and arms the drop pipeline", async () => {
+    const ctx = makeCtx();
+    withFallback(ctx, 50);
+    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+    press(h, { x: 5, y: 5 });
+    // the pickup fires after the configured hold — poll, don't sleep
+    for (let i = 0; i < 100 && !gridDrag.fallback; i++) await Bun.sleep(1);
+    expect(gridDrag.fallback).toBe(true);
+    expect(fallbackDrag.keys).toEqual([{ path: "/w/a.txt", isDir: false }]);
+    expect(ctx.statuses.at(-1)).toContain("Picked up 1 item");
+    // cleanup: a plain release must not leave the timer or the flag behind
+    h.onMouseUp();
+    for (let i = 0; i < 50 && gridDrag.fallback; i++) await Bun.sleep(1);
+    expect(gridDrag.fallback).toBe(false);
+    expect(fallbackDrag.keys).toBeNull();
+    expect(fallbackDrag.timer).toBeNull();
+  });
+
+  test("a release before the hold fires cancels the pickup (plain click stays a click)", async () => {
+    const ctx = makeCtx();
+    withFallback(ctx, 50);
+    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+    press(h, { x: 5, y: 5 });
+    h.onMouseUp(); // released well before the 50ms hold
+    for (let i = 0; i < 100 && gridDrag.fallback; i++) await Bun.sleep(1);
+    expect(gridDrag.fallback).toBe(false);
+    expect(fallbackDrag.timer).toBeNull();
+    expect(ctx.statuses).toEqual([]);
+  });
+
+  test("a click on a folder after the pickup moves the selection into it", async () => {
+    const ctx = makeCtx();
+    withFallback(ctx, 50);
+    const hSrc = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+    const hDst = makeEntryMouseHandlers(ctx)({ isDir: true }, "/w/sub", 3);
+    press(hSrc, { x: 5, y: 5 });
+    for (let i = 0; i < 100 && !gridDrag.fallback; i++) await Bun.sleep(1);
+    // the click that lands on the destination folder IS the drop
+    hDst.onMouseDrop();
+    expect(ctx.moved).toEqual([{ dest: "/w/sub", n: 1 }]);
+    expect(gridDrag.fallback).toBe(false);
+    expect(fallbackDrag.keys).toBeNull();
+  });
+
+  test("absent fallbackDrag seam keeps today's behavior (old fakes)", async () => {
+    const ctx = makeCtx();
+    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+    press(h, { x: 5, y: 5 });
+    h.onMouseUp();
+    for (let i = 0; i < 100 && gridDrag.fallback; i++) await Bun.sleep(1);
+    expect(gridDrag.fallback).toBe(false);
+    expect(fallbackDrag.timer).toBeNull();
   });
 });

@@ -40,18 +40,49 @@ export type TileVisualMode = (typeof TileVisual)[keyof typeof TileVisual];
 export type GridTileRef = { selected: boolean; isDir: boolean };
 
 // shared drag state: one plain mutable object so the wiring closures and the
-// handlers here see the same fields without getter/setter plumbing
+// handlers here see the same fields without getter/setter plumbing.
+//
+// `keys` is a getter/setter pair over a backing field: the fallback drag
+// (no-mouse terminals) arms its pickup on a tile press, so its keys live in
+// fallbackDrag and every existing consumer (place drop, tab drop, the
+// embedded-terminal paste) reads them through gridDrag.keys — one seam, no
+// per-caller plumbing.
 export const gridDrag = {
-  keys: null as ClipItem[] | null,
+  _keys: null as ClipItem[] | null,
+  get keys(): ClipItem[] | null {
+    return this._keys ?? fallbackDrag.keys;
+  },
+  set keys(v: ClipItem[] | null) {
+    this._keys = v;
+    // nulling the drag payload clears the fallback's too: the fallback
+    // (no-mouse terminals) arms its pickup on a tile press, so every
+    // consumer that nulls gridDrag.keys (finishDragState, place drop,
+    // tab drop, pane-background drop) must also clear the fallback state
+    if (v === null) fallbackDrag.keys = null;
+  },
   ctrl: false, // ctrl+drag = internal move, plain drag = external OSC 72
   active: false,
   dropTarget: null as string | null,
   startX: 0,
   startY: 0,
+  // fallback drag (no-mouse / no-OSC-72 terminals): a long-press picks up
+  // the live selection and arms the EXISTING drop pipeline, so the next folder
+  // click moves it. Distinct from the motion-tripped flag: the fallback has
+  // no pointer grab and no hover, so it never paints grabbing/not-allowed.
+  fallback: false,
   // ctrl+press defers its toggle until we know it was a click, not a drag —
   // toggling at mousedown unselected the pressed tile and emptied the payload
   pendingKey: null as string | null,
   pendingState: false,
+};
+
+// fallback drag state: the pickup is armed by a long-press timer, so the
+// keys live here (not on gridDrag) and the timer is cancellable. Distinct
+// from gridDrag.active: the fallback has no pointer grab and no hover, so
+// it never paints grabbing/not-allowed.
+export const fallbackDrag = {
+  keys: null as ClipItem[] | null,
+  timer: null as ReturnType<typeof setTimeout> | null,
 };
 
 // --- ctx sections (intersected below; runtime object stays flat) ---
@@ -109,6 +140,12 @@ export type GridInputCtx = {
   // mouse pointer shape (OSC 22 via the wiring's tty-guarded setter).
   // Absent = no pointer changes (old fakes keep working).
   setPointer?(style: PointerStyle): void;
+  // fallback drag (no-mouse terminals): a long-press picks up the selection
+  // and arms the EXISTING drop pipeline, so the next folder click moves it.
+  // A getter (the capability decision is built AFTER the grid, in wireDnd);
+  // absent or returning null = today's behavior unchanged (old fakes keep
+  // working, and SGR/OSC-72 terminals stay byte-identical).
+  fallbackDrag?: () => { pickupMs(): number } | null;
 } & GridSelectionDeps &
   GridMenuDeps &
   GridNavDeps;
@@ -374,6 +411,37 @@ export const makeEntryMouseHandlers = (ctx: GridInputCtx) => {
       );
     };
 
+    // fallback drag (no-mouse terminals): a long-press picks up the live
+    // selection and arms the EXISTING drop pipeline, so the next folder click
+    // moves it. No pointer grab, no hover — the timer IS the affordance.
+    // The seam is a getter (the capability decision is built AFTER the grid,
+    // in wireDnd) and is null on SGR/OSC-72 terminals.
+    const armFallbackDrag = (): void => {
+      const fd = ctx.fallbackDrag?.();
+      if (!fd || gridDrag.fallback) return;
+      const ms = fd.pickupMs();
+      gridDrag.fallback = false;
+      fallbackDrag.keys = null;
+      fallbackDrag.timer = setTimeout(() => {
+        fallbackDrag.timer = null;
+        // a pickup is not a click: the deferred ctrl-toggle must not fire
+        gridDrag.pendingKey = null;
+        fallbackDrag.keys = ctx.selPaths();
+        gridDrag.fallback = true;
+        ctx.setStatusMsg(
+          `Picked up ${fallbackDrag.keys?.length ?? 0} item${(fallbackDrag.keys?.length ?? 0) === 1 ? "" : "s"} — click a folder to move`,
+        );
+      }, ms);
+    };
+    const cancelFallbackDrag = (): void => {
+      if (fallbackDrag.timer) {
+        clearTimeout(fallbackDrag.timer);
+        fallbackDrag.timer = null;
+      }
+      fallbackDrag.keys = null;
+      gridDrag.fallback = false;
+    };
+
     // mouseup / drag-end without a drop: commit a deferred ctrl-toggle, then
     // schedule the shared cleanup (a real drop overwrites the status first).
     const releasePress = (why: string): void => {
@@ -403,6 +471,29 @@ export const makeEntryMouseHandlers = (ctx: GridInputCtx) => {
 
     return {
       onMouseDown: (ev: TileMouseEvent) => {
+        // fallback drag (no-mouse terminals): a pickup is armed by a
+        // long-press, so the NEXT press on a folder IS the drop. Treat it
+        // like a tile drop instead of a new press — otherwise the new press
+        // would clear the selection and re-arm the pickup timer.
+        if (gridDrag.fallback) {
+          if (entry.isDir) {
+            ctx.log(`fallback drop onto ${key}`);
+            const keys = gridDrag.keys;
+            gridDrag.keys = null; // clears the fallback's too (see the setter)
+            gridDrag.fallback = false;
+            if (keys && keys.length) {
+              void ctx.moveInto(
+                key,
+                keys.filter((item) => item.path !== key),
+              );
+            }
+          } else {
+            // a press on a file (or the same tile) while a pickup is armed
+            // cancels it — there is no drag surface to drop onto
+            cancelFallbackDrag();
+          }
+          return;
+        }
         try {
           ev.stopPropagation?.();
         } catch {}
@@ -418,9 +509,20 @@ export const makeEntryMouseHandlers = (ctx: GridInputCtx) => {
         if (handleCtrlPress(ev)) return;
         if (handleRangePress(ev)) return;
         handlePlainPress(ev);
+        // fallback drag (no-mouse terminals): a long-press picks up the
+        // selection and arms the EXISTING drop pipeline, so the next folder
+        // click moves it. No pointer grab, no hover — the timer IS the
+        // affordance. Cancelled on any release so a plain click stays a click.
+        armFallbackDrag();
       },
-      onMouseUp: () => releasePress("mouseup"),
-      onMouseDragEnd: () => releasePress("dragend"),
+      onMouseUp: () => {
+        releasePress("mouseup");
+        cancelFallbackDrag();
+      },
+      onMouseDragEnd: () => {
+        releasePress("dragend");
+        cancelFallbackDrag();
+      },
       onMouseDrag: (ev: TileMouseEvent) => {
         if (!gridDrag.keys) return;
         const thr = ctx.dragThresholdCells?.() ?? 1;
@@ -430,17 +532,22 @@ export const makeEntryMouseHandlers = (ctx: GridInputCtx) => {
         if (gridDrag.active) updateDragGhost(ctx, ev.x, ev.y);
       },
       onMouseDrop: () => {
+        // fallback drag (no-mouse terminals): the pickup is armed by a
+        // long-press, so the click that lands on a folder IS the drop. The
+        // same destination rule applies — the tile under the cursor. The
+        // keys are read through gridDrag.keys (the getter merges fallback).
         const keys = gridDrag.keys;
-        // The drop is delivered to the tile UNDER THE CURSOR (its own `key`),
-        // so use that folder as the destination. Do NOT rely on
-        // gridDrag.dropTarget: over fires before the drag trips and doesn't
-        // re-fire while the pointer stays on one tile, so the hover-set proxy
-        // is frequently null at release (this is what broke cross-pane drops).
         const dest = entry.isDir ? key : null;
         ctx.log(
-          `tile drop keys=${keys?.length ?? -1}[${keys?.map((item) => item.path.split("/").pop()).join(",") ?? ""}] dest=${dest} isDir=${entry.isDir}`,
+          `tile drop keys=${keys?.length ?? -1}[${keys?.map((item) => item.path.split("/").pop()).join(",") ?? ""}] dest=${dest} isDir=${entry.isDir} fallback=${gridDrag.fallback}`,
         );
-        finishDragState(ctx);
+        if (gridDrag.fallback) {
+          // fallback drag has no renderable-captured state to clear
+          fallbackDrag.keys = null;
+          gridDrag.fallback = false;
+        } else {
+          finishDragState(ctx);
+        }
         // the cursor sits on a tile: re-apply its pointer after the central
         // default restore (a pane-background drop keeps default)
         ctx.setPointer?.("pointer");
@@ -451,8 +558,9 @@ export const makeEntryMouseHandlers = (ctx: GridInputCtx) => {
           );
       },
       onMouseOver: () => {
-        if (gridDrag.active) {
-          const draggingSelf = !!gridDrag.keys?.some((item) => item.path === key);
+        if (gridDrag.active || gridDrag.fallback) {
+          const keys = gridDrag.keys;
+          const draggingSelf = !!keys?.some((item) => item.path === key);
           if (entry.isDir && !draggingSelf) {
             ctx.log(`hover target set ${key}`);
             gridDrag.dropTarget = key;

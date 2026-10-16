@@ -204,6 +204,9 @@ const plugins = await wirePlugins({
 });
 
 // --- grid: preview, mouse pipeline, grid renderer, props, menu entries ---
+// grid wires BEFORE dnd (the dnd wiring owns the terminal-capability
+// decision), so the fallback-drag seam is a lazy getter over `dnd` — the
+// same TDZ pattern as getPick/getRetheme below.
 const grid = wireGrid({
   core,
   nav,
@@ -217,6 +220,13 @@ const grid = wireGrid({
   // retheme wires after grid — only called from "Open in New Pane" at
   // interaction time, same settled-TDZ seam
   getRetheme: () => retheme,
+  // fallback drag (no-mouse terminals): a long-press picks up the selection
+  // and arms the EXISTING drop pipeline, so the next folder click moves it.
+  // Built in wireDnd (which owns the capability decision) and read here at
+  // press time — null = today's behavior unchanged on SGR/OSC-72 terminals.
+  // call it (not return the function): the grid invokes ctx.fallbackDrag?.()
+  // at press time, so this getter must yield the resolved fallback object
+  getFallbackDrag: () => dnd.fallbackDrag(),
 });
 
 // --- settings: settings model + esc menu ---
