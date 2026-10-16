@@ -78,10 +78,13 @@ type AppContainerOpts = {
   tabBarVisible: boolean;
   previewWidth: number;
   previewEnabled: boolean;
+  // right-region: preview and the info sidebar SHARE one column (info wins
+  // when both are on), so only one of the two panes is ever visible
+  infoEnabled?: boolean;
   dualPane: boolean;
   title: SlotElement;
   // one toolbar shell per pane (ids already prefixed by the toolbar factory)
-  toolbarShells: [SlotElement, SlotElement];
+  toolbarShells: SlotElement[];
 };
 
 export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
@@ -170,12 +173,24 @@ export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
       id: "tfm-preview",
       width: o.previewWidth,
       height: "100%",
-      visible: o.previewEnabled, // display:none in yoga: takes no layout space when hidden
+      // info replaces preview when both are on (one shared right column)
+      visible: o.previewEnabled && !o.infoEnabled, // display:none in yoga: takes no layout space when hidden
       ...chromeSurface(o.uiStyle, o.colors, o.colors.sidebarBg, o.transparentForce ? "force" : undefined),
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
       // auto-hide animation clips the content instead of rebuilding it
+      overflow: "hidden",
+    }),
+    Box({
+      id: "tfm-info",
+      width: o.previewWidth,
+      height: "100%",
+      visible: o.infoEnabled,
+      ...chromeSurface(o.uiStyle, o.colors, o.colors.sidebarBg, o.transparentForce ? "force" : undefined),
+      flexDirection: "column",
+      paddingLeft: 1,
+      paddingRight: 1,
       overflow: "hidden",
     }),
   );

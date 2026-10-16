@@ -20,9 +20,25 @@ import { isCutKeyFor } from "../fs/clipboard";
 import { makeLookup, makeResolutionGate } from "../ui/ui-lookup";
 import { makePointerSetter, makeSlots } from "../ui/ui-slots";
 import { makeFloats } from "../ui/floats";
-import { initialAppState } from "../app/nav";
+import { initialAppState, type AppState } from "../app/nav";
 import { appendLog } from "../app/log";
-import { activeFacade, activeState, makePanePair, otherState, setActivePane, togglePane } from "../app/panes";
+import { activeFacade } from "../app/panes";
+import {
+  closePane,
+  cyclePane,
+  defaultTree,
+  findLeaf,
+  indexFromId,
+  leafIds,
+  moveActiveTo,
+  paneColId,
+  splitPane,
+  type LayoutNode,
+  type LayoutTree,
+  type PaneId,
+  type Rect,
+  type SplitOrientation,
+} from "../app/layout";
 
 export type CoreWiring = ReturnType<typeof wireCore>;
 
@@ -56,7 +72,10 @@ export const wireCore = (deps: {
     // rewrites these as panes collapse/expand; `sw` above stays the config
     // width for sidebar CONTENT (baked at full size and clipped, not rebuilt).
     sidebarEff: config.ui.sidebarWidth,
-    previewEff: config.ui.previewEnabled ? config.ui.previewWidth : 0,
+    // the shared RIGHT region: preview and the info sidebar are mutually
+    // exclusive and equally wide, so the reserved width is preview-width if
+    // EITHER is on
+    previewEff: config.ui.previewEnabled || config.ui.infoSidebar ? config.ui.previewWidth : 0,
   };
 
   // inner width available to children of the sidebar panel (outline border
@@ -146,34 +165,105 @@ export const wireCore = (deps: {
     setPointer,
   });
 
-  // --- App state & history (type + boot-state factory live in ./nav with the
-  // navigation logic). Two panes, each an independent AppState; `state` is a
-  // stable facade over the ACTIVE pane so every existing `core.state` consumer
-  // keeps reading/writing the active view. Dual pane off = pane 1 lies dormant.
+  // --- App state & history: a layout TREE of N panes, each an independent
+  // AppState. `state` is a stable facade over the ACTIVE leaf's AppState, so
+  // every existing `core.state` consumer keeps reading/writing the active view.
+  // The legacy 0|1 index (`panes.active`) mirrors the active leaf's id for the
+  // default 2-pane tree — it is a shim, not the canonical identifier.
   const home = os.homedir();
-  const panes = makePanePair(
-    initialAppState(config, process.cwd(), deps.pendingSelect ?? null),
-    initialAppState(config, process.cwd()),
-  );
-  const state = activeFacade(() => activeState(panes));
+  const layout = { current: defaultTree() as LayoutNode };
+  const stateMap = new Map<PaneId, AppState>([
+    ["p0", initialAppState(config, process.cwd(), deps.pendingSelect ?? null)],
+    ["p1", initialAppState(config, process.cwd())],
+  ]);
+  // legacy 2-tuple shim (p0/p1) — indexed by 0|1 where the leaf exists
+  const statesShim: [AppState, AppState] = [
+    stateMap.get("p0") ?? initialAppState(config, process.cwd(), deps.pendingSelect ?? null),
+    stateMap.get("p1") ?? initialAppState(config, process.cwd()),
+  ];
+
+  let activeId: PaneId = "p0";
+  const setActiveId = (id: PaneId): void => {
+    if (!findLeaf(layout.current, id)) return;
+    activeId = id;
+  };
+  const activeStateFor = (): AppState => stateMap.get(activeId) ?? statesShim[0];
+
+  const panes = {
+    get tree(): LayoutTree {
+      return layout.current;
+    },
+    stateMap,
+    states: statesShim,
+    get active(): 0 | 1 {
+      return indexFromId(activeId);
+    },
+    get activeId(): PaneId {
+      return activeId;
+    },
+    setActivePane: (i: 0 | 1): void => setActiveId(i === 0 ? "p0" : "p1"),
+    setActiveId,
+    togglePane: (): void => {
+      const ids = leafIds(layout.current);
+      if (ids.length < 2) return;
+      const idx = ids.indexOf(activeId);
+      setActiveId(ids[(idx + 1) % ids.length] ?? activeId);
+    },
+    splitPane: (id: PaneId, orientation: SplitOrientation): void => {
+      const { tree, newId } = splitPane(layout.current, id, orientation);
+      layout.current = tree;
+      const fresh = initialAppState(config, process.cwd());
+      stateMap.set(newId, fresh);
+      // re-point statesShim if the split target was p0 or p1
+      if (id === "p0") statesShim[0] = stateMap.get("p0") ?? statesShim[0];
+      if (id === "p1") statesShim[1] = stateMap.get("p1") ?? statesShim[1];
+      setActiveId(newId);
+    },
+    closePane: (id: PaneId): void => {
+      const before = leafIds(layout.current);
+      if (before.length <= 1) return;
+      const closed = closePane(layout.current, id);
+      layout.current = closed;
+      // if the closed leaf was p0/p1, keep the dormant AppState in the shim
+      if (!leafIds(layout.current).includes("p0")) statesShim[0] = stateMap.get("p0") ?? statesShim[0];
+      if (!leafIds(layout.current).includes("p1")) statesShim[1] = stateMap.get("p1") ?? statesShim[1];
+      if (activeId === id) {
+        const ids = leafIds(layout.current);
+        setActiveId(ids[0] ?? activeId);
+      }
+    },
+    cyclePane: (delta: 1 | -1 = 1): void => {
+      const next = cyclePane(layout.current, activeId, delta);
+      setActiveId(next);
+    },
+    moveActiveTo: (orientation: SplitOrientation): void => {
+      moveActiveTo(layout.current, activeId, orientation);
+    },
+    leafIds: (): PaneId[] => leafIds(layout.current),
+    stateOf: (id: PaneId): AppState => stateMap.get(id) ?? activeStateFor(),
+  };
+
+  const state = activeFacade(activeStateFor);
 
   // --- Grid scroll containers — assigned during boot (buildLayout step), one
-  // per pane. `scrollerRef` stays the active pane's live ref for the same
-  // facade reason as `state`. ---
-  // a TUPLE, not Array<T>: `panes.active` is PaneIndex (0|1), and tuple
-  // indexing by it needs no non-null assertion — the length is part of the type
-  const scrollerRefs: [{ current: ScrollBoxRenderable | null }, { current: ScrollBoxRenderable | null }] = [
-    { current: null },
-    { current: null },
-  ];
+  // per leaf. `scrollerRef` stays the active pane's live ref for the same
+  // facade reason as `state`. The legacy `scrollerRefs` tuple (p0/p1) is kept
+  // for callers that still index by 0|1.
+  const scrollerRefs = new Map<PaneId, { current: ScrollBoxRenderable | null }>();
+  for (const id of leafIds(layout.current)) scrollerRefs.set(id, { current: null });
   const scrollerRef = {
     get current(): ScrollBoxRenderable | null {
-      return scrollerRefs[panes.active].current;
+      return scrollerRefs.get(activeId)?.current ?? null;
     },
     set current(v: ScrollBoxRenderable | null) {
-      scrollerRefs[panes.active].current = v;
+      scrollerRefs.set(activeId, { current: v });
     },
   };
+  // legacy p0/p1 tuple shim (still indexed by 0|1 in some callers)
+  const legacyScrollerRefs: [{ current: ScrollBoxRenderable | null }, { current: ScrollBoxRenderable | null }] = [
+    scrollerRefs.get("p0") ?? { current: null },
+    scrollerRefs.get("p1") ?? { current: null },
+  ];
 
   // --- Virtual places: Recent (freedesktop recently-used.xbel) & Starred.
   // URI/XDG primitives live in ./uri.
@@ -196,13 +286,26 @@ export const wireCore = (deps: {
   // a patchwork in solid mode. Clear any stale fill instead; focus reads from
   // the selection, preview and divider. No-op before the boot layout exists. ---
   const refreshPaneFocus = (): void => {
-    for (const i of [0, 1] as const) {
-      const node = lookup.byId(`tfm-pane-col-${i}`);
+    for (const id of leafIds(layout.current)) {
+      const node = lookup.byId(paneColId(id));
       if (!node) continue;
       try {
         applySurface(node, {});
       } catch {}
     }
+  };
+
+  // --- Per-leaf geometry: the layout tree's rects (computed at render time)
+  // drive each leaf's content width. The grid reads `paneAvailW` live.
+  const leafRects = new Map<PaneId, Rect>();
+  const setLeafRects = (rects: Map<PaneId, Rect>): void => {
+    leafRects.clear();
+    for (const [k, v] of rects) leafRects.set(k, v);
+  };
+  const paneAvailW = (id: PaneId): number => {
+    const r = leafRects.get(id);
+    if (!r) return 0;
+    return Math.max(0, r.w - geometry.previewEff);
   };
 
   return {
@@ -221,13 +324,22 @@ export const wireCore = (deps: {
     home,
     state,
     panes,
-    activeState: () => activeState(panes),
-    otherState: () => otherState(panes),
-    setActivePane: (i: 0 | 1) => setActivePane(panes, i),
-    togglePane: () => togglePane(panes),
+    activeState: activeStateFor,
+    otherState: (): AppState => {
+      const ids = leafIds(layout.current);
+      const other = ids.find((id) => id !== activeId) ?? activeId;
+      return stateMap.get(other) ?? activeStateFor();
+    },
+    setActivePane: (i: 0 | 1) => panes.setActivePane(i),
+    setActiveId,
+    togglePane: () => panes.togglePane(),
     refreshPaneFocus,
     scrollerRef,
     scrollerRefs,
+    scrollerRefsLegacy: legacyScrollerRefs,
+    leafRects,
+    setLeafRects,
+    paneAvailW,
     isVirtualCwd,
     inTrashView,
     isCutKey,

@@ -124,6 +124,7 @@ export const makeRetheme = (ctx: RethemeCtx) => {
     });
     paintTitle(colors);
     setOnId("tfm-preview", (n) => applySurface(n, chromeSurface(st, colors, colors.sidebarBg, tForce)));
+    setOnId("tfm-info", (n) => applySurface(n, chromeSurface(st, colors, colors.sidebarBg, tForce)));
     setOnId("tfm-pane-divider", (n) => {
       n.backgroundColor = colors.divider;
     });
@@ -356,8 +357,16 @@ export const makeRetheme = (ctx: RethemeCtx) => {
     const pane = ctx.byId("tfm-preview");
     if (pane) {
       try {
-        pane.visible = ctx.config.ui.previewEnabled;
+        // info sidebar replaces the preview (one shared right column)
+        pane.visible = ctx.config.ui.previewEnabled && !ctx.config.ui.infoSidebar;
         pane.width = ctx.config.ui.previewWidth;
+      } catch {}
+    }
+    const infoPane = ctx.byId("tfm-info");
+    if (infoPane) {
+      try {
+        infoPane.visible = ctx.config.ui.infoSidebar;
+        infoPane.width = ctx.config.ui.previewWidth;
       } catch {}
     }
     // dual-pane visibility: pane 1 + divider show only while enabled. renderAll

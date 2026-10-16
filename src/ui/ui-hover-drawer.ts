@@ -233,7 +233,11 @@ export const makeHoverDrawer = (ctx: HoverDrawerCtx) => {
       edge: "right",
       nodeId: "tfm-preview",
       axis: "width",
-      enabled: () => ctx.ui().previewAutoHide && ctx.ui().previewEnabled,
+      // info sidebar replaces the preview: while it is on, the preview node is
+      // hidden and the drawer must leave it alone (its width still counts as
+      // the shared right region — see effective below). Auto-hide is a preview
+      // feature, so it simply goes dormant while info owns the column.
+      enabled: () => ctx.ui().previewAutoHide && ctx.ui().previewEnabled && !ctx.ui().infoSidebar,
       expanded: () => ctx.ui().previewWidth,
       collapsed: () => collapsedSize(ctx.ui().previewCollapseStyle),
       size: () => ctx.renderer.terminalWidth,
@@ -241,13 +245,15 @@ export const makeHoverDrawer = (ctx: HoverDrawerCtx) => {
         const n = getNode("tfm-preview");
         if (n) {
           try {
-            n.visible = ctx.ui().previewEnabled;
+            n.visible = ctx.ui().previewEnabled && !ctx.ui().infoSidebar;
           } catch {}
         }
       },
       effective: (open) => {
         const ui = ctx.ui();
-        if (!ui.previewEnabled) return 0;
+        if (!ui.previewEnabled && !ui.infoSidebar) return 0;
+        // info owns the column: full width, not the preview's collapse size
+        if (!ui.previewEnabled || ui.infoSidebar) return ui.previewWidth;
         return ui.previewAutoHide ? (open ? ui.previewWidth : collapsedSize(ui.previewCollapseStyle)) : ui.previewWidth;
       },
       applyVisible: (open) => {
@@ -255,7 +261,10 @@ export const makeHoverDrawer = (ctx: HoverDrawerCtx) => {
         const n = getNode("tfm-preview");
         if (n) {
           try {
-            n.visible = ui.previewEnabled && !(ui.previewAutoHide && !open && ui.previewCollapseStyle === "hidden");
+            n.visible =
+              ui.previewEnabled &&
+              !ui.infoSidebar &&
+              !(ui.previewAutoHide && !open && ui.previewCollapseStyle === "hidden");
           } catch {}
         }
       },

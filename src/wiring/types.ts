@@ -46,10 +46,10 @@ export type NavWiring = {
   quitApp: ReturnType<typeof makeQuit>;
   restartApp: ReturnType<typeof makeRestart>;
   setStatusMsg: ReturnType<typeof makeStatus>["setStatusMsg"];
-  tabModels: [ReturnType<typeof makeTabs>, ReturnType<typeof makeTabs>];
+  tabModels: Map<string, ReturnType<typeof makeTabs>>;
   nextTab: () => void;
   prevTab: () => void;
-  searches: [ReturnType<typeof makeSearch>, ReturnType<typeof makeSearch>];
+  searches: Map<string, ReturnType<typeof makeSearch>>;
   activeSearch: () => ReturnType<typeof makeSearch>;
 } & Pick<ReturnType<typeof makeNav>, "canBack" | "canFwd" | "goBack" | "goFwd" | "navigate"> &
   Pick<ReturnType<typeof makeTabs>, "switchTab" | "newTab" | "closeTab"> &
@@ -62,7 +62,7 @@ export type ChromeWiring = {
   chrome: ReturnType<typeof makeChrome>;
   sidebarIntro: ReturnType<typeof makeSidebarAnim>;
   topbarIntro: ReturnType<typeof makeTopbarAnim>;
-  toolbars: [ReturnType<typeof makeToolbar>, ReturnType<typeof makeToolbar>];
+  toolbars: Map<string, ReturnType<typeof makeToolbar>>;
   activeToolbar: () => ReturnType<typeof makeToolbar>;
   notify: ReturnType<typeof makeNotify>["notify"];
   notifySticky: ReturnType<typeof makeNotify>["notifySticky"];
@@ -78,7 +78,7 @@ export type ChromeWiring = {
 
 export type GridFoundationWiring = {
   selection: ReturnType<typeof makeSelection>;
-  selections: [ReturnType<typeof makeSelection>, ReturnType<typeof makeSelection>];
+  selections: Map<string, ReturnType<typeof makeSelection>>;
   refreshCutVisuals: () => void;
   rename: ReturnType<typeof makeRename>;
   bulkRename: ReturnType<typeof makeBulkRename>;
@@ -98,15 +98,17 @@ export type FileopsWiring = {
 
 export type GridWiring = {
   renderPreview: ReturnType<typeof makePreview>["renderPreview"];
+  renderInfo: () => void;
   renderGrid: ReturnType<typeof makeGridRenderer>["renderGrid"];
-  syncWindowPane: (pane: 0 | 1) => void;
-  renderPane: (pane: 0 | 1) => Promise<void>;
-  focusPane: (pane: 0 | 1) => void;
-  dropIntoPane: (pane: 0 | 1) => void;
+  syncWindowPane: (pane: 0 | 1 | string) => void;
+  renderPane: (pane: 0 | 1 | string) => Promise<void>;
+  focusPane: (pane: 0 | 1 | string) => void;
+  dropIntoPane: (pane: 0 | 1 | string) => void;
   finishDrag: () => void;
   bandCtx: BandCtx;
   props: ReturnType<typeof makeProps>;
   menuEntries: ReturnType<typeof makeMenuEntries>;
+  columnsRenderer: (pane: 0 | 1 | string) => ReturnType<typeof import("../ui/ui-columns")["makeColumnsRenderer"]>;
   // executable launches (the Run prompt behind openFileDefault's fork)
   runExecutable: (p: string) => void;
   runExecutableInTerminal: (p: string) => void;

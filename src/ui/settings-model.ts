@@ -23,6 +23,7 @@ import {
   swapKeybind,
   type KeyAction,
   type UiSchemaRow,
+  type ViewMode,
 } from "../config/config-schema";
 import { keySpecEqual, validateKeybindSpec } from "../config/keyspec";
 import { isDark } from "./tty";
@@ -58,6 +59,10 @@ export type SettingsModelCtx = {
   // console-mode read: when active the theme row is display-only (one static
   // console palette paints regardless of presets). Optional so tests stay light.
   isTtyMode?(): boolean;
+  // per-pane view mode: the ACTIVE pane's stored mode (not the global default),
+  // so the settings view-mode cycle row shows what ctrl+g will flip next.
+  // Absent = fall back to the global config value (older fakes).
+  activeViewMode?: () => ViewMode;
   // git installer orchestration (wired in wiring/settings — prompt, danger
   // confirm, clone/pull/rm, rescan). Optional so row SHAPE stays testable
   // without it; rows no-op when absent. Never throws (fire-and-forget).
@@ -140,7 +145,12 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
           blurb: row.blurb,
           ...(row.restart ? { restart: true as const } : {}),
           names: [...row.values],
-          getIdx: () => row.values.indexOf(String(ui[row.prop] ?? row.def)),
+          // per-pane view mode: the ACTIVE pane's stored mode wins over the
+          // global default, so the cycle row shows what ctrl+g will flip next
+          getIdx: () =>
+            row.prop === "viewMode" && ctx.activeViewMode
+              ? row.values.indexOf(ctx.activeViewMode() as string)
+              : row.values.indexOf(String(ui[row.prop] ?? row.def)),
           setIdx: (i) => commitUi({ [row.prop]: row.values[i] } as Partial<UiConfig>),
         };
     }
@@ -331,6 +341,7 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
     "topbarAnimation",
     "directoryBarAnimation",
     "previewEnabled",
+    "infoSidebar",
     "sidebarAutoHide",
     "previewAutoHide",
     "terminalAutoHide",

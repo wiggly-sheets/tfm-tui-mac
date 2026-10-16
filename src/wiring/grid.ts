@@ -15,14 +15,16 @@ import { appsForFile, launchApp } from "../fs/apps";
 import { runSudo, sudoCatArgv } from "../fs/elevate";
 import type { makePick } from "../ui/ui-pick";
 import { makePreview } from "../ui/ui-preview";
+import { makeInfoSidebar } from "../ui/ui-info";
 import { finishDragState, gridDrag, makeEntryMouseHandlers, type BandCtx } from "../input/grid-input";
 import { makeGridRenderer } from "../ui/ui-grid";
+import { makeColumnsRenderer } from "../ui/ui-columns";
 import { type EaseKey, fileAnimStyleFrom, makeFileAnim, makeTileHoverAnim, type SlideDir } from "../ui/ui-grid-anim";
 import { makeProps } from "../ui/ui-props";
 import { makeMenuEntries } from "../ui/menu-entries";
 import { FILE_GLYPH, glyph } from "../ui/glyphs";
 import { rasterSigOf } from "../ui/tty";
-import { activeFacade } from "../app/panes";
+import { activeFacade, type PaneId, viewModeFor } from "../app/panes";
 import { isVirtualUri } from "../fs/uri";
 import { isTrashFilesDir, canReadSync } from "../fs/fsutil";
 import { dlog } from "../app/log";
@@ -44,8 +46,14 @@ export const wireGrid = (deps: {
   getPick(): ReturnType<typeof makePick>;
   // retheme wires after grid — lazy getter, action-time only (same seam)
   getRetheme: () => RethemeWiring;
+  // fallback drag (no-mouse terminals): a long-press picks up the selection
+  // and arms the EXISTING drop pipeline, so the next folder click moves it.
+  // Shared by every pane — one pickup timer for the whole app. Lazy getter:
+  // the decision (terminal capability -> drag path) lives in the dnd wiring,
+  // which is built AFTER the grid, so the grid reads it at press time.
+  getFallbackDrag: () => { pickupMs(): number } | null;
 }) => {
-  const { core, nav, chrome, gridFoundation, fileops, plugins, getPick, getRetheme } = deps;
+  const { core, nav, chrome, gridFoundation, fileops, plugins, getPick, getRetheme, getFallbackDrag } = deps;
   const { selection, selections, rename } = gridFoundation;
   const { byId, stripSelectable } = core.lookup;
   const { themeGet, home, state } = core;
@@ -53,7 +61,14 @@ export const wireGrid = (deps: {
 
   // --- Preview pane — widget lives in ./ui-preview ---
   registerSyntaxParsers();
-  const { renderPreview } = makePreview({
+  // focused tile's key (shared by preview + info sidebar): resolve the index
+  // once and read through `?? null`
+  const focusKey = (): string | null => {
+    const idx = selection.focusIdx();
+    if (idx < 0) return null;
+    return selection.focusKeys()[idx] ?? null;
+  };
+  const { renderPreview: renderPreviewPane } = makePreview({
     renderer: chrome.renderer,
     byId,
     colors: themeGet,
@@ -65,16 +80,10 @@ export const wireGrid = (deps: {
     wrapMode: () => core.config.ui.wrapMode,
     // skip preview rebuilds while the pane is collapsed (auto-hide) — the
     // effective width is 0 then, and the work is invisible native churn
-    visible: () => core.geometry.previewEff > 0 && core.config.ui.previewEnabled,
+    visible: () => core.geometry.previewEff > 0 && core.config.ui.previewEnabled && !core.config.ui.infoSidebar,
     termH: () => chrome.renderer.terminalHeight,
     cellMetrics: core.slots.cellMetrics,
-    focusKey: () => {
-      // resolve the index once and read through `?? null` — the original read
-      // the key twice and asserted the second read non-null
-      const idx = selection.focusIdx();
-      if (idx < 0) return null;
-      return selection.focusKeys()[idx] ?? null;
-    },
+    focusKey,
     tileRefs: selection.tileRefs,
     pushThumbJob: core.slots.pushThumbJob,
     drainThumbs: core.slots.drainThumbs,
@@ -113,6 +122,25 @@ export const wireGrid = (deps: {
     },
   });
 
+  // --- Info sidebar — widget lives in ./ui-info: a live read-out of the
+  // active selection (file details / dir totals / multi summary). Shares the
+  // right column with the preview (info wins when both are on). ---
+  const { renderInfo } = makeInfoSidebar({
+    byId,
+    colors: themeGet,
+    infoEnabled: () => core.config.ui.infoSidebar,
+    infoWidth: () => core.config.ui.previewWidth, // shared right-region width
+    home,
+    focusKey,
+    tileRefs: selection.tileRefs,
+  });
+  // ONE entry for every selection/pane change: the preview and the info
+  // sidebar refresh together (kept in lockstep so they can't drift)
+  const renderPreview = (): void => {
+    renderPreviewPane();
+    renderInfo();
+  };
+
   // Rubber-band gesture state + commit logic live in ./grid-input; this is the
   // ctx object it renders through (built here because it closes over the live
   // selection/preview state below).
@@ -134,20 +162,20 @@ export const wireGrid = (deps: {
   // in place, no rebuild), the newly-active preview + status. The per-pane top
   // bars and tab strips already show the right thing, so re-rendering them here
   // only re-created their icon slots (fallback-glyph flash on every pane click).
-  const focusPane = (pane: 0 | 1): void => {
+  const focusPane = (id: PaneId): void => {
     if (!core.config.ui.dualPane) return;
-    const prev = core.panes.active;
-    if (prev === pane) return;
+    const prev = core.panes.activeId;
+    if (prev === id) return;
     // a selection must not survive a pane switch: drop the pane we're leaving
-    selections[prev].clearTileSelection();
-    core.setActivePane(pane);
+    selections.get(prev)?.clearTileSelection();
+    core.setActiveId(id);
     core.refreshPaneFocus();
     try {
       chrome.chrome.normalizePlaces();
       plugins.refreshSlots?.();
     } catch {}
     void renderPreview();
-    selections[pane].updateSelectionStatusReal();
+    selections.get(id)?.updateSelectionStatusReal();
   };
 
   // Mouse behavior shared by grid tiles AND list rows: selection (plain/ctrl/
@@ -158,8 +186,18 @@ export const wireGrid = (deps: {
   // Mouse pointer shapes (OSC 22): the single shared tty-guarded sink from
   // wireCore (see there for why per-cluster instances diverged).
   const setPointer = core.setPointer;
-  const makePaneGridCtx = (pane: 0 | 1) => {
-    const s = selections[pane];
+  const getSelection = (id: PaneId) => {
+    const s = selections.get(id);
+    if (!s) throw new Error(`no selection for pane ${id}`);
+    return s;
+  };
+  const get = <K, V>(m: Map<K, V>, key: K): V => {
+    const v = m.get(key);
+    if (!v) throw new Error(`missing entry ${String(key)}`);
+    return v;
+  };
+  const makePaneGridCtx = (id: PaneId) => {
+    const s = getSelection(id);
     return {
       byId,
       termW: () => chrome.renderer.terminalWidth,
@@ -196,26 +234,44 @@ export const wireGrid = (deps: {
       finishInlineRename: rename.finishInlineRename,
       // --- host ---
       setStatusMsg: nav.setStatusMsg,
-      focusPane: () => focusPane(pane),
+      focusPane: () => focusPane(id),
       blurTerminal: () => fileops.terminal.blurTerminal(),
-      hoverAnim: (key: string, hovered: boolean) => hoverAnims[pane].playHover(key, hovered),
+      hoverAnim: (key: string, hovered: boolean) => {
+        const a = hoverAnims.get(id);
+        if (!a) throw new Error(`no hover anim for pane ${id}`);
+        a.playHover(key, hovered);
+      },
       setPointer,
       log: (msg: string) => dlog(msg),
+      // pass the getter, don't call it: the capability decision (wireDnd) is
+      // built AFTER the grid, so invoking here would hit `dnd` before init
+      fallbackDrag: getFallbackDrag,
     };
   };
-  const gridCtxs = [makePaneGridCtx(0), makePaneGridCtx(1)] as const;
+  const gridCtxs = new Map<PaneId, ReturnType<typeof makePaneGridCtx>>();
+  for (const id of core.panes.leafIds()) gridCtxs.set(id, makePaneGridCtx(id));
   // active-facing ctx for drag commit/cleanup — its tileRefs resolve to the
   // active pane's map through the facade
-  const gridCtx = activeFacade(() => gridCtxs[core.panes.active]);
+  const gridCtx = activeFacade(() => {
+    const c = gridCtxs.get(core.panes.activeId);
+    if (!c) throw new Error(`no grid ctx for active pane ${core.panes.activeId}`);
+    return c;
+  });
   const finishDragCtx = () => finishDragState(gridCtx);
 
   // A drag released over a pane's EMPTY background moves into that pane's cwd
-  // (the tile drop handles dropping onto a specific folder tile).
-  const dropIntoPane = (pane: 0 | 1): void => {
+  // (the tile drop handles dropping onto a specific folder tile). The fallback
+  // drag (no-mouse terminals) arms its pickup on a tile press, so the same
+  // pane-background and place/tab drop handlers must clear the fallback state
+  // when a fallback drop lands here — otherwise a long-press could never land
+  // on an empty destination pane. gridDrag.keys = null clears both the motion
+  // drag and the fallback's keys through its setter.
+  const dropIntoPane = (id: PaneId): void => {
     const keys = gridDrag.keys;
     if (!keys?.length) return;
-    const dest = core.panes.states[pane].cwd;
-    finishDragCtx();
+    const dest = core.panes.stateOf(id).cwd;
+    gridDrag.keys = null; // clears motion drag + fallback keys
+    gridDrag.fallback = false;
     if (isVirtualUri(dest) || isTrashFilesDir(dest)) return;
     if (dest === core.state.cwd) {
       chrome.notify("Already here", "move", "info");
@@ -225,7 +281,12 @@ export const wireGrid = (deps: {
     if (items.length) void fileops.fileops.moveInto(dest, items);
   };
 
-  const entryMouseHandlers = [makeEntryMouseHandlers(gridCtxs[0]), makeEntryMouseHandlers(gridCtxs[1])] as const;
+  const entryMouseHandlers = new Map<PaneId, ReturnType<typeof makeEntryMouseHandlers>>();
+  for (const id of core.panes.leafIds()) {
+    const ctx = gridCtxs.get(id);
+    if (!ctx) throw new Error(`no grid ctx for pane ${id}`);
+    entryMouseHandlers.set(id, makeEntryMouseHandlers(ctx));
+  }
 
   // --- Grid renderer lives in ./ui-grid (tile/list-row builders, empty and
   // restricted states, thumbnail handoff, gen-counter stale guards) ---
@@ -260,13 +321,14 @@ export const wireGrid = (deps: {
         maxFiles: core.config.ui.fileAnimationMaxFiles,
       }),
     });
-  const fileAnims = [makeFileAnimator(), makeFileAnimator()] as const;
+  const fileAnims = new Map<PaneId, ReturnType<typeof makeFileAnimator>>();
+  for (const id of core.panes.leafIds()) fileAnims.set(id, makeFileAnimator());
   // one hover animator per pane (whole-cell icon lift, synchronous) — reads
   // [ui] file-hover-* live, lifts each pane's own reserved tiles
-  const makeHoverAnimator = (pane: 0 | 1) =>
+  const makeHoverAnimator = (id: PaneId) =>
     makeTileHoverAnim({
       byId,
-      tileRefs: () => selections[pane].tileRefs,
+      tileRefs: () => getSelection(id).tileRefs,
       colors: themeGet,
       uiStyle,
       transparentForce: () => core.config.ui.transparentBg === "force",
@@ -278,16 +340,17 @@ export const wireGrid = (deps: {
         includeLabel: core.config.ui.fileHoverIncludeLabel,
       }),
     });
-  const hoverAnims = [makeHoverAnimator(0), makeHoverAnimator(1)] as const;
-  const makeRenderer = (pane: 0 | 1) =>
+  const hoverAnims = new Map<PaneId, ReturnType<typeof makeHoverAnimator>>();
+  for (const id of core.panes.leafIds()) hoverAnims.set(id, makeHoverAnimator(id));
+  const makeRenderer = (id: PaneId) =>
     makeGridRenderer({
       termW: () => chrome.renderer.terminalWidth,
       termH: () => chrome.renderer.terminalHeight,
-      scroller: () => core.scrollerRefs[pane].current,
-      state: core.panes.states[pane],
-      searchQuery: () => nav.searches[pane].getQuery(),
+      scroller: () => core.scrollerRefs.get(id)?.current ?? null,
+      state: core.panes.stateOf(id),
+      searchQuery: () => nav.searches.get(id)?.getQuery() ?? "",
       recursiveSearch: () => core.config.ui.recursiveSearch,
-      pathEditMode: () => chrome.toolbars[pane].pathEditMode(),
+      pathEditMode: () => chrome.toolbars.get(id)?.pathEditMode() ?? false,
       // column math reads the EFFECTIVE sidebar width (hover drawer rewrites it
       // as the sidebar collapses); core.geometry.sw is the config width used for
       // sidebar content, which stays baked at full size and clips
@@ -306,8 +369,10 @@ export const wireGrid = (deps: {
       transparentForce: () => core.config.ui.transparentBg === "force",
       previewEnabled: () => core.config.ui.previewEnabled,
       previewWidth: () => core.config.ui.previewWidth,
-      // tty mode forces the compact rows: icon tiles need graphics + Nerd glyphs
-      viewMode: () => (core.isTtyMode() ? "list" : core.config.ui.viewMode),
+      // per-pane view mode: the pane's own stored mode wins, falling back to
+      // the global [ui] viewMode default; the tty console forces list/columns
+      // (no icon tiles — no graphics, no Nerd PUA)
+      viewMode: () => viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode),
       // raster-affecting state the grid rebuild keys off (force-glyph/icons/
       // tty mode/transparent-bg flips must rebuild even though the listing
       // is unchanged)
@@ -321,8 +386,8 @@ export const wireGrid = (deps: {
         ),
       wrapMode: () => core.config.ui.wrapMode,
       reservedRight: () => core.geometry.previewEff,
-      availW: paneAvailW,
-      tileIdPrefix: `tfm-tile-p${pane}-`,
+      availW: () => (core.leafRects.has(id) ? core.paneAvailW(id) : paneAvailW()),
+      tileIdPrefix: `tfm-tile-${id}-`,
       cellMetrics: core.slots.cellMetrics,
       makeIconSlot: core.slots.makeIconSlot,
       pushThumbJob: core.slots.pushThumbJob,
@@ -332,7 +397,7 @@ export const wireGrid = (deps: {
       stripSelectable,
       setTextOnId: core.lookup.setTextOnId,
       log: (msg) => dlog(msg),
-      fileAnim: (target) => fileAnims[pane].play(target),
+      fileAnim: (target) => get(fileAnims, id).play(target),
       fileAnimVisibleOnly: () => core.config.ui.fileAnimationVisibleOnly,
       fileAnimScrollRevealDelayMs: () => core.config.ui.fileAnimationScrollRevealDelayMs,
       windowedGrid: () => core.config.ui.windowedGrid,
@@ -342,8 +407,8 @@ export const wireGrid = (deps: {
       listingsCacheTtlMs: () => core.config.ui.listingsCacheTtl * 1000,
       loadingDelayMs: () => core.config.ui.loadingDelayMs,
       isTtyMode: core.isTtyMode,
-      selection: selections[pane],
-      entryMouseHandlers: entryMouseHandlers[pane],
+      selection: get(selections, id),
+      entryMouseHandlers: get(entryMouseHandlers, id),
       isCutKey: core.isCutKey,
       // render path: the gate's cheap wait. Once boot latched "this terminal
       // never reports pixels" this is an instant no-op — the old unbounded
@@ -351,16 +416,80 @@ export const wireGrid = (deps: {
       waitForResolution: () => core.resolutionGate.wait(),
       clearRenameEdit: rename.clearRenameEdit,
     });
-  const renderers = [makeRenderer(0), makeRenderer(1)] as const;
-  const renderPane = (pane: 0 | 1): Promise<void> => renderers[pane].renderGrid();
+  const renderers = new Map<PaneId, ReturnType<typeof makeRenderer>>();
+  for (const id of core.panes.leafIds()) renderers.set(id, makeRenderer(id));
+
+  const makeColRenderer = (id: PaneId) =>
+    makeColumnsRenderer({
+      termW: () => chrome.renderer.terminalWidth,
+      termH: () => chrome.renderer.terminalHeight,
+      scroller: () => core.scrollerRefs.get(id)?.current ?? null,
+      state: core.panes.stateOf(id),
+      searchQuery: () => nav.searches.get(id)?.getQuery() ?? "",
+      recursiveSearch: () => core.config.ui.recursiveSearch,
+      pathEditMode: () => chrome.toolbars.get(id)?.pathEditMode() ?? false,
+      sw: () => core.geometry.sidebarEff,
+      tileW: () => core.geometry.tileW,
+      tileH: () => core.geometry.tileH,
+      iconCells: () => core.geometry.iconCells,
+      listRowH: () => core.config.ui.listRowHeight,
+      uiStyle,
+      colors: themeGet,
+      transparentForce: () => core.config.ui.transparentBg === "force",
+      previewEnabled: () => core.config.ui.previewEnabled,
+      previewWidth: () => core.config.ui.previewWidth,
+      viewMode: () => viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode),
+      wrapMode: () => core.config.ui.wrapMode,
+      reservedRight: () => core.geometry.previewEff,
+      availW: () => (core.leafRects.has(id) ? core.paneAvailW(id) : paneAvailW()),
+      tileIdPrefix: `tfm-tile-${id}-`,
+      cellMetrics: core.slots.cellMetrics,
+      makeIconSlot: core.slots.makeIconSlot,
+      pushThumbJob: core.slots.pushThumbJob,
+      nextIconId: core.slots.nextIconId,
+      drainIconQueue: core.slots.drainIconQueue,
+      drainThumbs: core.slots.drainThumbs,
+      stripSelectable,
+      log: (msg) => dlog(msg),
+      waitForResolution: () => core.resolutionGate.wait(),
+      clearRenameEdit: rename.clearRenameEdit,
+      selection: get(selections, id),
+      entryMouseHandlers: get(entryMouseHandlers, id),
+      isCutKey: core.isCutKey,
+      openFileDefault: chrome.openFileDefault,
+      fileAnim: (target) => get(fileAnims, id).play(target),
+      fileAnimVisibleOnly: () => core.config.ui.fileAnimationVisibleOnly,
+    });
+  const columnsRenderers = new Map<PaneId, ReturnType<typeof makeColRenderer>>();
+  for (const id of core.panes.leafIds()) columnsRenderers.set(id, makeColRenderer(id));
+
+  const renderPane = (pane: PaneId | 0 | 1): Promise<void> => {
+    const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
+    const mode = viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode);
+    if (mode === "columns") {
+      return get(columnsRenderers, id).renderColumns();
+    }
+    return get(renderers, id).renderGrid();
+  };
   // [ui] windowed-grid: the boot layout's scrollers get their scrollTop
   // hooked to this (wiring/io) — a slide rebuilds only the row window
-  const syncWindowPane = (pane: 0 | 1): void => renderers[pane].syncWindow();
+  const syncWindowPane = (pane: PaneId | 0 | 1): void => {
+    const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
+    const mode = viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode);
+    if (mode === "columns") {
+      get(columnsRenderers, id).syncWindow();
+    } else {
+      get(renderers, id).syncWindow();
+    }
+  };
   // render pane 0 always; pane 1 only while dual pane is on (its scroller is
   // hidden otherwise, so building its tiles would be wasted native allocs)
   const renderGrid = async (): Promise<void> => {
-    await renderers[0].renderGrid();
-    if (core.config.ui.dualPane) await renderers[1].renderGrid();
+    const ids = core.panes.leafIds();
+    for (const id of ids) {
+      if (id === "p1" && !core.config.ui.dualPane) continue;
+      await renderPane(id);
+    }
   };
 
   const props = makeProps({
@@ -401,10 +530,11 @@ export const wireGrid = (deps: {
       getRetheme().applyConfig({ ...core.config, ui: { ...core.config.ui, dualPane: true } });
       getRetheme().scheduleSaveConfig();
     }
-    const other = core.panes.active === 0 ? 1 : 0;
+    const active = core.panes.activeId;
+    const other: PaneId = active === "p1" ? "p0" : "p1";
     // a selection must not survive a pane switch (same rule as switchPane)
-    gridFoundation.selections[core.panes.active]?.clearTileSelection();
-    core.setActivePane(other);
+    gridFoundation.selections.get(active)?.clearTileSelection();
+    core.setActiveId(other);
     nav.navigate(dir);
   };
 
@@ -579,15 +709,26 @@ export const wireGrid = (deps: {
 
   return {
     renderPreview,
+    renderInfo,
     renderGrid,
     syncWindowPane,
     renderPane,
-    focusPane,
-    dropIntoPane,
+    focusPane: (pane: PaneId | 0 | 1) => {
+      const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
+      focusPane(id);
+    },
+    dropIntoPane: (pane: PaneId | 0 | 1) => {
+      const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
+      dropIntoPane(id);
+    },
     finishDrag: finishDragCtx,
     bandCtx,
     props,
     menuEntries,
+    columnsRenderer: (pane: PaneId | 0 | 1) => {
+      const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
+      return get(columnsRenderers, id);
+    },
     runExecutable,
     runExecutableInTerminal,
     askExecutable,

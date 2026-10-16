@@ -301,6 +301,7 @@ describe("settingGroups shape", () => {
       "sidebar collapse",
       "##preview",
       "preview pane",
+      "info sidebar",
       "preview width",
       "preview auto-hide",
       "preview collapse",

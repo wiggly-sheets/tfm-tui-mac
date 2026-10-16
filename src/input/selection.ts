@@ -41,6 +41,9 @@ export type SelectionCtx = {
   viewH(): number;
   rowHInit(): number;
   renderPreview(): void | Promise<void>;
+  // live info-sidebar refresh (selectAll/invert/clear/band paths reach here but
+  // NOT renderPreview). Optional so test fakes keep working; debounced upstream.
+  renderInfo?(): void;
   onSelection?: (paths: string[]) => void;
   // false for an inactive pane: its selection must not drive the shared status
   // bar or emit plugin selection events (the active pane owns those). Absent =
@@ -135,6 +138,7 @@ export const makeSelection = (ctx: SelectionCtx) => {
         ctx.onSelection?.(paths);
       }
     } catch {}
+    ctx.renderInfo?.();
     const gen = ++selStatusGen;
     const sel: { key: string; isDir: boolean }[] = [];
     tileRefs.forEach((r, k) => {

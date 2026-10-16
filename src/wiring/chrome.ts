@@ -19,6 +19,7 @@ import { makeNetworkActions, type GioResult } from "../fs/netmount";
 import { makeMenu, MENU_W } from "../ui/ui-menu";
 import { makeChrome } from "../ui/ui-chrome";
 import { makeToolbar, toolbarItemIds, crumbItemIds } from "../ui/ui-toolbar";
+import { getMap, type PaneId } from "../app/panes";
 import { buildAppContainer, buildTitle } from "../ui/ui-boot-layout";
 import { warmEmbeddedIcons } from "../ui/icons";
 import type { NodeLike } from "../lib/node-like";
@@ -153,13 +154,14 @@ export const wireChrome = async (deps: {
     moveInto: (dest, items) => getFileops().fileops.moveInto(dest, items),
     kbActive: () => getKeyRouter().sidebarActive(),
     kbIdx: () => getKeyRouter().placeIdx(),
-    tabs: (pane) => nav.tabModels[pane],
-    focusPane: (pane) => getGrid().focusPane(pane),
-    closeTab: (pane, i) => nav.tabModels[pane].closeTab(i),
-    switchTab: (pane, i) => nav.tabModels[pane].switchTab(i),
-    newTab: (pane, dir) => nav.tabModels[pane].newTab(dir),
+    tabs: (pane) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0"),
+    focusPane: (pane) => getGrid().focusPane(pane === 1 ? "p1" : "p0"),
+    closeTab: (pane, i) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0").closeTab(i),
+    switchTab: (pane, i) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0").switchTab(i),
+    newTab: (pane, dir) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0").newTab(dir),
     // toolbars are built after the chrome ctx (TDZ seam) — keep the arrow
-    hoverBtn: (pane, id, icon, onMouseDown) => toolbars[pane].hoverBtn(id, icon, onMouseDown),
+    hoverBtn: (pane, id, icon, onMouseDown) =>
+      getMap(toolbars, pane === 1 ? "p1" : "p0").hoverBtn(id, icon, onMouseDown),
     stripSelectable,
     drainIconQueue,
     makeIconSlot,
@@ -199,9 +201,9 @@ export const wireChrome = async (deps: {
   // --- Toolbars — widget lives in ./ui-toolbar (nav buttons, crumbs, inline
   // path edit, sort/search buttons). ONE PER PANE, each with its own id prefix
   // so the nodes can coexist in the renderable registry. ---
-  const makePaneToolbar = (pane: 0 | 1) =>
+  const makePaneToolbar = (id: PaneId) =>
     makeToolbar({
-      prefix: `tfm-p${pane}-`,
+      prefix: `tfm-${id}-`,
       renderer: () => renderer,
       byId,
       destroyChildren,
@@ -213,30 +215,28 @@ export const wireChrome = async (deps: {
       setIconState,
       closeFileMenu: menu.closeFileMenu,
       blurTerminal: () => getFileops().terminal.blurTerminal(),
-      focusPane: () => getGrid().focusPane(pane),
+      focusPane: () => getGrid().focusPane(id),
       navigate: nav.navigate,
       // arrow wrapper: notify is declared below (TDZ seam rule)
       notify: (m, t, l) => notify(m, t, l),
       // the toolbar shows ITS pane's history, not the focused pane's: `state`
       // is the active-pane facade, so read the real per-pane state here
-      canBack: () => core.panes.states[pane].histIdx > 0,
-      canFwd: () => core.panes.states[pane].histIdx < core.panes.states[pane].history.length - 1,
+      canBack: () => core.panes.stateOf(id).histIdx > 0,
+      canFwd: () => core.panes.stateOf(id).histIdx < core.panes.stateOf(id).history.length - 1,
       goBack: nav.goBack,
       goFwd: nav.goFwd,
       openContextMenu: menu.openContextMenu,
       sortEntries: () => getGrid().menuEntries.sortEntries(),
-      cwd: () => core.panes.states[pane].cwd,
+      cwd: () => core.panes.stateOf(id).cwd,
       // per-navigate new-crumbs cascade (see renderCrumbs' lastCrumbTargets
       // guard): arrow-deferred, dirBarAnims is built post-renderer below
       // (TDZ seam)
-      animateCrumbs: (ids: string[]) => dirBarAnims[pane].playIds(ids),
+      animateCrumbs: (ids: string[]) => getMap(dirBarAnims, id).playIds(ids),
       home,
       setPointer,
     });
-  const toolbars: [ReturnType<typeof makeToolbar>, ReturnType<typeof makeToolbar>] = [
-    makePaneToolbar(0),
-    makePaneToolbar(1),
-  ];
+  const toolbars = new Map<PaneId, ReturnType<typeof makeToolbar>>();
+  for (const id of core.panes.leafIds()) toolbars.set(id, makePaneToolbar(id));
 
   // --- Layout: the pre-mount skeleton (title + three panels) lives in
   // ./ui-boot-layout; ids are repainted by rethemeChrome, so they must stay
@@ -252,9 +252,10 @@ export const wireChrome = async (deps: {
     tabBarVisible: core.config.ui.tabBar,
     previewWidth: core.config.ui.previewWidth,
     previewEnabled: core.config.ui.previewEnabled,
+    infoEnabled: core.config.ui.infoSidebar,
     dualPane: core.config.ui.dualPane,
     title: buildTitle({ width: core.sideInnerW(), colors: core.colors, mode: core.config.ui.sidebarTitle }),
-    toolbarShells: [toolbars[0].makeToolbarShell(), toolbars[1].makeToolbarShell()],
+    toolbarShells: [...toolbars.values()].map((t) => t.makeToolbarShell()),
   });
 
   // --- Renderer boot. On a Linux text console, gpm is the only mouse source
@@ -339,7 +340,7 @@ export const wireChrome = async (deps: {
   // playIds (post-rebuild, so the fresh nodes are targeted). Rapid
   // re-navigates retarget cleanly (playIds re-resolves + restarts the one
   // reused timeline). ---
-  const makeDirBarAnim = (pane: 0 | 1) =>
+  const makeDirBarAnim = (id: PaneId) =>
     makeTopbarAnim({
       renderer,
       byId,
@@ -352,12 +353,10 @@ export const wireChrome = async (deps: {
         staggerPct: core.config.ui.directoryBarStaggerPct,
         ease: core.config.ui.directoryBarEase as EaseKey,
       }),
-      barIds: () => crumbItemIds(byId, `tfm-p${pane}-`),
+      barIds: () => crumbItemIds(byId, `tfm-${id}-`),
     });
-  const dirBarAnims: [ReturnType<typeof makeTopbarAnim>, ReturnType<typeof makeTopbarAnim>] = [
-    makeDirBarAnim(0),
-    makeDirBarAnim(1),
-  ];
+  const dirBarAnims = new Map<PaneId, ReturnType<typeof makeTopbarAnim>>();
+  for (const id of core.panes.leafIds()) dirBarAnims.set(id, makeDirBarAnim(id));
   // --- Notifications — its consumers (recent-open, undo, fileops, terminal,
   // trashops, settings, dnd72) take `notify` directly; the sticky transfer
   // progress toast lives in the same stack via notifySticky, so every
@@ -650,7 +649,7 @@ export const wireChrome = async (deps: {
     sidebarIntro,
     topbarIntro,
     toolbars,
-    activeToolbar: () => toolbars[core.panes.active],
+    activeToolbar: () => getMap(toolbars, core.panes.activeId),
     notify,
     notifySticky,
     ensureSudo: ensureSudoChrome,

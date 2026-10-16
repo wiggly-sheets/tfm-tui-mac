@@ -9,7 +9,7 @@ import { makeRename } from "../ui/ui-rename";
 import { makeBulkRename } from "../ui/ui-bulk-rename";
 import { destroyChildren } from "../lib/uiutil";
 import { sharedPluginEvents } from "../lib/plugin-events";
-import { activeFacade, activeMapFacade } from "../app/panes";
+import { activeFacade, activeMapFacade, getMap, type PaneId } from "../app/panes";
 import type { CoreWiring } from "./core";
 import type { ChromeWiring, FileopsWiring, GridWiring, NavWiring } from "./types";
 
@@ -22,7 +22,7 @@ export const wireGridFoundation = (deps: {
 }) => {
   const { core, nav, chrome, getGrid, getFileops } = deps;
 
-  const selectionFor = (pane: 0 | 1): Selection =>
+  const selectionFor = (id: PaneId): Selection =>
     makeSelection({
       colors: core.themeGet,
       uiStyle: () => core.config.ui.uiStyle,
@@ -31,29 +31,32 @@ export const wireGridFoundation = (deps: {
       setText: core.lookup.setTextOnId,
       setIconState: core.slots.setIconState,
       isCutKey: core.isCutKey,
-      scroller: () => core.scrollerRefs[pane].current,
+      scroller: () => core.scrollerRefs.get(id)?.current ?? null,
       viewH: () => chrome.renderer.terminalHeight - 3,
       rowHInit: () => core.geometry.tileH,
       renderPreview: () => getGrid().renderPreview(),
+      renderInfo: () => getGrid().renderInfo(),
       onSelection: (paths) => sharedPluginEvents().emit("selection", { paths }),
-      isActive: () => core.panes.active === pane,
+      isActive: () => core.panes.activeId === id,
     });
 
-  // two independent selections; `selection` is a stable facade over the active
-  // pane so every existing consumer reads the active pane without changes.
-  // tileRefs is overridden with a live map facade because ui-rename/preview and
-  // the menu capture it ONCE at construction.
-  const selections: [Selection, Selection] = [selectionFor(0), selectionFor(1)];
-  const activeTileRefs = activeMapFacade(() => selections[core.panes.active].tileRefs as Map<string, SelTileRef>);
-  const selection = activeFacade(() => selections[core.panes.active], {
+  // one independent selection per leaf; `selection` is a stable facade over the
+  // active pane so every existing consumer reads the active pane without
+  // changes. tileRefs is overridden with a live map facade because
+  // ui-rename/preview and the menu capture it ONCE at construction.
+  const selections = new Map<PaneId, Selection>();
+  for (const id of core.panes.leafIds()) selections.set(id, selectionFor(id));
+  const activeTileRefs = activeMapFacade(
+    () => getMap(selections, core.panes.activeId).tileRefs as Map<string, SelTileRef>,
+  );
+  const selection = activeFacade(() => getMap(selections, core.panes.activeId), {
     tileRefs: activeTileRefs as unknown,
   });
 
-  // cut/copy/paste dimming must repaint in BOTH panes (a path can be visible on
+  // cut/copy/paste dimming must repaint in EVERY pane (a path can be visible on
   // either side); the facade method only reaches the active one.
   const refreshCutVisuals = (): void => {
-    selections[0].refreshCutVisuals();
-    selections[1].refreshCutVisuals();
+    for (const s of selections.values()) s.refreshCutVisuals();
   };
 
   // Mouse pointer shapes (OSC 22): the single shared tty-guarded sink from
