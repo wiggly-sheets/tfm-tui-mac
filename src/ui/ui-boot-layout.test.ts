@@ -11,6 +11,7 @@ import {
   buildPaneTree,
   buildTitle,
   scrollbarTrackColors,
+  setPathbarPosition,
 } from "./ui-boot-layout";
 
 // the grid scrollers' bars must wear the theme (not the upstream gray
@@ -73,6 +74,28 @@ describe("tab strip containers", () => {
       const bar: any = t.renderer.root.findDescendantById(id);
       expect(bar).toBeTruthy();
       expect(bar.overflow).toBe("hidden"); // shrunk chips clip here past the minimum
+    }
+  });
+});
+
+describe("pathbar position", () => {
+  const childIds = (pos: "top" | "bottom" | "hidden"): string[] => {
+    setPathbarPosition(() => pos);
+    const { col } = buildPaneColumn({
+      id: "p0",
+      toolbarShell: Box({ id: "tfm-p0-toolbar" }),
+      tabBarVisible: false,
+    });
+    return ((col as any).children ?? []).map((c: any) => c.props?.id ?? c.id);
+  };
+
+  test("top keeps the legacy order; bottom moves the bar below the grid; hidden drops it", () => {
+    try {
+      expect(childIds("top")).toEqual(["tfm-p0-toolbar", "tfm-p0-tabbar", "tfm-pane-0"]);
+      expect(childIds("bottom")).toEqual(["tfm-p0-tabbar", "tfm-pane-0", "tfm-p0-toolbar"]);
+      expect(childIds("hidden")).toEqual(["tfm-p0-tabbar", "tfm-pane-0"]);
+    } finally {
+      setPathbarPosition(() => "top");
     }
   });
 });

@@ -11,6 +11,7 @@
 view-mode                             = "grid"      # "grid" = icon tiles; "list" = compact rows with size + modified columns; "columns" = narrow left column listing, selecting one opens the next with its contents (Finder/Miller)
 wrap-mode                             = "none"      # none = cut names with … and clip code preview; char = character-wrap tile names and code lines; word = break at spaces (spaceless runs still slice). Markdown prose (paragraphs, tables) always word-wraps.
 tab-bar                               = false       # true = strip always visible (even with one tab); false = adaptive (only while 2+ tabs are open)
+pathbar-position                      = "top"       # "top" = the breadcrumb path bar sits above the file list (default); "bottom" = below it; "hidden" = no path bar (needs restart)
 sidebar-width                         = 26          # 16..60 cells (grid + list)
 sidebar-visible                       = true        # true = show the places sidebar; false = hide it (the toggle-sidebar keybind flips this)
 sidebar-title                         = "tfm"       # "tfm" = the accent ASCII "tfm" wordmark + tagline above the places sidebar; "files" = the same style spelling "Files" in the sidebar white; "none" = keep the space, show nothing
@@ -107,6 +108,7 @@ recursive-search                      = false       # true = type-to-search also
 sort-mode                             = "type"      # "name" = A-Z; "size" = largest first; "mtime" = oldest first; "type" = grouped by kind (folders first, always)
 restore-session                       = false       # true = reopen the folder from the last quit instead of the launch cwd (needs restart)
 persist-undo                          = false       # true = undo history survives restarts (journal under $XDG_STATE_HOME/tfm/, entries expire after 7 days)
+exit-cwd                              = "default"   # where the shell wrapper that set $TFM_CWD_FILE lands on exit: "default" = the directory tfm was launched in; "active-pane" = the active pane's directory. Nothing is written when $TFM_CWD_FILE is unset
 show-launch-time                      = false       # true = show a notification with the app launch time in ms (debug aid); also enabled by --debug (needs restart)
 
 [theme]

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { makeQuit, type QuitCtx } from "./quit";
+import { makeQuit, resolveExitCwd, type QuitCtx } from "./quit";
 
 const mkCtx = (
   calls: string[],
@@ -45,6 +45,20 @@ const mkCtx = (
     },
   };
 };
+
+describe("resolveExitCwd", () => {
+  test("default hands back the launch directory", () => {
+    expect(resolveExitCwd("default", "/browsed", "/launched", false)).toBe("/launched");
+  });
+
+  test("active-pane hands back the active pane's directory", () => {
+    expect(resolveExitCwd("active-pane", "/browsed", "/launched", false)).toBe("/browsed");
+  });
+
+  test("a virtual place (recent://) is not cd-able — falls back to the launch dir", () => {
+    expect(resolveExitCwd("active-pane", "recent://", "/launched", true)).toBe("/launched");
+  });
+});
 
 describe("makeQuit", () => {
   test("teardown order: drops -> release -> session -> terminal -> gpm -> chrome -> onQuit -> destroy -> exit(0)", () => {
@@ -99,5 +113,42 @@ describe("makeQuit", () => {
       makeQuit(ctx)();
       expect(ctx.codes).toEqual([1]);
     }
+  });
+
+  test("writeCwdFile runs before destroy and is best-effort", () => {
+    const calls: string[] = [];
+    const ctx = mkCtx(calls);
+    const withCwd: QuitCtx & { codes: number[] } = {
+      ...ctx,
+      writeCwdFile: () => {
+        calls.push("cwd");
+      },
+    };
+    makeQuit(withCwd)();
+    expect(calls).toEqual([
+      "drops",
+      "release",
+      "session",
+      "cwd",
+      "terminal",
+      "gpm",
+      "chrome",
+      "onQuit",
+      "destroy",
+      "exit:0",
+    ]);
+
+    const throwCalls: string[] = [];
+    const throwCtx = mkCtx(throwCalls);
+    const throwing: QuitCtx & { codes: number[] } = {
+      ...throwCtx,
+      writeCwdFile: () => {
+        throwCalls.push("cwd");
+        throw new Error("read-only $TFM_CWD_FILE");
+      },
+    };
+    makeQuit(throwing)();
+    // the failure is reported in the exit code but never strands the teardown
+    expect(throwCalls).toContain("exit:1");
   });
 });

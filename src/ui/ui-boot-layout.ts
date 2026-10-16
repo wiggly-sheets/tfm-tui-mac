@@ -11,7 +11,7 @@ import { chromeSurface, type UiStyle } from "./style";
 import type { SlotElement } from "./ui-slots";
 import type { ListEntry } from "./ui-menu";
 import type { Theme } from "../config/config";
-import type { SidebarTitleMode } from "../config/config-schema";
+import type { SidebarTitleMode, PathbarPosition } from "../config/config-schema";
 import { type LayoutNode, paneColId, paneHostId, type PaneId, panePrefix, scrollerId } from "../app/layout";
 import {
   BAND_ID,
@@ -155,28 +155,42 @@ export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
 // --- One pane column: its own top bar, tab strip and grid host. p0/p1 keep
 // their byte-identical legacy ids (paneColId/paneHostId); new leaves share the
 // same shape. `host` is returned so wiring/panes can mount the scroller in it. ---
+
+// [ui] pathbar-position: where the breadcrumb toolbar sits in the column.
+// wiring/panes builds the columns (a caller this module doesn't own), so the
+// position arrives through this seam, set once by wireChrome before any column
+// exists. Default "top" = the byte-identical pre-key child order.
+let pathbarPosition: () => PathbarPosition = () => "top";
+
+export const setPathbarPosition = (fn: () => PathbarPosition): void => {
+  pathbarPosition = fn;
+};
+
 export const buildPaneColumn = (o: {
   id: PaneId;
   toolbarShell: SlotElement;
   tabBarVisible: boolean;
 }): { col: SlotElement; host: SlotElement } => {
   const host = Box({ id: paneHostId(o.id), flexGrow: 1, width: "100%", flexDirection: "column" });
-  const col = Box(
-    { id: paneColId(o.id), flexGrow: 1, height: "100%", flexDirection: "column" },
-    o.toolbarShell,
-    Box({
-      id: `${panePrefix(o.id)}tabbar`,
-      width: "100%",
-      height: 1,
-      flexDirection: "row",
-      columnGap: 1,
-      // tab chips shrink to fit, and past the minimum the tail clips here
-      // instead of bleeding over the grid
-      overflow: "hidden",
-      visible: o.tabBarVisible,
-    }),
-    host,
-  );
+  const tabbar = Box({
+    id: `${panePrefix(o.id)}tabbar`,
+    width: "100%",
+    height: 1,
+    flexDirection: "row",
+    columnGap: 1,
+    // tab chips shrink to fit, and past the minimum the tail clips here
+    // instead of bleeding over the grid
+    overflow: "hidden",
+    visible: o.tabBarVisible,
+  });
+  const pos = pathbarPosition();
+  const kids: SlotElement[] =
+    pos === "bottom"
+      ? [tabbar, host, o.toolbarShell]
+      : pos === "hidden"
+        ? [tabbar, host]
+        : [o.toolbarShell, tabbar, host];
+  const col = Box({ id: paneColId(o.id), flexGrow: 1, height: "100%", flexDirection: "column" }, ...kids);
   return { col, host };
 };
 

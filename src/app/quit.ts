@@ -6,6 +6,15 @@
 // but the exit code stays honest: 0 clean, 1 when any step threw (a masked
 // teardown failure used to exit 0, hiding broken shutdowns from scripts). ---
 
+import type { ExitCwdMode } from "../config/config-schema";
+
+// --- [ui] exit-cwd: which directory the shell wrapper that set $TFM_CWD_FILE
+// lands in. A virtual place (recent://, starred://) is not a directory a shell
+// can cd to, so it falls back to the launch directory. Pure — the write itself
+// is a quit step wired in nav. ---
+export const resolveExitCwd = (mode: ExitCwdMode, activeCwd: string, launchCwd: string, isVirtual: boolean): string =>
+  mode === "active-pane" && !isVirtual ? activeCwd : launchCwd;
+
 export type QuitCtx = {
   disableDrops(): void;
   releaseShiftCapture(): void;
@@ -21,6 +30,10 @@ export type QuitCtx = {
   // synchronous final session write — process.exit kills pending async IO,
   // so the debounced 400ms save loses the last navigation
   flushSession?(): void;
+  // [ui] exit-cwd: write the directory the shell wrapper should cd into
+  // ($TFM_CWD_FILE — wired in nav; absent = no write). Sync, because
+  // process.exit follows immediately.
+  writeCwdFile?(): void;
   destroy(): void;
   exit(code: number): void;
   onQuit?: () => void;
@@ -67,6 +80,11 @@ export const runTeardownSteps = (ctx: QuitCtx): boolean => {
   }
   try {
     ctx.flushSession?.();
+  } catch {
+    failed = true;
+  }
+  try {
+    ctx.writeCwdFile?.();
   } catch {
     failed = true;
   }
