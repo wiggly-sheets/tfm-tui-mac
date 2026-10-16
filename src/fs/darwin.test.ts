@@ -19,6 +19,7 @@ import {
   isDarwin,
   jxaTrashArgs,
   MACOS_FFMPEG_SIDECARS,
+  mdlsTagsArgs,
   openerBin,
   parseDiskutilListPlist,
   parseMdlsTags,
@@ -27,10 +28,15 @@ import {
   pbpasteFileUrlArgs,
   posixPathOfClipboardArgs,
   qlmanageThumbArgs,
+  readFinderTags,
   sipsThumbArgs,
   syncStarTag,
+  tagAddArgs,
+  tagRemoveArgs,
+  tagSetArgs,
   trashCliArgs,
   TRASH_CLI,
+  writeFinderTags,
   XATTR_CLI,
   xattrListArgs,
   xattrReadArgs,
@@ -285,6 +291,58 @@ describe("syncStarTag", () => {
     expect(calls).toEqual([
       ["/opt/homebrew/bin/tag", ["-a", "Starred", "/x/f.txt"]],
       ["/opt/homebrew/bin/tag", ["-r", "Starred", "/x/f.txt"]],
+    ]);
+  });
+});
+
+describe("finder tags (read + write)", () => {
+  test("argv builders keep the path as its own argument (spaces safe)", () => {
+    expect(mdlsTagsArgs("/a b.txt")).toEqual(["-raw", "-name", "kMDItemUserTags", "/a b.txt"]);
+    expect(tagAddArgs("Red", "/a b.txt")).toEqual(["-a", "Red", "/a b.txt"]);
+    expect(tagRemoveArgs("Red", "/a b.txt")).toEqual(["-r", "Red", "/a b.txt"]);
+    expect(tagSetArgs(["Red", "Blue"], "/a b.txt")).toEqual(["-s", "Red,Blue", "/a b.txt"]);
+  });
+
+  test("readFinderTags parses mdls output; off darwin never spawns", async () => {
+    const calls: string[][] = [];
+    const run = async (_bin: string, args: string[]): Promise<{ stdout: string }> => {
+      calls.push(args);
+      return { stdout: "(\n Red,\n Starred\n)" };
+    };
+    expect(await readFinderTags({ run, platform: "linux" }, "/x")).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(await readFinderTags({ run, platform: "darwin" }, "/x")).toEqual(["Red", "Starred"]);
+    expect(calls).toEqual([["-raw", "-name", "kMDItemUserTags", "/x"]]);
+  });
+
+  test("readFinderTags swallows a spawn failure to empty", async () => {
+    const run = async (): Promise<{ stdout: string }> => {
+      throw new Error("mdls failed");
+    };
+    await expect(readFinderTags({ run, platform: "darwin" }, "/x")).resolves.toEqual([]);
+  });
+
+  test("writeFinderTags: no CLI or off darwin is a silent no-op", () => {
+    const calls: Array<[string, string[]]> = [];
+    const deps = { which: () => null, exec: (b: string, a: string[]) => void calls.push([b, a]) };
+    writeFinderTags({ ...deps, platform: "darwin" }, [["-a", "Red", "/x"]]);
+    writeFinderTags({ which: () => "/opt/homebrew/bin/tag", exec: deps.exec, platform: "linux" }, [
+      ["-a", "Red", "/x"],
+    ]);
+    expect(calls).toEqual([]);
+  });
+
+  test("writeFinderTags applies one argv per target through the CLI", () => {
+    const calls: Array<[string, string[]]> = [];
+    const deps = {
+      which: () => "/opt/homebrew/bin/tag",
+      exec: (b: string, a: string[]) => void calls.push([b, a]),
+      platform: "darwin",
+    };
+    writeFinderTags(deps, [tagAddArgs("Red", "/x/a"), tagAddArgs("Red", "/x/b")]);
+    expect(calls).toEqual([
+      ["/opt/homebrew/bin/tag", ["-a", "Red", "/x/a"]],
+      ["/opt/homebrew/bin/tag", ["-a", "Red", "/x/b"]],
     ]);
   });
 });

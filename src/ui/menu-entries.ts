@@ -4,6 +4,7 @@
 
 import { trashFilesDir } from "../fs/fsutil";
 import { setBookmarked, loadSystemPlaces, type Place } from "../fs/places";
+import { isDarwin } from "../fs/darwin";
 import { RECENT_URI, STARRED_URI, isVirtualUri } from "../fs/uri";
 import type { CompressionFormat } from "../fs/archive";
 import type { ListEntry } from "./ui-menu";
@@ -530,6 +531,17 @@ export const makeMenuEntries = (ctx: MenuEntriesCtx) => {
         ctx.openProperties(inSel && targets.length > 1 ? targets.map((t) => t.path) : targetPath);
       },
     });
+    // Finder tags live in the Properties dialog; macOS only (Linux no-ops)
+    if (isDarwin()) {
+      entries.push({
+        icon: "bookmark",
+        label: "Tags…",
+        action: () => {
+          ctx.closeFileMenu();
+          ctx.openProperties(inSel && targets.length > 1 ? targets.map((t) => t.path) : targetPath);
+        },
+      });
+    }
     return withPluginSection(entries, targets);
   };
 
