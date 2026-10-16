@@ -108,6 +108,10 @@ type ChromeCtx = {
   // mouse pointer shape (OSC 22 via the wiring's tty-guarded setter).
   // Absent = no pointer changes (old fakes keep working).
   setPointer?(style: PointerStyle): void;
+  // drag-resize: is this press on the sidebar's moveable edge? Rows span the
+  // panel width, so a press there must arm the resize instead of navigating.
+  // Optional so old fakes keep working — absent = every press is a hit.
+  resizePress?(x: number): boolean;
 };
 
 export const makeChrome = (ctx: ChromeCtx) => {
@@ -203,6 +207,10 @@ export const makeChrome = (ctx: ChromeCtx) => {
         paddingLeft: 1,
         ...rowSurface(st, colors, selected ? "selected" : "rest", tForce()),
         onMouseDown: (ev: MouseEvent) => {
+          // a press in the sidebar's resize band belongs to the drag-resize
+          // gesture (rows span the full panel width, so without this a grab
+          // would navigate instead)
+          if (ctx.resizePress?.(ev.x)) return;
           if (ev.button === 2) {
             ctx.closeFileMenu();
             ctx.openContextMenu(ev.x, ev.y, place.label, ctx.sidebarEntriesFor(place, ev.x, ev.y));

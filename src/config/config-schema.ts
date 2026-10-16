@@ -223,6 +223,9 @@ export type TtyMode = "auto" | "on" | "off";
 
 export type UiConfig = {
   sidebarWidth: number;
+  // places sidebar shown/hidden (the toggleSidebar keybind). Visibility, not
+  // width: the hover drawer still owns the panel's width while auto-hide runs.
+  sidebarVisible: boolean;
   tileWidth: number;
   tileHeight: number;
   iconCells: number;
@@ -235,6 +238,7 @@ export type UiConfig = {
   previewWidth: number;
   terminalHeight: number;
   dualPane: boolean;
+  syncBrowsing: boolean;
   sidebarAutoHide: boolean;
   sidebarCollapseStyle: string;
   previewAutoHide: boolean;
@@ -268,6 +272,9 @@ export type UiConfig = {
   toastDurationMs: number;
   typeToSearch: boolean;
   dragThresholdCells: number;
+  mouseResizeSidebar: boolean;
+  mouseResizeSplit: boolean;
+  mouseResizePreview: boolean;
   listRowHeight: number;
   wrapMode: WrapMode;
   fileAnimation: boolean;
@@ -352,12 +359,18 @@ export type KeyAction =
   | "pathEdit"
   | "togglePreview"
   | "toggleInfoSidebar"
+  | "toggleSidebar"
   | "openTerminal"
   | "connectServer"
   | "toggleView"
   | "zoomIn"
   | "zoomOut"
+  | "nextTheme"
   | "toggleDualPane"
+  | "toggleSyncBrowsing"
+  | "splitPaneHorizontal"
+  | "splitPaneVertical"
+  | "closePane"
   | "switchPane"
   | "copyToOtherPane"
   | "moveToOtherPane"
@@ -378,6 +391,7 @@ export type KeyAction =
   | "invertSelection"
   | "startSearch"
   | "cycleSort"
+  | "reverseSort"
   | "goHome"
   | "goToFolder";
 
@@ -488,6 +502,18 @@ const UI_ROWS: SchemaRow[] = [
     unit: "cells",
     label: "sidebar width",
     blurb: "How wide the sidebar is",
+    group: "layout",
+    subsection: "sidebar",
+  },
+  {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "sidebar-visible",
+    prop: "sidebarVisible",
+    def: true,
+    doc: "true = show the places sidebar; false = hide it (the toggle-sidebar keybind flips this)",
+    label: "show sidebar",
+    blurb: "Show the places sidebar",
     group: "layout",
     subsection: "sidebar",
   },
@@ -750,6 +776,18 @@ const UI_ROWS: SchemaRow[] = [
     subsection: "panes",
   },
   {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "sync-browsing",
+    prop: "syncBrowsing",
+    def: false,
+    doc: "true = entering a directory in the active pane also opens it in the other pane (Finder-style); false = panes stay independent. Off by default so existing single-pane and dual-pane users see no behavior change. Only fires on an actual directory entry (Enter/double-click/open), not on hover — and only the pane the user acted on drives the other (the driven pane never drives back, so it can't recurse).",
+    label: "sync browsing",
+    blurb: "Open a folder in both panes at once",
+    group: "layout",
+    subsection: "panes",
+  },
+  {
     kind: "int",
     section: "ui",
     tomlKey: "tile-width",
@@ -938,6 +976,42 @@ const UI_ROWS: SchemaRow[] = [
     unit: "cells",
     label: "drag threshold",
     blurb: "How far you drag before it counts",
+    group: "behavior",
+    subsection: "mouse",
+  },
+  {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "mouse-resize-sidebar",
+    prop: "mouseResizeSidebar",
+    def: false,
+    doc: "true = dragging the places sidebar's right edge resizes it (writes sidebar-width); false = the edge does nothing",
+    label: "drag sidebar edge",
+    blurb: "Resize the sidebar by dragging its edge",
+    group: "behavior",
+    subsection: "mouse",
+  },
+  {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "mouse-resize-split",
+    prop: "mouseResizeSplit",
+    def: false,
+    doc: "true = dragging the divider between the two panes moves it; false = the splitter stays centered",
+    label: "drag pane divider",
+    blurb: "Resize the panes by dragging the divider",
+    group: "behavior",
+    subsection: "mouse",
+  },
+  {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "mouse-resize-preview",
+    prop: "mouseResizePreview",
+    def: false,
+    doc: "true = dragging the right panel's left edge resizes it (writes preview-width); false = the edge does nothing",
+    label: "drag right panel edge",
+    blurb: "Resize the preview by dragging its edge",
     group: "behavior",
     subsection: "mouse",
   },
@@ -1888,14 +1962,39 @@ const KEY_ROWS: KeyRow[] = (
     ["invertSelection", "invert selection", [], "selection", "Swap selected with unselected"],
     ["toggleHidden", "toggle hidden files", ["ctrl+h"], "view", "Show files starting with a dot"],
     ["reloadPlaces", "reload sidebar places", ["ctrl+r"], "view", "Refresh drives and bookmarks"],
+    ["toggleSidebar", "toggle sidebar", ["ctrl+b"], "view", "Show or hide the places sidebar"],
     ["togglePreview", "toggle preview pane", ["f3"], "view", "Show or hide the file preview"],
     ["toggleInfoSidebar", "toggle info sidebar", ["f7"], "view", "Show or hide the file info sidebar"],
     ["toggleView", "toggle view", ["ctrl+g"], "view", "Cycle grid, list and columns"],
-    ["cycleSort", "cycle sort", [], "view", "Name, size, date, then type"],
+    ["nextTheme", "next theme", ["alt+t"], "view", "Step through the color themes"],
+    ["cycleSort", "cycle sort", ["alt+s"], "view", "Name, size, date, then type"],
+    ["reverseSort", "reverse sort", ["alt+shift+s"], "view", "Flip the sort direction"],
     ["zoomIn", "zoom in", ["ctrl+="], "view", "Grow tiles and icons a step"],
     ["zoomOut", "zoom out", ["ctrl+-"], "view", "Shrink tiles and icons a step"],
     ["toggleDualPane", "toggle dual pane", ["ctrl+shift+d"], "split panes", "Split into side-by-side panes"],
-    ["switchPane", "switch pane", ["tab"], "split panes", "Hop between the two panes"],
+    [
+      "toggleSyncBrowsing",
+      "toggle sync browsing",
+      ["ctrl+shift+b"],
+      "split panes",
+      "Open a folder in both panes at once",
+    ],
+    [
+      "splitPaneHorizontal",
+      "split pane left/right",
+      ["ctrl+shift+h"],
+      "split panes",
+      "Split the focused pane side by side",
+    ],
+    [
+      "splitPaneVertical",
+      "split pane top/bottom",
+      ["ctrl+shift+v"],
+      "split panes",
+      "Split the focused pane top and bottom",
+    ],
+    ["closePane", "close pane", ["ctrl+shift+w"], "split panes", "Close the focused pane"],
+    ["switchPane", "switch pane", ["tab"], "split panes", "Hop between the panes"],
     ["copyToOtherPane", "copy to other pane", ["f5"], "split panes", "Copy the selection across panes"],
     ["moveToOtherPane", "move to other pane", ["f6"], "split panes", "Move the selection across panes"],
     ["openTerminal", "open terminal here", ["ctrl+`", "f4"], "split panes", "Drop to a shell in this folder"],

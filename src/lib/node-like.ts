@@ -43,6 +43,10 @@ export type NodeLike = {
   // layout, mutated post-mount by the widgets
   width?: number | "auto" | `${number}%`;
   height?: number | "auto" | `${number}%`;
+  // the pane split ratio rides flexGrow (mouse-resize-split). Nullable because
+  // OpenTUI's own accessor pair reads `number | null | undefined` — a narrower
+  // view would make a real Renderable unassignable here (measured)
+  flexGrow?: number | null;
   left?: number | "auto" | `${number}%`;
   top?: number | "auto" | `${number}%`;
   scrollTop?: number;

@@ -152,9 +152,16 @@ export type KeyRouterCtx = {
   connectServer(raw?: string): void;
   togglePreview(): void;
   toggleInfoSidebar(): void;
+  toggleSidebar(): void;
+  nextTheme(): void;
+  reverseSort(): void;
   toggleViewMode(): void;
   zoomTiles(dir: number): void;
   toggleDualPane(): void;
+  toggleSyncBrowsing(): void;
+  splitPaneHorizontal(): void;
+  splitPaneVertical(): void;
+  closePane(): void;
   switchPane(): void;
   copyToOtherPane(): void;
   moveToOtherPane(): void;
@@ -745,12 +752,18 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "goToFolder", run: () => ctx.openGoToFolder?.() },
     { action: "togglePreview", run: () => ctx.togglePreview() },
     { action: "toggleInfoSidebar", run: () => ctx.toggleInfoSidebar() },
+    { action: "toggleSidebar", run: () => ctx.toggleSidebar() },
     { action: "openTerminal", run: () => ctx.openTerminal() },
     { action: "connectServer", run: () => ctx.connectServer() },
     { action: "toggleView", run: () => ctx.toggleViewMode() },
+    { action: "nextTheme", run: () => ctx.nextTheme() },
     { action: "zoomIn", run: () => ctx.zoomTiles(1) },
     { action: "zoomOut", run: () => ctx.zoomTiles(-1) },
     { action: "toggleDualPane", run: () => ctx.toggleDualPane() },
+    { action: "toggleSyncBrowsing", run: () => ctx.toggleSyncBrowsing() },
+    { action: "splitPaneHorizontal", run: () => ctx.splitPaneHorizontal() },
+    { action: "splitPaneVertical", run: () => ctx.splitPaneVertical() },
+    { action: "closePane", run: () => ctx.closePane() },
     { action: "switchPane", run: () => ctx.switchPane() },
     { action: "copyToOtherPane", run: () => ctx.copyToOtherPane() },
     { action: "moveToOtherPane", run: () => ctx.moveToOtherPane() },
@@ -777,6 +790,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       },
     },
     { action: "cycleSort", run: () => ctx.cycleSort() },
+    { action: "reverseSort", run: () => ctx.reverseSort() },
     { action: "goHome", run: () => ctx.navigate(ctx.home) },
   ];
 
@@ -847,13 +861,20 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "goToFolder") && ev.repeated !== true && runAction("goToFolder")) return;
     if (hit(ev, "togglePreview") && ev.repeated !== true && runAction("togglePreview")) return;
     if (hit(ev, "toggleInfoSidebar") && ev.repeated !== true && runAction("toggleInfoSidebar")) return;
+    if (hit(ev, "toggleSidebar") && ev.repeated !== true && runAction("toggleSidebar")) return;
+    if (hit(ev, "nextTheme") && ev.repeated !== true && runAction("nextTheme")) return;
     if (hit(ev, "openTerminal") && runAction("openTerminal")) return;
     if (hit(ev, "connectServer") && runAction("connectServer")) return;
     if (hit(ev, "toggleView") && runAction("toggleView")) return;
     if (hit(ev, "cycleSort") && ev.repeated !== true && runAction("cycleSort")) return;
+    if (hit(ev, "reverseSort") && ev.repeated !== true && runAction("reverseSort")) return;
     if (hit(ev, "zoomIn") && runAction("zoomIn")) return;
     if (hit(ev, "zoomOut") && runAction("zoomOut")) return;
     if (hit(ev, "toggleDualPane") && ev.repeated !== true && runAction("toggleDualPane")) return;
+    if (hit(ev, "toggleSyncBrowsing") && ev.repeated !== true && runAction("toggleSyncBrowsing")) return;
+    if (hit(ev, "splitPaneHorizontal") && ev.repeated !== true && runAction("splitPaneHorizontal")) return;
+    if (hit(ev, "splitPaneVertical") && ev.repeated !== true && runAction("splitPaneVertical")) return;
+    if (hit(ev, "closePane") && ev.repeated !== true && runAction("closePane")) return;
     if (hit(ev, "switchPane") && ev.repeated !== true && runAction("switchPane")) return;
     if (hit(ev, "copyToOtherPane") && ev.repeated !== true && runAction("copyToOtherPane")) return;
     if (hit(ev, "moveToOtherPane") && ev.repeated !== true && runAction("moveToOtherPane")) return;

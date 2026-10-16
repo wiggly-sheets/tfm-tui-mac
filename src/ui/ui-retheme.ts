@@ -60,6 +60,9 @@ type RethemeCtx = {
   // dual pane: re-clamp the active pane when dual is disabled (a hidden pane
   // must never own input/status) and repaint the focus cue.
   normalizePanes?(): void;
+  // the split dividers are built from the layout tree (one per sibling pair) —
+  // repaint them all after a theme flip. Optional so tests stay light.
+  rethemeDividers?(): void;
   // sort mode: [ui] sort-mode seeds per-pane AppState at boot, but the grid
   // reads state — the wiring hook converges both panes here so a settings /
   // live-reload change actually re-sorts. Optional so tests stay light.
@@ -369,18 +372,15 @@ export const makeRetheme = (ctx: RethemeCtx) => {
         infoPane.width = ctx.config.ui.previewWidth;
       } catch {}
     }
-    // dual-pane visibility: pane 1 + divider show only while enabled. renderAll
-    // (below, via renderSig) rebuilds both grids through the new pane width.
-    for (const id of ["tfm-pane-col-1", "tfm-pane-divider"]) {
-      const node = ctx.byId(id);
-      if (node) {
-        try {
-          node.visible = ctx.config.ui.dualPane;
-        } catch {}
-      }
-    }
+    // dual-pane visibility is owned by the layout tree now (a closed pane's
+    // column is torn down, a v-split's divider is a column rule) — renderAll
+    // below rebuilds every grid through the new pane widths.
     try {
       ctx.normalizePanes?.();
+    } catch {}
+    // repaint the split dividers (the tree can have more than the legacy one)
+    try {
+      ctx.rethemeDividers?.();
     } catch {}
     // per-pane sort state converges onto the configured mode BEFORE the
     // renderAll below, so the repaint paints the new order (not the old one)

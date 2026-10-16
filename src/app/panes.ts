@@ -4,6 +4,7 @@
 // Pure data: no renderer, no fs, no config. ---
 
 import type { ViewMode } from "../config/config-schema";
+import type { PaneId } from "./layout";
 
 export type PaneIndex = 0 | 1;
 
@@ -110,6 +111,32 @@ export const getMap = <K, V>(m: Map<K, V>, key: K): V => {
   const v = m.get(key);
   if (!v) throw new Error(`missing map entry ${String(key)}`);
   return v;
+};
+
+// Tracks a per-leaf map against the live layout tree: builds a value for every
+// current leaf, disposes and forgets one when its leaf closes. Every wiring
+// that owns per-leaf widgets builds its maps through this, so splitPane /
+// closePane reach all of them (the DOM rebuild in wiring/panes registers last).
+export const makeLeafRegistry = <T>(
+  panes: { leafIds(): PaneId[]; onTreeChange(cb: () => void): void },
+  make: (id: PaneId) => T,
+  dispose?: (value: T, id: PaneId) => void,
+): Map<PaneId, T> => {
+  const m = new Map<PaneId, T>();
+  const sync = (): void => {
+    const ids = panes.leafIds();
+    for (const id of ids) if (!m.has(id)) m.set(id, make(id));
+    for (const [id, v] of [...m]) {
+      if (ids.includes(id)) continue;
+      try {
+        dispose?.(v, id);
+      } catch {}
+      m.delete(id);
+    }
+  };
+  sync();
+  panes.onTreeChange(sync);
+  return m;
 };
 
 // A stable Map view over whichever pane is active: any Map operation forwards

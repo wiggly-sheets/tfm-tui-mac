@@ -320,6 +320,9 @@ export const wireRetheme = (deps: {
   // hover drawer (wired just before this) — rethemeChrome rewrites the sidebar
   // width by id, so an auto-hidden panel must be resynced after applyConfig
   getHover: () => { refresh(): void };
+  // pane manager (wired before settings): repaints the layout tree's dividers
+  // after a theme flip. Optional so tests stay light.
+  getPanes?: () => { retheme(): void };
   // late clusters owning persistent floats — deferred arrows (TDZ): keymap
   // wires last, grid/grid-foundation own props/bulk-rename. Only read at
   // repaint time, long after the wiring settled.
@@ -328,7 +331,6 @@ export const wireRetheme = (deps: {
   getGridFoundation: () => { bulkRename: { isOpen(): boolean; repaint(): void } };
 }) => {
   const { core, nav, chrome, fileops, settings, getHover, getKeymap, getGrid, getGridFoundation } = deps;
-
   // --- Config application & persistence: lives in ./ui-retheme (rethemeChrome,
   // applyConfig, scheduleSaveConfig, live reload). Geometry rewrites go
   // through the core cell's setters — never bake them into consts. ---
@@ -418,15 +420,30 @@ export const wireRetheme = (deps: {
     },
     normalizePanes: () => {
       const dual = core.config.ui.dualPane;
-      if (!dual && core.panes.active !== 0) {
-        core.setActivePane(0);
+      if (dual && !lastDual) {
+        // dual pane just turned on: make sure there are 2 panes (split p0 if
+        // only one leaf) and open the fresh pane at the active directory. Both
+        // the keybind and the settings GUI row funnel through applyConfig, so
+        // one hook covers all.
+        const before = core.panes.activeId;
+        if (core.panes.leafIds().length < 2) core.panes.splitPane(core.panes.leafIds()[0] ?? "p0", "h");
+        const fresh = core.panes.leafIds().find((id) => id !== "p0") ?? "p1";
+        pointPaneAt(core.panes.stateOf(fresh), core.state.cwd);
+        core.setActiveId(before);
+      } else if (!dual && lastDual) {
+        // dual pane just turned off: close the extra p1 pane (manual splits
+        // stay untouched) and re-clamp focus so a hidden pane never owns input
+        const ids = core.panes.leafIds();
+        if (ids.length > 1 && ids.includes("p1")) core.panes.closePane("p1");
+        if (core.panes.leafIds().includes("p0") && core.panes.activeId !== "p0") core.setActiveId("p0");
         core.refreshPaneFocus();
       }
-      // dual pane just turned on: the hidden pane's cwd is stale from boot —
-      // open it at the active pane's current directory (both the keybind and
-      // the settings GUI row funnel through applyConfig, so one hook covers all)
-      else if (dual && !lastDual) pointPaneAt(core.panes.states[1], core.state.cwd);
       lastDual = dual;
+    },
+    rethemeDividers: () => {
+      try {
+        deps.getPanes?.().retheme();
+      } catch {}
     },
     // the grid reads per-pane AppState.sortBy, not config: converge both panes
     // onto [ui] sort-mode here so a settings/live-reload change re-sorts (same
@@ -434,7 +451,7 @@ export const wireRetheme = (deps: {
     // state-only and never rewrite the persisted default.
     syncSortMode: () => {
       const mode = core.config.ui.sortMode;
-      for (const s of core.panes.states) syncSortState(s, mode);
+      for (const s of core.panes.stateMap.values()) syncSortState(s, mode);
     },
     // the grid reads per-pane AppState.showHidden, not config: an external
     // config.toml flip must converge both panes here or the reload repaints
@@ -442,7 +459,7 @@ export const wireRetheme = (deps: {
     // a settings commit just re-converges to the same value (no clobber).
     syncShowHidden: () => {
       const showHidden = core.config.ui.showHidden;
-      for (const s of core.panes.states) s.showHidden = showHidden;
+      for (const s of core.panes.stateMap.values()) s.showHidden = showHidden;
     },
   });
 

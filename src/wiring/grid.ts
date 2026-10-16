@@ -24,7 +24,8 @@ import { makeProps } from "../ui/ui-props";
 import { makeMenuEntries } from "../ui/menu-entries";
 import { FILE_GLYPH, glyph } from "../ui/glyphs";
 import { rasterSigOf } from "../ui/tty";
-import { activeFacade, type PaneId, viewModeFor } from "../app/panes";
+import { activeFacade, makeLeafRegistry, type PaneId, viewModeFor } from "../app/panes";
+import { leafRectsOf } from "../app/layout";
 import { isVirtualUri } from "../fs/uri";
 import { isTrashFilesDir, canReadSync } from "../fs/fsutil";
 import { dlog } from "../app/log";
@@ -163,7 +164,6 @@ export const wireGrid = (deps: {
   // bars and tab strips already show the right thing, so re-rendering them here
   // only re-created their icon slots (fallback-glyph flash on every pane click).
   const focusPane = (id: PaneId): void => {
-    if (!core.config.ui.dualPane) return;
     const prev = core.panes.activeId;
     if (prev === id) return;
     // a selection must not survive a pane switch: drop the pane we're leaving
@@ -248,8 +248,7 @@ export const wireGrid = (deps: {
       fallbackDrag: getFallbackDrag,
     };
   };
-  const gridCtxs = new Map<PaneId, ReturnType<typeof makePaneGridCtx>>();
-  for (const id of core.panes.leafIds()) gridCtxs.set(id, makePaneGridCtx(id));
+  const gridCtxs = makeLeafRegistry(core.panes, (id) => makePaneGridCtx(id));
   // active-facing ctx for drag commit/cleanup — its tileRefs resolve to the
   // active pane's map through the facade
   const gridCtx = activeFacade(() => {
@@ -281,21 +280,24 @@ export const wireGrid = (deps: {
     if (items.length) void fileops.fileops.moveInto(dest, items);
   };
 
-  const entryMouseHandlers = new Map<PaneId, ReturnType<typeof makeEntryMouseHandlers>>();
-  for (const id of core.panes.leafIds()) {
+  const entryMouseHandlers = makeLeafRegistry(core.panes, (id) => {
     const ctx = gridCtxs.get(id);
     if (!ctx) throw new Error(`no grid ctx for pane ${id}`);
-    entryMouseHandlers.set(id, makeEntryMouseHandlers(ctx));
-  }
+    return makeEntryMouseHandlers(ctx);
+  });
 
   // --- Grid renderer lives in ./ui-grid (tile/list-row builders, empty and
   // restricted states, thumbnail handoff, gen-counter stale guards) ---
   // per-pane grid renderers: each reads its own pane's state/selection/scroller
   // and a unique tile-id prefix (ids are global in the renderable registry).
   // Dual pane splits the main area in half (minus the 1-cell divider).
-  const paneAvailW = (): number => {
+  // per-pane width from the layout tree's rects (an h-split divides width, a
+  // v-split divides height); `main` is the panes region after the sidebar and
+  // the shared right column.
+  const paneAvailW = (id: PaneId): number => {
     const main = chrome.renderer.terminalWidth - core.geometry.sidebarEff - core.geometry.previewEff;
-    return core.config.ui.dualPane ? Math.floor((main - 1) / 2) : main;
+    const rects = leafRectsOf(core.panes.tree, { x: 0, y: 0, w: main, h: chrome.renderer.terminalHeight });
+    return Math.max(0, rects.get(id)?.w ?? main);
   };
   // one animator per pane (each owns its reused timeline so a rebuild in one
   // pane can't clobber the other's); reads [ui] file-animation-* live
@@ -321,8 +323,7 @@ export const wireGrid = (deps: {
         maxFiles: core.config.ui.fileAnimationMaxFiles,
       }),
     });
-  const fileAnims = new Map<PaneId, ReturnType<typeof makeFileAnimator>>();
-  for (const id of core.panes.leafIds()) fileAnims.set(id, makeFileAnimator());
+  const fileAnims = makeLeafRegistry(core.panes, () => makeFileAnimator());
   // one hover animator per pane (whole-cell icon lift, synchronous) — reads
   // [ui] file-hover-* live, lifts each pane's own reserved tiles
   const makeHoverAnimator = (id: PaneId) =>
@@ -340,8 +341,7 @@ export const wireGrid = (deps: {
         includeLabel: core.config.ui.fileHoverIncludeLabel,
       }),
     });
-  const hoverAnims = new Map<PaneId, ReturnType<typeof makeHoverAnimator>>();
-  for (const id of core.panes.leafIds()) hoverAnims.set(id, makeHoverAnimator(id));
+  const hoverAnims = makeLeafRegistry(core.panes, (id) => makeHoverAnimator(id));
   const makeRenderer = (id: PaneId) =>
     makeGridRenderer({
       termW: () => chrome.renderer.terminalWidth,
@@ -386,7 +386,7 @@ export const wireGrid = (deps: {
         ),
       wrapMode: () => core.config.ui.wrapMode,
       reservedRight: () => core.geometry.previewEff,
-      availW: () => (core.leafRects.has(id) ? core.paneAvailW(id) : paneAvailW()),
+      availW: () => paneAvailW(id),
       tileIdPrefix: `tfm-tile-${id}-`,
       cellMetrics: core.slots.cellMetrics,
       makeIconSlot: core.slots.makeIconSlot,
@@ -416,8 +416,7 @@ export const wireGrid = (deps: {
       waitForResolution: () => core.resolutionGate.wait(),
       clearRenameEdit: rename.clearRenameEdit,
     });
-  const renderers = new Map<PaneId, ReturnType<typeof makeRenderer>>();
-  for (const id of core.panes.leafIds()) renderers.set(id, makeRenderer(id));
+  const renderers = makeLeafRegistry(core.panes, (id) => makeRenderer(id));
 
   const makeColRenderer = (id: PaneId) =>
     makeColumnsRenderer({
@@ -441,7 +440,7 @@ export const wireGrid = (deps: {
       viewMode: () => viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode),
       wrapMode: () => core.config.ui.wrapMode,
       reservedRight: () => core.geometry.previewEff,
-      availW: () => (core.leafRects.has(id) ? core.paneAvailW(id) : paneAvailW()),
+      availW: () => paneAvailW(id),
       tileIdPrefix: `tfm-tile-${id}-`,
       cellMetrics: core.slots.cellMetrics,
       makeIconSlot: core.slots.makeIconSlot,
@@ -460,8 +459,7 @@ export const wireGrid = (deps: {
       fileAnim: (target) => get(fileAnims, id).play(target),
       fileAnimVisibleOnly: () => core.config.ui.fileAnimationVisibleOnly,
     });
-  const columnsRenderers = new Map<PaneId, ReturnType<typeof makeColRenderer>>();
-  for (const id of core.panes.leafIds()) columnsRenderers.set(id, makeColRenderer(id));
+  const columnsRenderers = makeLeafRegistry(core.panes, (id) => makeColRenderer(id));
 
   const renderPane = (pane: PaneId | 0 | 1): Promise<void> => {
     const id: PaneId = typeof pane === "string" ? pane : pane === 1 ? "p1" : "p0";
@@ -485,9 +483,7 @@ export const wireGrid = (deps: {
   // render pane 0 always; pane 1 only while dual pane is on (its scroller is
   // hidden otherwise, so building its tiles would be wasted native allocs)
   const renderGrid = async (): Promise<void> => {
-    const ids = core.panes.leafIds();
-    for (const id of ids) {
-      if (id === "p1" && !core.config.ui.dualPane) continue;
+    for (const id of core.panes.leafIds()) {
       await renderPane(id);
     }
   };
@@ -526,12 +522,12 @@ export const wireGrid = (deps: {
   // at the current cwd), then switch + navigate the now-active other pane
   // through the tested navigate path (tab sync, hooks, renderAll included).
   const openInOtherPane = (dir: string): void => {
-    if (!core.config.ui.dualPane) {
+    if (core.panes.leafIds().length < 2) {
       getRetheme().applyConfig({ ...core.config, ui: { ...core.config.ui, dualPane: true } });
       getRetheme().scheduleSaveConfig();
     }
     const active = core.panes.activeId;
-    const other: PaneId = active === "p1" ? "p0" : "p1";
+    const other: PaneId = core.panes.leafIds().find((id) => id !== active) ?? active;
     // a selection must not survive a pane switch (same rule as switchPane)
     gridFoundation.selections.get(active)?.clearTileSelection();
     core.setActiveId(other);

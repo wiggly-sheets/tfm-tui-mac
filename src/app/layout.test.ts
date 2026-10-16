@@ -18,7 +18,7 @@ describe("layout tree - invariants & leaf lookup", () => {
   test("defaultTree produces 2 leaves (p0 and p1)", () => {
     const tree = defaultTree();
     expect(tree.kind).toBe("split");
-    expect(tree.orientation).toBe("v");
+    expect(tree.orientation).toBe("h");
     expect(leafIds(tree)).toEqual(["p0", "p1"]);
   });
 

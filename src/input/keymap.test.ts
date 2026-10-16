@@ -87,6 +87,7 @@ const makeHarness = (over: Partial<KeyRouterCtx> = {}) => {
       calls.push("search:enable");
     },
     cycleSort: rec("sort:cycle"),
+    reverseSort: rec("sort:reverse"),
     isRenaming: () => false,
     propsIsOpen: () => false,
     closeProps: rec("props:close"),
@@ -169,9 +170,15 @@ const makeHarness = (over: Partial<KeyRouterCtx> = {}) => {
     connectServer: rec("connect:server"),
     togglePreview: rec("preview:toggle"),
     toggleInfoSidebar: rec("info:toggle"),
+    toggleSidebar: rec("sidebar:toggle"),
+    nextTheme: rec("theme:next"),
     toggleViewMode: rec("view:toggle"),
     zoomTiles: (d) => calls.push(`zoom:${d}`),
     toggleDualPane: rec("pane:toggle-dual"),
+    toggleSyncBrowsing: rec("pane:toggle-sync"),
+    splitPaneHorizontal: rec("pane:split-h"),
+    splitPaneVertical: rec("pane:split-v"),
+    closePane: rec("pane:close"),
     switchPane: rec("pane:switch"),
     copyToOtherPane: rec("pane:copy"),
     moveToOtherPane: rec("pane:move"),
@@ -983,6 +990,31 @@ describe("remappable action keys", () => {
     expect(h.calls).toEqual(["info:toggle"]);
   });
 
+  test("ctrl+b hides the sidebar, alt+t steps the theme, alt+s / alt+shift+s sort", () => {
+    const h = makeHarness();
+    h.key("b", { ctrl: true });
+    h.key("t", { meta: true });
+    h.key("s", { meta: true });
+    h.key("s", { meta: true, shift: true });
+    expect(h.calls).toEqual(["sidebar:toggle", "theme:next", "sort:cycle", "sort:reverse"]);
+  });
+
+  test("a remap moves the sidebar toggle off ctrl+b", () => {
+    const h = makeHarness();
+    h.binds.toggleSidebar = ["ctrl+u"];
+    h.key("b", { ctrl: true });
+    expect(h.calls).toEqual([]);
+    h.key("u", { ctrl: true });
+    expect(h.calls).toEqual(["sidebar:toggle"]);
+  });
+
+  test("a held alt+t/ctrl+b never repeats the toggle", () => {
+    const h = makeHarness();
+    h.key("t", { meta: true, repeated: true });
+    h.key("b", { ctrl: true, repeated: true });
+    expect(h.calls).toEqual([]);
+  });
+
   test("shift+cmd+g opens go-to-folder; bare g does not (cmd is not meta)", () => {
     const h = makeHarness();
     h.key("g", { shift: true, super: true });
@@ -1326,6 +1358,15 @@ describe("dual-pane actions", () => {
     expect(h.calls).toEqual(["pane:toggle-dual"]);
     h.calls.length = 0;
     h.key("d", { ctrl: true, shift: true, repeated: true });
+    expect(h.calls).toEqual([]);
+  });
+
+  test("ctrl+shift+b toggles sync browsing (never on autorepeat)", () => {
+    const h = makeHarness();
+    h.key("b", { ctrl: true, shift: true });
+    expect(h.calls).toEqual(["pane:toggle-sync"]);
+    h.calls.length = 0;
+    h.key("b", { ctrl: true, shift: true, repeated: true });
     expect(h.calls).toEqual([]);
   });
 

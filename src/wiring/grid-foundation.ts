@@ -9,7 +9,7 @@ import { makeRename } from "../ui/ui-rename";
 import { makeBulkRename } from "../ui/ui-bulk-rename";
 import { destroyChildren } from "../lib/uiutil";
 import { sharedPluginEvents } from "../lib/plugin-events";
-import { activeFacade, activeMapFacade, getMap, type PaneId } from "../app/panes";
+import { activeFacade, activeMapFacade, getMap, makeLeafRegistry, type PaneId } from "../app/panes";
 import type { CoreWiring } from "./core";
 import type { ChromeWiring, FileopsWiring, GridWiring, NavWiring } from "./types";
 
@@ -44,8 +44,7 @@ export const wireGridFoundation = (deps: {
   // active pane so every existing consumer reads the active pane without
   // changes. tileRefs is overridden with a live map facade because
   // ui-rename/preview and the menu capture it ONCE at construction.
-  const selections = new Map<PaneId, Selection>();
-  for (const id of core.panes.leafIds()) selections.set(id, selectionFor(id));
+  const selections = makeLeafRegistry(core.panes, selectionFor);
   const activeTileRefs = activeMapFacade(
     () => getMap(selections, core.panes.activeId).tileRefs as Map<string, SelTileRef>,
   );

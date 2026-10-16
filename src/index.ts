@@ -14,6 +14,8 @@ import pkg from "../package.json";
 import path from "node:path";
 import { statSync, type Stats } from "node:fs";
 import { parseArgs, usageText } from "./app/cli";
+// type-only: erased at load, so it does not pull the graph into --version
+import type { MouseResizeWiring } from "./wiring/mouse-resize";
 
 // --- CLI: one parse for the whole process. --help/--version and parse errors
 // answer BEFORE the lazy app graph loads, so they stay instant. ---
@@ -100,9 +102,11 @@ const { wireChrome } = await import("./wiring/chrome");
 const { wireGridFoundation } = await import("./wiring/grid-foundation");
 const { wireFileops } = await import("./wiring/fileops");
 const { wireGrid } = await import("./wiring/grid");
+const { wirePanes } = await import("./wiring/panes");
 const { wirePlugins } = await import("./wiring/plugins");
 const { wireSettings, wireRetheme } = await import("./wiring/settings");
 const { wireWatcher, wireBoot, wireDnd, wireResize, wireHoverDrawer } = await import("./wiring/io");
+const { wireMouseResize } = await import("./wiring/mouse-resize");
 const { wireKeymap } = await import("./wiring/keymap");
 
 if (isDebug) appendLog(`tfm starting pid=${process.pid} argv=[${process.argv.slice(1).join(" ")}]`);
@@ -128,6 +132,9 @@ const nav = wireNav({
 });
 
 // --- chrome: file menu, sidebar, toolbar, renderer boot, notify, dialogs ---
+// drag-resize wires after the renderer exists, so the sidebar's press guard
+// reads it lazily (null until then = every press is a plain navigation)
+let mouseResize: MouseResizeWiring | null = null;
 const chrome = await wireChrome({
   core,
   nav,
@@ -138,6 +145,7 @@ const chrome = await wireChrome({
   // as the getGrid/getFileops getters above)
   getPrompt: () => keymap.prompt,
   finishDrag: () => grid.finishDrag(),
+  resizePress: (x) => mouseResize?.edgePress("sidebar", x) ?? false,
 });
 
 // graceful shutdown on SIGTERM/SIGINT (e.g. terminal close, system shutdown)
@@ -229,6 +237,17 @@ const grid = wireGrid({
   getFallbackDrag: () => dnd.fallbackDrag(),
 });
 
+// --- panes: layout-tree DOM + per-leaf grid scrollers (wires AFTER grid so
+// every per-leaf widget exists before a new column is built) ---
+const panes = wirePanes({
+  core,
+  nav,
+  chrome,
+  gridFoundation,
+  grid,
+  fileops,
+});
+
 // --- settings: settings model + esc menu ---
 // getPrompt closes over `keymap`, which wires LAST — only called from
 // post-boot installer rows, so the TDZ is settled by first use (same seam
@@ -260,6 +279,7 @@ const hover = wireHoverDrawer({
   fileops,
   gridFoundation,
   grid,
+  resizing: () => mouseResize?.active() ?? false,
 });
 
 wireBoot({
@@ -286,6 +306,7 @@ const retheme = wireRetheme({
   fileops,
   settings,
   getHover: () => hover,
+  getPanes: () => panes,
   // keymap wires last — deferred like every other backward reference
   getKeymap: () => keymap,
   getGrid: () => grid,
@@ -306,6 +327,16 @@ wireResize({
   core,
   nav,
   chrome,
+});
+
+// drag-resize (opt-in per target): one gesture machine on the renderer root,
+// built after the renderer (chrome) and the drawer it must not fight
+mouseResize = wireMouseResize({
+  core,
+  chrome,
+  gridFoundation,
+  grid,
+  getRetheme: () => retheme,
 });
 
 const keymap = wireKeymap({

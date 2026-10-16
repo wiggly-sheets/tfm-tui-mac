@@ -10,6 +10,8 @@ import { makeRestart, restartArgs } from "../app/restart";
 import { sharedOpQueue } from "../lib/op-queue";
 import { makeStatus } from "../ui/ui-status";
 import { makeNav, makeSessionSync } from "../app/nav";
+import { makeSyncBrowsing } from "../app/sync-browsing";
+import { makeLeafRegistry } from "../app/panes";
 import type { PaneId } from "../app/layout";
 import { saveSessionSync, type PaneTabs } from "../fs/session";
 import { makeTabs, nextTab as cycleNextTab, prevTab as cyclePrevTab } from "../app/tabs";
@@ -53,7 +55,11 @@ export const wireNav = (deps: {
     steps: {
       cwdWatcher: () => getWatcher().syncCwdWatcher(),
       tabbar: () => {
-        for (const id of core.panes.leafIds()) getChrome().chrome.renderTabbar(id === "p1" ? 1 : 0);
+        // tab-chip vocabulary stays p0/p1 (see ui-chrome); new leaves get a
+        // hidden, empty strip so the pane column shape stays uniform
+        for (const pane of [0, 1] as const) {
+          if (core.panes.leafIds().includes(pane === 1 ? "p1" : "p0")) getChrome().chrome.renderTabbar(pane);
+        }
       },
       nav: () => {
         for (const t of getChrome().toolbars.values()) t.refreshNav();
@@ -154,24 +160,56 @@ export const wireNav = (deps: {
     refresh: () => getGridFoundation().selection.updateSelectionStatusReal(),
   });
 
-  // --- History navigation — pure state machine lives in ./nav (tested);
-  // hooks close over later-defined bindings (TDZ seam rule) ---
-  const { canBack, canFwd, goBack, goFwd, navigate } = makeNav(core.state, {
+  // --- History navigation — pure state machine lives in ./nav (tested).
+  // ONE nav instance PER LEAF (each bound to its own AppState) so the passive
+  // pane can be navigated without switching the active pane — the active
+  // facade's `navigate`/`goBack`/`goFwd` read the live active id at call
+  // time, exactly like the old single instance read the facade. The sync-
+  // browsing follow hook closes over `syncBrowsing`, which is built after the
+  // instances (TDZ: the hook only fires post-boot). ---
+  const exitPathEdit = () => getChrome().activeToolbar().exitPathEdit();
+  const closeFileMenuIfOpen = () => {
+    if (getChrome().menu.isFileMenuOpen()) getChrome().menu.closeFileMenu();
+  };
+  const navHooks = (id: PaneId) => ({
     renderAll,
     clearSearch: () => clearSearch(),
-    exitPathEdit: () => getChrome().activeToolbar().exitPathEdit(),
-    closeFileMenuIfOpen: () => {
-      if (getChrome().menu.isFileMenuOpen()) getChrome().menu.closeFileMenu();
-    },
-    onNavigate: (dir) => sharedPluginEvents().emit("navigate", { dir }),
+    exitPathEdit,
+    closeFileMenuIfOpen,
+    onNavigate: (dir: string) => sharedPluginEvents().emit("navigate", { dir }),
+    onSyncFollow: (dir: string) => syncBrowsing?.follow(id, dir),
   });
+  let syncBrowsing: ReturnType<typeof makeSyncBrowsing> | null = null;
+  const navInstances = makeLeafRegistry(core.panes, (id) => makeNav(core.panes.stateOf(id), navHooks(id)));
+  syncBrowsing = makeSyncBrowsing({
+    enabled: () => core.config.ui.syncBrowsing,
+    leafIds: () => core.panes.leafIds(),
+    navigateOther: (otherId: PaneId, dir: string) => {
+      const n = navInstances.get(otherId);
+      if (n) n.navigate(dir);
+    },
+  });
+  const activeNav = () => {
+    const n = navInstances.get(core.panes.activeId);
+    if (!n) throw new Error(`no nav instance for active pane ${core.panes.activeId}`);
+    return n;
+  };
+  // live facades: the active pane can change under us, so each accessor
+  // re-resolves the active nav instance at call time (same rule as the old
+  // single instance, which read `core.state` — a facade over the active
+  // pane — at call time too)
+  const canBack = () => activeNav().canBack();
+  const canFwd = () => activeNav().canFwd();
+  const goBack = () => activeNav().goBack();
+  const goFwd = () => activeNav().goFwd();
+  const navigate = (dir: string) => activeNav().navigate(dir);
 
   // --- Tabs: ONE model per pane — each pane is a browser-like tab list. The
   // focused pane's model backs the tab keybinds/menu; both get painted. Model
   // lives in ./tabs (pure, tested) — rendering/session I/O stay out. ---
-  const tabModels = new Map<PaneId, ReturnType<typeof makeTabs>>();
-  for (const id of core.panes.leafIds())
-    tabModels.set(id, makeTabs(core.panes.stateOf(id), { onChanged: renderAll, status: setStatusMsg, quit: quitApp }));
+  const tabModels = makeLeafRegistry(core.panes, (id) =>
+    makeTabs(core.panes.stateOf(id), { onChanged: renderAll, status: setStatusMsg, quit: quitApp }),
+  );
   const activeTabModel = () => {
     const m = tabModels.get(core.panes.activeId);
     if (!m) throw new Error(`no tab model for active pane ${core.panes.activeId}`);
@@ -180,14 +218,14 @@ export const wireNav = (deps: {
   const syncTabsFromState = (): void => {
     for (const m of tabModels.values()) m.syncTabFromState();
   };
+  // p0/p1 may not both be leaves after a close — a missing pane persists an
+  // empty tab set instead of throwing (quit/session save must never break).
   const paneTabs = (): [PaneTabs, PaneTabs] => {
-    const p0 = tabModels.get("p0");
-    const p1 = tabModels.get("p1");
-    if (!p0 || !p1) throw new Error("paneTabs: p0/p1 tab models missing");
-    return [
-      { tabs: p0.list, activeTab: p0.active },
-      { tabs: p1.list, activeTab: p1.active },
-    ];
+    const one = (id: PaneId): PaneTabs => {
+      const m = tabModels.get(id);
+      return m ? { tabs: m.list, activeTab: m.active } : { tabs: [], activeTab: 0 };
+    };
+    return [one("p0"), one("p1")];
   };
   const switchTab = (i: number): void => activeTabModel().switchTab(i);
   const newTab = (dir?: string): void => activeTabModel().newTab(dir);
@@ -228,8 +266,7 @@ export const wireNav = (deps: {
       renderGrid: () => getGrid().renderPane(id),
       setPointer,
     });
-  const searches = new Map<PaneId, ReturnType<typeof makeSearch>>();
-  for (const id of core.panes.leafIds()) searches.set(id, mkSearch(id));
+  const searches = makeLeafRegistry(core.panes, mkSearch);
   const activeSearch = () => {
     const s = searches.get(core.panes.activeId);
     if (!s) throw new Error(`no search for active pane ${core.panes.activeId}`);

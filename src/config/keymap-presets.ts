@@ -35,6 +35,9 @@ export const yaziKeys = (): KeysConfig => ({
   openMenu: ["escape", "~"],
   toggleHidden: ["ctrl+h", "."],
   reloadPlaces: [],
+  // ctrl+b is yazi's page-up here — the sidebar toggle stays unbound rather
+  // than shadowing it (bind it by hand in Settings -> keys if you want both)
+  toggleSidebar: [],
   newTab: ["ctrl+t"],
   closeTab: ["ctrl+w", "ctrl+c"],
   nextTab: ["ctrl+tab", "]"],

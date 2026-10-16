@@ -12,6 +12,7 @@ view-mode                             = "grid"      # "grid" = icon tiles; "list
 wrap-mode                             = "none"      # none = cut names with … and clip code preview; char = character-wrap tile names and code lines; word = break at spaces (spaceless runs still slice). Markdown prose (paragraphs, tables) always word-wraps.
 tab-bar                               = false       # true = strip always visible (even with one tab); false = adaptive (only while 2+ tabs are open)
 sidebar-width                         = 26          # 16..60 cells (grid + list)
+sidebar-visible                       = true        # true = show the places sidebar; false = hide it (the toggle-sidebar keybind flips this)
 sidebar-title                         = "tfm"       # "tfm" = the accent ASCII "tfm" wordmark + tagline above the places sidebar; "files" = the same style spelling "Files" in the sidebar white; "none" = keep the space, show nothing
 sidebar-section-titles                = false       # true = name each sidebar group (Places, Folders, Bookmarks, Devices, Network) in place of the divider; false = dividers only
 sidebar-show-recent                   = true        # true = show Recent in the places sidebar; false = hide it
@@ -32,6 +33,7 @@ terminal-height                       = 12          # embedded terminal pane hei
 terminal-auto-hide                    = false       # true = the open terminal pane collapses to its header until the mouse nears the bottom edge (the shell stays alive)
 terminal-collapse-style               = "hidden"    # "header" = keep the title row visible; "hidden" = height 0
 dual-pane                             = false       # true = two independent file panes side by side (tab switches the active pane); false = single pane
+sync-browsing                         = false       # true = entering a directory in the active pane also opens it in the other pane (Finder-style); false = panes stay independent. Off by default so existing single-pane and dual-pane users see no behavior change. Only fires on an actual directory entry (Enter/double-click/open), not on hover — and only the pane the user acted on drives the other (the driven pane never drives back, so it can't recurse).
 tile-width                            = 20          # 10..40 cells (grid view)
 tile-height                           = 5           # 3..10 cells (grid view)
 icon-cells                            = 3           # grid icon height in rows, 1..5
@@ -44,6 +46,9 @@ type-to-search                        = true        # true = typing filters the 
 toast-duration-ms                     = 3000        # how long notifications stay up, 1000..10000
 double-click-ms                       = 400         # 100..2000
 drag-threshold-cells                  = 1           # cells of movement before a press becomes a drag, 1..5
+mouse-resize-sidebar                  = false       # true = dragging the places sidebar's right edge resizes it (writes sidebar-width); false = the edge does nothing
+mouse-resize-split                    = false       # true = dragging the divider between the two panes moves it; false = the splitter stays centered
+mouse-resize-preview                  = false       # true = dragging the right panel's left edge resizes it (writes preview-width); false = the edge does nothing
 follow-terminal                       = false       # true = build the theme from the terminal's own colors (OSC fg/bg + palette; picked as the System theme row) instead of a fixed preset
 transparent-bg                        = "off"       # "off" = force opaque (preset bg nudged off the terminal default); "on" = faithful theme hex, renderer transparent (panels still paint); "force" = chrome rest fills cleared too, the terminal bg shows through regardless of the preset
 icons                                 = "opaque"    # "opaque" = icons flattened onto the tile bg (default); "transparent" = rasters keep alpha (may fringe on some terminals); "transparent-partial" = transparent except inside floating menus/dialogs
@@ -139,59 +144,66 @@ ansi14         = "#7dcfff"  # terminal color 14 (bright cyan)
 ansi15         = "#c0caf5"  # terminal color 15 (bright white)
 
 [keys]
-quit                = ["ctrl+q"]                  # default: ctrl+q
-restart             = ["ctrl+alt+r"]              # default: ctrl+alt+r
-open-menu           = ["escape"]                  # default: escape
-toggle-help         = ["f1"]                      # default: f1
-new-tab             = ["ctrl+t"]                  # default: ctrl+t
-close-tab           = ["ctrl+w"]                  # default: ctrl+w
-next-tab            = ["ctrl+tab"]                # default: ctrl+tab
-prev-tab            = ["ctrl+shift+tab"]          # default: ctrl+shift+tab
-select-all          = ["ctrl+a"]                  # default: ctrl+a
-trash               = ["delete"]                  # default: delete
-rename-or-restore   = ["f2"]                      # default: f2
-copy                = ["ctrl+c"]                  # default: ctrl+c
-cut                 = ["ctrl+x"]                  # default: ctrl+x
-duplicate           = ["ctrl+d"]                  # default: ctrl+d
-paste               = ["ctrl+v"]                  # default: ctrl+v
-undo                = ["ctrl+z"]                  # default: ctrl+z
-redo                = ["ctrl+y", "ctrl+shift+z"]  # default: ctrl+y or ctrl+shift+z
-show-props          = ["alt+enter"]               # default: alt+enter
-new-folder          = ["ctrl+shift+n"]            # default: ctrl+shift+n
-new-file            = ["ctrl+alt+n"]              # default: ctrl+alt+n
-parent-dir          = ["backspace", "alt+up"]     # default: backspace or alt+up
-hist-back           = ["alt+left"]                # default: alt+left
-hist-forward        = ["alt+right"]               # default: alt+right
-go-home             = ["alt+home"]                # default: alt+home
-path-edit           = ["ctrl+l"]                  # default: ctrl+l
-go-to-folder        = ["shift+cmd+g"]             # default: shift+cmd+g
-connect-server      = ["ctrl+shift+s"]            # default: ctrl+shift+s
-move-up             = ["up"]                      # default: up
-move-down           = ["down"]                    # default: down
-move-left           = ["left"]                    # default: left
-move-right          = ["right"]                   # default: right
-open-selected       = ["return"]                  # default: return
-page-up             = ["pageup"]                  # default: pageup
-page-down           = ["pagedown"]                # default: pagedown
-first-item          = ["home"]                    # default: home
-last-item           = ["end"]                     # default: end
-start-search        = []                          # default: 
-extend-up           = ["shift+up"]                # default: shift+up
-extend-down         = ["shift+down"]              # default: shift+down
-extend-left         = ["shift+left"]              # default: shift+left
-extend-right        = ["shift+right"]             # default: shift+right
-toggle-focused      = ["space"]                   # default: space
-invert-selection    = []                          # default: 
-toggle-hidden       = ["ctrl+h"]                  # default: ctrl+h
-reload-places       = ["ctrl+r"]                  # default: ctrl+r
-toggle-preview      = ["f3"]                      # default: f3
-toggle-info-sidebar = ["f7"]                      # default: f7
-toggle-view         = ["ctrl+g"]                  # default: ctrl+g
-cycle-sort          = []                          # default: 
-zoom-in             = ["ctrl+="]                  # default: ctrl+=
-zoom-out            = ["ctrl+-"]                  # default: ctrl+-
-toggle-dual-pane    = ["ctrl+shift+d"]            # default: ctrl+shift+d
-switch-pane         = ["tab"]                     # default: tab
-copy-to-other-pane  = ["f5"]                      # default: f5
-move-to-other-pane  = ["f6"]                      # default: f6
-open-terminal       = ["ctrl+`", "f4"]            # default: ctrl+` or f4
+quit                  = ["ctrl+q"]                  # default: ctrl+q
+restart               = ["ctrl+alt+r"]              # default: ctrl+alt+r
+open-menu             = ["escape"]                  # default: escape
+toggle-help           = ["f1"]                      # default: f1
+new-tab               = ["ctrl+t"]                  # default: ctrl+t
+close-tab             = ["ctrl+w"]                  # default: ctrl+w
+next-tab              = ["ctrl+tab"]                # default: ctrl+tab
+prev-tab              = ["ctrl+shift+tab"]          # default: ctrl+shift+tab
+select-all            = ["ctrl+a"]                  # default: ctrl+a
+trash                 = ["delete"]                  # default: delete
+rename-or-restore     = ["f2"]                      # default: f2
+copy                  = ["ctrl+c"]                  # default: ctrl+c
+cut                   = ["ctrl+x"]                  # default: ctrl+x
+duplicate             = ["ctrl+d"]                  # default: ctrl+d
+paste                 = ["ctrl+v"]                  # default: ctrl+v
+undo                  = ["ctrl+z"]                  # default: ctrl+z
+redo                  = ["ctrl+y", "ctrl+shift+z"]  # default: ctrl+y or ctrl+shift+z
+show-props            = ["alt+enter"]               # default: alt+enter
+new-folder            = ["ctrl+shift+n"]            # default: ctrl+shift+n
+new-file              = ["ctrl+alt+n"]              # default: ctrl+alt+n
+parent-dir            = ["backspace", "alt+up"]     # default: backspace or alt+up
+hist-back             = ["alt+left"]                # default: alt+left
+hist-forward          = ["alt+right"]               # default: alt+right
+go-home               = ["alt+home"]                # default: alt+home
+path-edit             = ["ctrl+l"]                  # default: ctrl+l
+go-to-folder          = ["shift+cmd+g"]             # default: shift+cmd+g
+connect-server        = ["ctrl+shift+s"]            # default: ctrl+shift+s
+move-up               = ["up"]                      # default: up
+move-down             = ["down"]                    # default: down
+move-left             = ["left"]                    # default: left
+move-right            = ["right"]                   # default: right
+open-selected         = ["return"]                  # default: return
+page-up               = ["pageup"]                  # default: pageup
+page-down             = ["pagedown"]                # default: pagedown
+first-item            = ["home"]                    # default: home
+last-item             = ["end"]                     # default: end
+start-search          = []                          # default: 
+extend-up             = ["shift+up"]                # default: shift+up
+extend-down           = ["shift+down"]              # default: shift+down
+extend-left           = ["shift+left"]              # default: shift+left
+extend-right          = ["shift+right"]             # default: shift+right
+toggle-focused        = ["space"]                   # default: space
+invert-selection      = []                          # default: 
+toggle-hidden         = ["ctrl+h"]                  # default: ctrl+h
+reload-places         = ["ctrl+r"]                  # default: ctrl+r
+toggle-sidebar        = ["ctrl+b"]                  # default: ctrl+b
+toggle-preview        = ["f3"]                      # default: f3
+toggle-info-sidebar   = ["f7"]                      # default: f7
+toggle-view           = ["ctrl+g"]                  # default: ctrl+g
+next-theme            = ["alt+t"]                   # default: alt+t
+cycle-sort            = ["alt+s"]                   # default: alt+s
+reverse-sort          = ["alt+shift+s"]             # default: alt+shift+s
+zoom-in               = ["ctrl+="]                  # default: ctrl+=
+zoom-out              = ["ctrl+-"]                  # default: ctrl+-
+toggle-dual-pane      = ["ctrl+shift+d"]            # default: ctrl+shift+d
+toggle-sync-browsing  = ["ctrl+shift+b"]            # default: ctrl+shift+b
+split-pane-horizontal = ["ctrl+shift+h"]            # default: ctrl+shift+h
+split-pane-vertical   = ["ctrl+shift+v"]            # default: ctrl+shift+v
+close-pane            = ["ctrl+shift+w"]            # default: ctrl+shift+w
+switch-pane           = ["tab"]                     # default: tab
+copy-to-other-pane    = ["f5"]                      # default: f5
+move-to-other-pane    = ["f6"]                      # default: f6
+open-terminal         = ["ctrl+`", "f4"]            # default: ctrl+` or f4

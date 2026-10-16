@@ -30,6 +30,7 @@ const harness = (over: HarnessOver = {}) => {
       active: over.active ?? (activeId === "p1" ? 1 : 0),
       activeId,
       leafIds: () => ["p0", "p1"],
+      onTreeChange: () => {},
     },
     isVirtualCwd: () => !!over.virtual,
     inTrashView: () => !!over.trash,

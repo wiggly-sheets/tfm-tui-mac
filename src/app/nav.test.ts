@@ -161,6 +161,61 @@ describe("makeNav", () => {
     nav.navigate("starred://");
     expect(seen).toEqual(["starred://"]);
   });
+
+  test("onSyncFollow fires once on a real dir entry and not on no-ops", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-nav-sync-"));
+    const sub = path.join(dir, "sub");
+    mkdirSync(sub, { recursive: true });
+    const st = mkState(dir);
+    const { hooks } = mkHooks();
+    const seen: string[] = [];
+    const nav = makeNav(st, { ...hooks, onSyncFollow: (d) => seen.push(d) });
+    // no-op re-enter: no follow
+    nav.navigate(path.join(sub, ".."));
+    expect(seen).toEqual([]);
+    nav.navigate(sub);
+    expect(seen).toEqual([sub]);
+    // a dead dir: no push, no follow
+    nav.navigate(path.join(dir, "nope"));
+    expect(seen).toEqual([sub]);
+    // a file: no push, no follow
+    const f = path.join(dir, "f.txt");
+    writeFileSync(f, "x");
+    nav.navigate(f);
+    expect(seen).toEqual([sub]);
+    // virtual place entry: follow fires (the other pane follows into the URI)
+    nav.navigate("starred://");
+    expect(seen).toEqual([sub, "starred://"]);
+  });
+
+  test("a pane navigating into its own cwd is a no-op (no follow, no history push)", () => {
+    // the wiring supplies each pane its OWN nav instance; the driven pane's
+    // navigate() into its current dir is a no-op at the nav layer (same rule
+    // as the active facade). The re-entrancy guard itself lives in
+    // ./sync-browsing and is tested there.
+    const a = mkdtempSync(path.join(os.tmpdir(), "tfm-nav-sync-"));
+    const b = path.resolve(a, "b");
+    mkdirSync(b, { recursive: true });
+    const stA = mkState(a);
+    const stB = mkState(b);
+    const seen: string[] = [];
+    const mkFollowHook = (owner: string) => ({
+      renderAll: () => {},
+      clearSearch: () => {},
+      exitPathEdit: () => {},
+      closeFileMenuIfOpen: () => {},
+      onSyncFollow: (d: string) => seen.push(`${owner}->${d}`),
+    });
+    const navA = makeNav(stA, mkFollowHook("A"));
+    const navB = makeNav(stB, mkFollowHook("B"));
+    navA.navigate(b);
+    expect(seen).toEqual([`A->${b}`]);
+    expect(stA.history).toEqual([a, b]);
+    expect(stA.histIdx).toBe(1);
+    navB.navigate(b);
+    expect(seen).toEqual([`A->${b}`]);
+    expect(stB.history).toEqual([b]);
+  });
 });
 
 describe("makeSessionSync", () => {

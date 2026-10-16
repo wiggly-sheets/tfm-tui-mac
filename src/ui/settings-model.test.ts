@@ -288,6 +288,7 @@ describe("settingGroups shape", () => {
       "tab bar",
       "##sidebar",
       "sidebar width",
+      "show sidebar",
       "sidebar title",
       "section titles",
       "recent",
@@ -311,6 +312,7 @@ describe("settingGroups shape", () => {
       "terminal collapse",
       "##panes",
       "dual pane",
+      "sync browsing",
       "##grid",
       "grid tile width",
       "grid tile height",
@@ -333,7 +335,8 @@ describe("settingGroups shape", () => {
         .find((g) => g.header === header)!
         .rows.map((r) => (r.kind === "header" ? `##${r.label}` : r.label));
     // every section headed (no trailing headerless rows): general leads,
-    // mouse gestures share a section
+    // mouse gestures share a section (the three opt-in drag-resize toggles
+    // live with the other pointer knobs)
     expect(seq("behavior")).toEqual([
       "##general",
       "type to search",
@@ -341,6 +344,9 @@ describe("settingGroups shape", () => {
       "##mouse",
       "double-click",
       "drag threshold",
+      "drag sidebar edge",
+      "drag pane divider",
+      "drag right panel edge",
     ]);
     // hidden files splices in under the listing header; session persistence
     // is its own section
@@ -394,6 +400,10 @@ describe("settingGroups shape", () => {
     ]);
     expect(seq.slice(seq.indexOf("##split panes") + 1)).toEqual([
       "toggle dual pane",
+      "toggle sync browsing",
+      "split pane left/right",
+      "split pane top/bottom",
+      "close pane",
       "switch pane",
       "copy to other pane",
       "move to other pane",
@@ -982,9 +992,9 @@ describe("keybind rows", () => {
 
   test("free bind commits through commitKeys, other actions untouched", () => {
     const h = mk();
-    asKeybind(h.byLabel("undo")).set(["ctrl+b"]);
+    asKeybind(h.byLabel("undo")).set(["ctrl+j"]);
     expect(h.applied.length).toBe(1);
-    expect(h.config.keys.undo).toEqual(["ctrl+b"]);
+    expect(h.config.keys.undo).toEqual(["ctrl+j"]);
     expect(h.config.keys.quit).toEqual(defaultConfig.keys.quit);
   });
 
@@ -1107,6 +1117,7 @@ describe("dependent rows hide behind their master toggle (progressive disclosure
       "tab bar",
       "##sidebar",
       "sidebar width",
+      "show sidebar",
       "sidebar title",
       "section titles",
       "recent",
@@ -1124,6 +1135,7 @@ describe("dependent rows hide behind their master toggle (progressive disclosure
       "terminal auto-hide",
       "##panes",
       "dual pane",
+      "sync browsing",
       "##grid",
       "grid tile width",
       "grid tile height",

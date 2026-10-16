@@ -3,6 +3,7 @@ import {
   activeFacade,
   activeMapFacade,
   activeState,
+  makeLeafRegistry,
   makePanePair,
   mergedMapFacade,
   otherState,
@@ -187,9 +188,64 @@ describe("merged map facade", () => {
   });
 });
 
+describe("makeLeafRegistry", () => {
+  const fakePanes = () => {
+    let ids = ["p0"];
+    const listeners: Array<() => void> = [];
+    return {
+      panes: {
+        leafIds: () => ids,
+        onTreeChange: (cb: () => void) => {
+          listeners.push(cb);
+        },
+      },
+      set: (next: string[]) => {
+        ids = next;
+        for (const l of listeners) l();
+      },
+    };
+  };
+
+  test("builds one value per leaf, disposes dropped ones, keeps survivors", () => {
+    const f = fakePanes();
+    const made: string[] = [];
+    const disposed: string[] = [];
+    const m = makeLeafRegistry(
+      f.panes,
+      (id) => {
+        made.push(id);
+        return { id };
+      },
+      (_v, id) => disposed.push(id),
+    );
+    expect(made).toEqual(["p0"]);
+    expect([...m.keys()]).toEqual(["p0"]);
+
+    f.set(["p0", "p1"]);
+    expect(made).toEqual(["p0", "p1"]);
+    expect([...m.keys()]).toEqual(["p0", "p1"]);
+
+    f.set(["p1"]);
+    expect(disposed).toEqual(["p0"]);
+    expect([...m.keys()]).toEqual(["p1"]);
+  });
+
+  test("a throwing dispose does not stop the sweep", () => {
+    const f = fakePanes();
+    const m = makeLeafRegistry(
+      f.panes,
+      (id) => ({ id }),
+      () => {
+        throw new Error("boom");
+      },
+    );
+    expect(() => f.set(["p1"])).not.toThrow();
+    expect([...m.keys()]).toEqual(["p1"]);
+  });
+});
+
 describe("viewModeFor (per-pane view mode)", () => {
   const isTty = () => false;
-
   test("returns the pane's stored mode when set", () => {
     expect(viewModeFor({ viewMode: "list" }, "grid", isTty)).toBe("list");
     expect(viewModeFor({ viewMode: "columns" }, "grid", isTty)).toBe("columns");

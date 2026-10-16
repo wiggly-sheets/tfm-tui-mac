@@ -308,6 +308,40 @@ describe("makeHoverDrawer (headless)", () => {
     await t.renderOnce();
     expect(title().visible).toBe(true);
   });
+
+  test("sidebar-visible off hides the panel and frees its columns", async () => {
+    // the toggleSidebar keybind flips [ui] sidebar-visible and republishes
+    // through applyConfig -> refresh(): the panel must leave the layout (and
+    // stop reserving columns) instead of just collapsing to a rail
+    const ui: UiConfig = {
+      ...defaultConfig.ui,
+      sidebarAutoHide: false,
+      previewAutoHide: false,
+      terminalAutoHide: false,
+      sidebarVisible: true,
+      hoverAnimMs: 0,
+    };
+    const drawer = mkDrawer(ui);
+    const root = () => t.renderer.root.findDescendantById("tfm-sidebar-root") as any;
+    const title = () => t.renderer.root.findDescendantById("tfm-title-box") as any;
+    await t.renderOnce();
+    await t.renderOnce();
+    expect(root().visible).toBe(true);
+    expect(eff.sidebar).toBe(ui.sidebarWidth);
+
+    ui.sidebarVisible = false;
+    drawer.refresh();
+    await t.renderOnce();
+    expect(root().visible).toBe(false);
+    expect(title().visible).toBe(false);
+    expect(eff.sidebar).toBe(0);
+
+    ui.sidebarVisible = true;
+    drawer.refresh();
+    await t.renderOnce();
+    expect(root().visible).toBe(true);
+    expect(eff.sidebar).toBe(ui.sidebarWidth);
+  });
 });
 
 describe("terminal auto-hide follows ui().terminalHeight (headless)", () => {

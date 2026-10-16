@@ -36,7 +36,6 @@ import {
   type LayoutNode,
   type LayoutTree,
   type PaneId,
-  type Rect,
   type SplitOrientation,
 } from "../app/layout";
 
@@ -76,6 +75,10 @@ export const wireCore = (deps: {
     // exclusive and equally wide, so the reserved width is preview-width if
     // EITHER is on
     previewEff: config.ui.previewEnabled || config.ui.infoSidebar ? config.ui.previewWidth : 0,
+    // the pane split ratio (mouse-resize-split): percent of the split area the
+    // LEFT pane keeps. Session-only, like the pane tree it divides — the boot
+    // layout's even flexGrow pair IS 50.
+    splitPct: 50,
   };
 
   // inner width available to children of the sidebar panel (outline border
@@ -170,8 +173,10 @@ export const wireCore = (deps: {
   // every existing `core.state` consumer keeps reading/writing the active view.
   // The legacy 0|1 index (`panes.active`) mirrors the active leaf's id for the
   // default 2-pane tree — it is a shim, not the canonical identifier.
+  // [ui] dual-pane chooses the INITIAL tree (2 leaves vs 1); it does not prevent
+  // later splits. leafIds() is the render source of truth.
   const home = os.homedir();
-  const layout = { current: defaultTree() as LayoutNode };
+  const layout = { current: (config.ui.dualPane ? defaultTree() : { kind: "leaf", id: "p0" }) as LayoutNode };
   const stateMap = new Map<PaneId, AppState>([
     ["p0", initialAppState(config, process.cwd(), deps.pendingSelect ?? null)],
     ["p1", initialAppState(config, process.cwd())],
@@ -188,6 +193,18 @@ export const wireCore = (deps: {
     activeId = id;
   };
   const activeStateFor = (): AppState => stateMap.get(activeId) ?? statesShim[0];
+
+  // --- Pane lifecycle fan-out: splitPane/closePane mutate the tree, then ping
+  // every listener so each wiring can create/dispose its per-leaf widgets. The
+  // DOM rebuild (wiring/panes) registers LAST, after every widget exists.
+  const treeListeners: Array<() => void> = [];
+  const fireTreeChange = (): void => {
+    for (const cb of treeListeners) {
+      try {
+        cb();
+      } catch {}
+    }
+  };
 
   const panes = {
     get tree(): LayoutTree {
@@ -210,27 +227,22 @@ export const wireCore = (deps: {
       setActiveId(ids[(idx + 1) % ids.length] ?? activeId);
     },
     splitPane: (id: PaneId, orientation: SplitOrientation): void => {
+      if (!findLeaf(layout.current, id)) return;
       const { tree, newId } = splitPane(layout.current, id, orientation);
       layout.current = tree;
-      const fresh = initialAppState(config, process.cwd());
-      stateMap.set(newId, fresh);
-      // re-point statesShim if the split target was p0 or p1
-      if (id === "p0") statesShim[0] = stateMap.get("p0") ?? statesShim[0];
-      if (id === "p1") statesShim[1] = stateMap.get("p1") ?? statesShim[1];
+      stateMap.set(newId, initialAppState(config, process.cwd()));
+      scrollerRefs.set(newId, { current: null });
       setActiveId(newId);
+      fireTreeChange();
     },
     closePane: (id: PaneId): void => {
       const before = leafIds(layout.current);
-      if (before.length <= 1) return;
-      const closed = closePane(layout.current, id);
-      layout.current = closed;
-      // if the closed leaf was p0/p1, keep the dormant AppState in the shim
-      if (!leafIds(layout.current).includes("p0")) statesShim[0] = stateMap.get("p0") ?? statesShim[0];
-      if (!leafIds(layout.current).includes("p1")) statesShim[1] = stateMap.get("p1") ?? statesShim[1];
-      if (activeId === id) {
-        const ids = leafIds(layout.current);
-        setActiveId(ids[0] ?? activeId);
-      }
+      if (before.length <= 1 || !before.includes(id)) return;
+      layout.current = closePane(layout.current, id);
+      stateMap.delete(id);
+      scrollerRefs.delete(id);
+      if (activeId === id) setActiveId(leafIds(layout.current)[0] ?? activeId);
+      fireTreeChange();
     },
     cyclePane: (delta: 1 | -1 = 1): void => {
       const next = cyclePane(layout.current, activeId, delta);
@@ -241,6 +253,11 @@ export const wireCore = (deps: {
     },
     leafIds: (): PaneId[] => leafIds(layout.current),
     stateOf: (id: PaneId): AppState => stateMap.get(id) ?? activeStateFor(),
+    // reconcile hook: fires after any tree change (split/close). Each wiring
+    // diffs leafIds() against its own per-leaf map. In-memory only.
+    onTreeChange: (cb: () => void): void => {
+      treeListeners.push(cb);
+    },
   };
 
   const state = activeFacade(activeStateFor);
@@ -295,19 +312,6 @@ export const wireCore = (deps: {
     }
   };
 
-  // --- Per-leaf geometry: the layout tree's rects (computed at render time)
-  // drive each leaf's content width. The grid reads `paneAvailW` live.
-  const leafRects = new Map<PaneId, Rect>();
-  const setLeafRects = (rects: Map<PaneId, Rect>): void => {
-    leafRects.clear();
-    for (const [k, v] of rects) leafRects.set(k, v);
-  };
-  const paneAvailW = (id: PaneId): number => {
-    const r = leafRects.get(id);
-    if (!r) return 0;
-    return Math.max(0, r.w - geometry.previewEff);
-  };
-
   return {
     config,
     colors,
@@ -337,9 +341,6 @@ export const wireCore = (deps: {
     scrollerRef,
     scrollerRefs,
     scrollerRefsLegacy: legacyScrollerRefs,
-    leafRects,
-    setLeafRects,
-    paneAvailW,
     isVirtualCwd,
     inTrashView,
     isCutKey,

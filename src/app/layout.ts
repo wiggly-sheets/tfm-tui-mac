@@ -28,11 +28,12 @@ export type LayoutNode = SplitNode | LeafPane;
 export type LayoutTree = LayoutNode;
 
 /**
- * Returns the default 2-pane tree (p0 and p1).
+ * Returns the default 2-pane tree (p0 and p1) side by side — an h-split,
+ * matching the boot layout (p0 left, p1 right).
  */
 export const defaultTree = (): SplitNode => ({
   kind: "split",
-  orientation: "v",
+  orientation: "h",
   children: [
     { kind: "leaf", id: "p0" },
     { kind: "leaf", id: "p1" },
@@ -302,6 +303,25 @@ export const layoutGeometry = (tree: LayoutNode, rect: Rect): void => {
       curX += childW;
     }
   }
+};
+
+/**
+ * Computes each leaf's rect for a given area (layoutGeometry) and returns them
+ * keyed by PaneId. The grid reads a leaf's width from here so N-pane column
+ * math follows the same split rules as the rendered tree.
+ */
+export const leafRectsOf = (tree: LayoutNode, rect: Rect): Map<PaneId, Rect> => {
+  layoutGeometry(tree, rect);
+  const out = new Map<PaneId, Rect>();
+  const walk = (node: LayoutNode): void => {
+    if (node.kind === "leaf") {
+      if (node.rect) out.set(node.id, node.rect);
+      return;
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(tree);
+  return out;
 };
 
 // --- DOM id helpers: p0 and p1 keep their byte-identical legacy ids so the

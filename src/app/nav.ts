@@ -62,6 +62,11 @@ type NavHooks = {
   closeFileMenuIfOpen: () => void;
   // plugin event fan-out (optional; never throws into navigation)
   onNavigate?: (dir: string) => void;
+  // sync browsing: when this pane enters a directory, the OTHER pane follows.
+  // Optional — the wiring supplies it only when [ui] sync-browsing is on.
+  // Fires AFTER the history push + renderAll, so the driven pane navigates
+  // into a folder that is already recorded here.
+  onSyncFollow?: (dir: string) => void;
 };
 
 export const makeNav = (state: AppState, hooks: NavHooks) => {
@@ -104,6 +109,7 @@ export const makeNav = (state: AppState, hooks: NavHooks) => {
       hooks.clearSearch();
       hooks.renderAll();
       emitNavigate(dir);
+      hooks.onSyncFollow?.(dir);
       return;
     }
     let target: string;
@@ -121,6 +127,7 @@ export const makeNav = (state: AppState, hooks: NavHooks) => {
     hooks.clearSearch();
     hooks.renderAll();
     emitNavigate(target);
+    hooks.onSyncFollow?.(target);
   };
 
   return { canBack, canFwd, goBack, goFwd, navigate };

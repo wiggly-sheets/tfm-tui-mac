@@ -19,7 +19,8 @@ import { makeNetworkActions, type GioResult } from "../fs/netmount";
 import { makeMenu, MENU_W } from "../ui/ui-menu";
 import { makeChrome } from "../ui/ui-chrome";
 import { makeToolbar, toolbarItemIds, crumbItemIds } from "../ui/ui-toolbar";
-import { getMap, type PaneId } from "../app/panes";
+import { getMap, makeLeafRegistry, type PaneId } from "../app/panes";
+import { leafRectsOf } from "../app/layout";
 import { buildAppContainer, buildTitle } from "../ui/ui-boot-layout";
 import { warmEmbeddedIcons } from "../ui/icons";
 import type { NodeLike } from "../lib/node-like";
@@ -59,6 +60,10 @@ export const wireChrome = async (deps: {
   };
   // grid's finishDragCtx (internal drag commit) — grid wiring builds it later
   finishDrag(): void;
+  // drag-resize: sidebar rows span the panel width, so a press on the resize
+  // band must arm the gesture instead of navigating. Wired after chrome
+  // (renderer TDZ) — read at press time.
+  resizePress?(x: number): boolean;
 }) => {
   const { core, nav, getGrid, getFileops, getKeyRouter } = deps;
   const { byId, stripSelectable } = core.lookup;
@@ -126,14 +131,16 @@ export const wireChrome = async (deps: {
     }),
     // [ui] sidebar-section-titles: name each group in place of the dividers
     sectionTitles: () => core.config.ui.sidebarSectionTitles,
-    // tab chip shrink reads the live pane width — same math as grid's
-    // paneAvailW (the strip is 100% of its pane column). Arrow-deferred: the
-    // renderer const below is the TDZ seam, same as menu's termW.
-    // both panes split the main area evenly, so the index carries no width
-    availW: (_pane) =>
-      core.config.ui.dualPane
-        ? Math.floor((renderer.terminalWidth - core.geometry.sidebarEff - core.geometry.previewEff - 1) / 2)
-        : renderer.terminalWidth - core.geometry.sidebarEff - core.geometry.previewEff,
+    // tab chip shrink reads the live pane width — the layout tree's own rects,
+    // so a split/closing pane repaints the strip at the right size. Arrow-
+    // deferred: the renderer const below is the TDZ seam, same as menu's termW.
+    availW: (pane) => {
+      const main = renderer.terminalWidth - core.geometry.sidebarEff - core.geometry.previewEff;
+      const id = pane === 1 ? "p1" : "p0";
+      if (!core.panes.leafIds().includes(id)) return main;
+      const rects = leafRectsOf(core.panes.tree, { x: 0, y: 0, w: main, h: 1 });
+      return Math.max(0, rects.get(id)?.w ?? main);
+    },
     rasterSig: () =>
       rasterSigOf(
         core.config.ui.icons,
@@ -170,6 +177,7 @@ export const wireChrome = async (deps: {
     connectServer,
     hoverRow: (key, hovered) => hoverRowImpl(key, hovered),
     setPointer,
+    resizePress: (x) => deps.resizePress?.(x) ?? false,
   });
 
   // --- Sidebar hover animator (impl for the deferred wrapper above): row refs
@@ -235,8 +243,7 @@ export const wireChrome = async (deps: {
       home,
       setPointer,
     });
-  const toolbars = new Map<PaneId, ReturnType<typeof makeToolbar>>();
-  for (const id of core.panes.leafIds()) toolbars.set(id, makePaneToolbar(id));
+  const toolbars = makeLeafRegistry(core.panes, (id) => makePaneToolbar(id));
 
   // --- Layout: the pre-mount skeleton (title + three panels) lives in
   // ./ui-boot-layout; ids are repainted by rethemeChrome, so they must stay
@@ -249,13 +256,10 @@ export const wireChrome = async (deps: {
     colors: core.colors,
     uiStyle: core.config.ui.uiStyle,
     transparentForce: core.config.ui.transparentBg === "force",
-    tabBarVisible: core.config.ui.tabBar,
     previewWidth: core.config.ui.previewWidth,
     previewEnabled: core.config.ui.previewEnabled,
     infoEnabled: core.config.ui.infoSidebar,
-    dualPane: core.config.ui.dualPane,
     title: buildTitle({ width: core.sideInnerW(), colors: core.colors, mode: core.config.ui.sidebarTitle }),
-    toolbarShells: [...toolbars.values()].map((t) => t.makeToolbarShell()),
   });
 
   // --- Renderer boot. On a Linux text console, gpm is the only mouse source
@@ -355,8 +359,7 @@ export const wireChrome = async (deps: {
       }),
       barIds: () => crumbItemIds(byId, `tfm-${id}-`),
     });
-  const dirBarAnims = new Map<PaneId, ReturnType<typeof makeTopbarAnim>>();
-  for (const id of core.panes.leafIds()) dirBarAnims.set(id, makeDirBarAnim(id));
+  const dirBarAnims = makeLeafRegistry(core.panes, (id) => makeDirBarAnim(id));
   // --- Notifications — its consumers (recent-open, undo, fileops, terminal,
   // trashops, settings, dnd72) take `notify` directly; the sticky transfer
   // progress toast lives in the same stack via notifySticky, so every

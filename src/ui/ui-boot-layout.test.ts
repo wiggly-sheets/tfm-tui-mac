@@ -2,7 +2,16 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Box } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { defaultConfig } from "../config/config-schema";
-import { buildAppContainer, buildBootLayout, buildTitle, scrollbarTrackColors } from "./ui-boot-layout";
+import type { LayoutNode } from "../app/layout";
+import { paneColId } from "../app/layout";
+import {
+  buildAppContainer,
+  buildPaneColumn,
+  buildPaneScroller,
+  buildPaneTree,
+  buildTitle,
+  scrollbarTrackColors,
+} from "./ui-boot-layout";
 
 // the grid scrollers' bars must wear the theme (not the upstream gray
 // defaults), and rethemeChrome must be able to recompute the same mapping
@@ -32,14 +41,33 @@ describe("tab strip containers", () => {
         sideInnerW: 24,
         colors: theme,
         uiStyle: "solid",
-        tabBarVisible: true,
         previewWidth: 40,
         previewEnabled: false,
-        dualPane: false,
         title: buildTitle({ width: 24, colors: theme }),
-        toolbarShells: [Box({}), Box({})] as any,
       }),
     );
+    const host: any = t.renderer.root.findDescendantById("tfm-panes");
+    const cols = new Map<string, any>();
+    const tree = buildPaneTree(
+      {
+        kind: "split",
+        orientation: "h",
+        children: [
+          { kind: "leaf", id: "p0" },
+          { kind: "leaf", id: "p1" },
+        ],
+      },
+      (id) => {
+        let col = cols.get(id);
+        if (!col) {
+          col = buildPaneColumn({ id, toolbarShell: Box({}), tabBarVisible: true }).col;
+          cols.set(id, col);
+        }
+        return col;
+      },
+      theme.divider,
+    );
+    host.add(tree);
     await t.renderOnce();
     for (const id of ["tfm-p0-tabbar", "tfm-p1-tabbar"]) {
       const bar: any = t.renderer.root.findDescendantById(id);
@@ -91,26 +119,32 @@ describe("grid scrollbar theming", () => {
 
   test("both boot scrollers build their bars in theme colors", async () => {
     const theme = { ...defaultConfig.theme };
-    t.renderer.root.add(Box({ id: "tfm-pane-0", flexGrow: 1, width: "100%", flexDirection: "column" }));
-    t.renderer.root.add(Box({ id: "tfm-pane-1", flexGrow: 1, width: "100%", flexDirection: "column" }));
-    const [s0, s1] = buildBootLayout({
-      renderer: t.renderer,
-      byId: (id: string) => t.renderer.root.findDescendantById(id) as any,
-      colors: theme,
-      bandCtx: {} as any,
-      focusPane: noop,
-      dropIntoPane: noop,
-      closeFileMenu: noop,
-      clearSearch: noop,
-      blurTerminal: noop,
-      pathEditMode: () => false,
-      exitPathEdit: noop,
-      isRenaming: () => false,
-      finishInlineRename: noop,
-      clearTileSelection: noop,
-      openContextMenu: () => {},
-      emptyAreaEntries: () => [],
-    });
+    const mkScroller = (id: "p0" | "p1") => {
+      const { host } = buildPaneColumn({ id, toolbarShell: Box({}), tabBarVisible: false });
+      t.renderer.root.add(host);
+      const s = buildPaneScroller({
+        renderer: t.renderer,
+        colors: theme,
+        id,
+        bandCtx: {} as any,
+        focusPane: noop,
+        dropIntoPane: noop,
+        closeFileMenu: noop,
+        clearSearch: noop,
+        blurTerminal: noop,
+        pathEditMode: () => false,
+        exitPathEdit: noop,
+        isRenaming: () => false,
+        finishInlineRename: noop,
+        clearTileSelection: noop,
+        openContextMenu: () => {},
+        emptyAreaEntries: () => [],
+      });
+      (host as any).add(s);
+      return s;
+    };
+    const s0 = mkScroller("p0");
+    const s1 = mkScroller("p1");
     await t.renderOnce();
     for (const s of [s0, s1]) {
       const slider = (s as any).verticalScrollBar?.slider as any;
@@ -118,5 +152,78 @@ describe("grid scrollbar theming", () => {
       expect([...slider.backgroundColor.toInts()]).toEqual(hexInts(theme.bg));
       expect([...slider.foregroundColor.toInts()]).toEqual(hexInts(theme.sidebarFgMuted));
     }
+  });
+});
+
+// A mixed tree is the case a flat pair never exercised: the h-split and the
+// v-split must lay out as a row and a column, and each pair of siblings gets
+// its own divider (the second no longer collides with the first).
+describe("pane tree geometry", () => {
+  const theme = defaultConfig.theme;
+
+  // one mount per assertion: the id set is fixed, so a stale tree would win
+  // findDescendantById
+  const mount = async (tree: LayoutNode) => {
+    (t.renderer.root.findDescendantById("tfm-panes") as any)?.destroy?.();
+    t.renderer.root.add(
+      buildAppContainer({
+        sw: 26,
+        sideInnerW: 24,
+        colors: theme,
+        uiStyle: "solid",
+        previewWidth: 40,
+        previewEnabled: false,
+        title: buildTitle({ width: 24, colors: theme }),
+      }),
+    );
+    const host: any = t.renderer.root.findDescendantById("tfm-panes");
+    const cols = new Map<string, any>();
+    host.add(
+      buildPaneTree(
+        tree,
+        (id) => {
+          let col = cols.get(id);
+          if (!col) {
+            col = buildPaneColumn({ id, toolbarShell: Box({}), tabBarVisible: false }).col;
+            cols.set(id, col);
+          }
+          return col;
+        },
+        theme.divider,
+      ),
+    );
+    await t.renderOnce();
+  };
+
+  test("a mixed h+v tree renders every leaf and orients its dividers", async () => {
+    await mount({
+      kind: "split",
+      orientation: "h",
+      children: [
+        { kind: "leaf", id: "p0" },
+        {
+          kind: "split",
+          orientation: "v",
+          children: [
+            { kind: "leaf", id: "p1" },
+            { kind: "leaf", id: "p2" },
+          ],
+        },
+      ],
+    });
+    const find = (id: string): any => t.renderer.root.findDescendantById(id);
+
+    for (const id of ["p0", "p1", "p2"]) {
+      expect(find(`tfm-${id}-tabbar`)).toBeTruthy();
+      expect(find(paneColId(id))).toBeTruthy();
+    }
+
+    // h-split → a 1-wide vertical bar; v-split → a 1-tall horizontal bar.
+    // (The bars also prove nesting: each sits in its own split box.)
+    const outer = find("tfm-pane-divider");
+    expect(outer.width).toBe(1);
+    const inner = find("tfm-pane-divider-1");
+    expect(inner.height).toBe(1);
+    expect(outer.parent).not.toBe(inner.parent);
   });
 });

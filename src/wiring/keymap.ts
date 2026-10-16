@@ -12,7 +12,8 @@ import { makeKeyRouter } from "../input/keymap";
 import { makePick } from "../ui/ui-pick";
 import { makePrompt } from "../ui/ui-prompt";
 import { makeGoToFolder } from "../ui/ui-goto";
-import { zoomUiPatch } from "../ui/settings";
+import { themePresetIdx, zoomUiPatch } from "../ui/settings";
+import { THEME_PRESETS } from "../config/themes";
 import { cycleSortMode } from "../lib/sort";
 import { viewModeFor } from "../app/panes";
 import { activeFacade } from "../app/panes";
@@ -116,7 +117,7 @@ export const wireKeymap = (deps: {
   // same runTransfer path as every other transfer (conflict prompt, undo,
   // progress). Destination guards mirror pasteSmart's.
   const transferToOtherPane = (op: "copy" | "move"): void => {
-    if (!core.config.ui.dualPane) {
+    if (core.panes.leafIds().length < 2) {
       chrome.notify("Dual pane is off", op, "info");
       return;
     }
@@ -187,11 +188,11 @@ export const wireKeymap = (deps: {
     // columns (Miller/Finder) view: the active pane's renderer owns the
     // column-stack keyboard semantics. Resolved live so switching panes
     // hands keys to the new side without a rebuild.
-    columns: activeFacade(() => grid.columnsRenderer(core.panes.active), {
+    columns: activeFacade(() => grid.columnsRenderer(core.panes.activeId), {
       isActive: () =>
         viewModeFor(core.panes.stateOf(core.panes.activeId), core.config.ui.viewMode, core.isTtyMode) === "columns",
-      handleKey: (ev: KeyEventLike) => grid.columnsRenderer(core.panes.active).handleKey(ev),
-      renderColumns: () => grid.columnsRenderer(core.panes.active).renderColumns(),
+      handleKey: (ev: KeyEventLike) => grid.columnsRenderer(core.panes.activeId).handleKey(ev),
+      renderColumns: () => grid.columnsRenderer(core.panes.activeId).renderColumns(),
     }),
     placesHost: chrome.chrome.placesHost,
     normalizePlaces: chrome.chrome.normalizePlaces,
@@ -235,12 +236,39 @@ export const wireKeymap = (deps: {
       getRetheme().applyConfig({ ...core.config, ui: { ...ui, infoSidebar: !ui.infoSidebar } });
       getRetheme().scheduleSaveConfig();
     },
+    // the drawer owns panel visibility/width, so the flip publishes through
+    // applyConfig -> onConfigApplied -> hover.refresh() like every other knob
+    toggleSidebar: () => {
+      const ui = core.config.ui;
+      getRetheme().applyConfig({ ...core.config, ui: { ...ui, sidebarVisible: !ui.sidebarVisible } });
+      getRetheme().scheduleSaveConfig();
+    },
+    // theme cycler: hand-edited [theme] matches no preset (idx -1), so the
+    // first press lands on the first preset, then the list wraps
+    nextTheme: () => {
+      const idx = themePresetIdx(THEME_PRESETS, core.config.theme);
+      const next = THEME_PRESETS[(idx + 1) % THEME_PRESETS.length];
+      if (!next) return;
+      getRetheme().applyConfig({
+        ...core.config,
+        ui: { ...core.config.ui },
+        theme: { ...next.theme },
+        keys: { ...core.config.keys },
+      });
+      getRetheme().scheduleSaveConfig();
+      chrome.notify(next.name, "theme", "info");
+    },
     toggleDualPane: () => {
       const ui = core.config.ui;
       getRetheme().applyConfig({ ...core.config, ui: { ...ui, dualPane: !ui.dualPane } });
       getRetheme().scheduleSaveConfig();
       // applyConfig handles the repaint + its normalizePanes hook resets the
       // active pane when turning off
+    },
+    toggleSyncBrowsing: () => {
+      const ui = core.config.ui;
+      getRetheme().applyConfig({ ...core.config, ui: { ...ui, syncBrowsing: !ui.syncBrowsing } });
+      getRetheme().scheduleSaveConfig();
     },
     toggleViewMode: () => {
       const s = core.activeState();
@@ -259,6 +287,14 @@ export const wireKeymap = (deps: {
       s.sortAsc = next.sortAsc;
       void grid.renderGrid();
     },
+    // same-mode flip: the cycle picks a mode's natural direction, this one
+    // reverses whatever the current mode sorts by (grid rebuild only — the
+    // sort state is per-pane and neither key touches config)
+    reverseSort: () => {
+      const s = core.activeState();
+      s.sortAsc = !s.sortAsc;
+      void grid.renderGrid();
+    },
     zoomTiles: (dir) => {
       const ui = core.config.ui;
       const patch = zoomUiPatch(ui, dir);
@@ -268,10 +304,23 @@ export const wireKeymap = (deps: {
       getRetheme().scheduleSaveConfig();
     },
     switchPane: () => {
-      if (!core.config.ui.dualPane) return;
+      if (core.panes.leafIds().length < 2) return;
       // a selection must not survive a pane switch
       gridFoundation.selections.get(core.panes.activeId)?.clearTileSelection();
-      core.togglePane();
+      core.panes.cyclePane(1);
+      nav.renderAll();
+    },
+    splitPaneHorizontal: () => {
+      core.panes.splitPane(core.panes.activeId, "h");
+      nav.renderAll();
+    },
+    splitPaneVertical: () => {
+      core.panes.splitPane(core.panes.activeId, "v");
+      nav.renderAll();
+    },
+    closePane: () => {
+      if (core.panes.leafIds().length < 2) return;
+      core.panes.closePane(core.panes.activeId);
       nav.renderAll();
     },
     copyToOtherPane: () => transferToOtherPane("copy"),

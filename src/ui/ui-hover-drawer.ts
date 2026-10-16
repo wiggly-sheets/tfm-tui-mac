@@ -200,16 +200,20 @@ export const makeHoverDrawer = (ctx: HoverDrawerCtx) => {
       collapsed: () => collapsedSize(ctx.ui().sidebarCollapseStyle),
       size: () => ctx.renderer.terminalWidth,
       restore: () => {
-        setTitleVisible(true);
+        // [ui] sidebar-visible OFF wins over every auto-hide state: the panel
+        // stays unrendered and the grid keeps the full width
+        const vis = ctx.ui().sidebarVisible;
+        setTitleVisible(vis);
         const n = getNode("tfm-sidebar-root");
         if (n) {
           try {
-            n.visible = true;
+            n.visible = vis;
           } catch {}
         }
       },
       effective: (open) => {
         const ui = ctx.ui();
+        if (!ui.sidebarVisible) return 0;
         return ui.sidebarAutoHide ? (open ? ui.sidebarWidth : collapsedSize(ui.sidebarCollapseStyle)) : ui.sidebarWidth;
       },
       applyVisible: (open) => {
@@ -217,7 +221,7 @@ export const makeHoverDrawer = (ctx: HoverDrawerCtx) => {
         const n = getNode("tfm-sidebar-root");
         if (n) {
           try {
-            n.visible = !(ui.sidebarAutoHide && !open && ui.sidebarCollapseStyle === "hidden");
+            n.visible = ui.sidebarVisible && !(ui.sidebarAutoHide && !open && ui.sidebarCollapseStyle === "hidden");
           } catch {}
         }
       },

@@ -5,8 +5,7 @@
 import { CliRenderEvents, Renderable } from "@opentui/core";
 import { runBoot } from "../app/boot";
 import { consumeRestartFlag } from "../app/restart";
-import { buildBootLayout } from "../ui/ui-boot-layout";
-import { hookScrollerScroll } from "../ui/ui-grid";
+import { buildBootOverlays } from "../ui/ui-boot-layout";
 import { makeCwdWatcher } from "../fs/watcher";
 import { isVirtualUri } from "../fs/uri";
 import { isNetworkPath } from "../fs/network";
@@ -16,7 +15,7 @@ import { makeHitTargetAt } from "../dnd/hit-target";
 import { debounced } from "../lib/uiutil";
 import { makeHoverDrawer } from "../ui/ui-hover-drawer";
 import { gridDrag } from "../input/grid-input";
-import { getMap, mergedMapFacade } from "../app/panes";
+import { makeLeafRegistry, mergedMapFacade } from "../app/panes";
 import { loadGlobs2 } from "../fs/filetype";
 import type { PaneId } from "../app/layout";
 import { loadSystemPlaces } from "../fs/places";
@@ -24,7 +23,6 @@ import { startMemHygiene, type NativeStatsReach } from "../app/mem-hygiene";
 import { xtShiftEscapeFrame, kittyDeleteAllImages } from "../ui/ui-term";
 import { configPath } from "../config/config";
 import { describeKeybindConflicts } from "../config/config-schema";
-import type { ListEntry } from "../ui/ui-menu";
 import { debugLog, dlog, isDebug, DEBUG_LOG, DND_LOG } from "../app/log";
 import type { CoreWiring } from "./core";
 import type { ChromeWiring, FileopsWiring, GridFoundationWiring, GridWiring, NavWiring } from "./types";
@@ -38,29 +36,25 @@ export const wireWatcher = (deps: {
   getGrid: () => GridWiring;
 }) => {
   const { core, getGridFoundation, getGrid } = deps;
-  // one watcher per pane so external changes refresh BOTH sides of a dual
-  // workspace. Pane 1's watcher stands down (isVirtualCwd true) while dual
-  // pane is off, so a hidden pane never holds an inotify watch.
+  // one watcher per leaf; a closed pane's watcher is torn down (no inotify
+  // handle leaks on splits/closes)
   const makeFor = (id: PaneId) =>
     makeCwdWatcher({
       cwd: () => core.panes.stateOf(id).cwd,
       // network (gvfs FUSE) mounts get no watcher: inotify over FUSE is
       // unreliable and can storm; the grid refreshes on navigation instead
       isVirtualCwd: () => {
-        if (id === "p1" && !core.config.ui.dualPane) return true;
         const cwd = core.panes.stateOf(id).cwd;
         return isVirtualUri(cwd) || isNetworkPath(cwd);
       },
       isRenaming: () => getGridFoundation().rename.isRenaming(),
-      renderGrid: () => getGrid().renderPane(id === "p1" ? 1 : 0),
+      renderGrid: () => getGrid().renderPane(id),
       // our own diagnostic sinks: dlog appends on every mouse event and defaults
       // to /tmp/tfm-dnd.log — when that IS the cwd, each click would otherwise
       // full-rebuild the grid 200ms later (visible flash after every select)
       ignorePaths: () => [DND_LOG, DEBUG_LOG],
     });
-  // one watcher per leaf
-  const watchers = new Map<PaneId, ReturnType<typeof makeCwdWatcher>>();
-  for (const id of core.panes.leafIds()) watchers.set(id, makeFor(id));
+  const watchers = makeLeafRegistry(core.panes, makeFor, (w) => w.close());
   const syncCwdWatcher = (): void => {
     for (const w of watchers.values()) w.syncCwdWatcher();
   };
@@ -99,7 +93,7 @@ export const wireBoot = (deps: {
   // collapsed)
   afterLayout?: () => void;
 }) => {
-  const { core, nav, chrome, gridFoundation, grid, fileops, bootStart } = deps;
+  const { core, nav, chrome, bootStart } = deps;
   runBoot({
     // boot: ONE full-budget wait — a terminal that answered nothing by then
     // never reports pixels (linux console/tmux), and the gate latches so no
@@ -119,36 +113,14 @@ export const wireBoot = (deps: {
     },
     mountSlots: deps.mountSlots,
     buildLayout: () => {
-      // scrollers x2 (one per pane)/band rect/drag ghost — module:
-      // ./ui-boot-layout (ids stay byte-identical; band gesture fns wired
-      // there straight from grid-input)
-      const scrollers = buildBootLayout({
+      // band rect + drag ghost (ids stay byte-identical; band gesture fns wired
+      // here straight from grid-input). Pane columns + grid scrollers are built
+      // by wiring/panes, so a split mounts the same widget a boot pane gets.
+      buildBootOverlays({
         renderer: chrome.renderer,
-        byId: core.lookup.byId,
         colors: core.colors,
-        bandCtx: grid.bandCtx,
-        focusPane: (i) => grid.focusPane(i === 1 ? "p1" : "p0"),
-        dropIntoPane: (i) => grid.dropIntoPane(i === 1 ? "p1" : "p0"),
-        closeFileMenu: chrome.menu.closeFileMenu,
-        clearSearch: nav.clearSearch,
-        blurTerminal: fileops.terminal.blurTerminal,
-        pathEditMode: () => chrome.activeToolbar().pathEditMode(),
-        exitPathEdit: () => chrome.activeToolbar().exitPathEdit(),
-        isRenaming: gridFoundation.rename.isRenaming,
-        finishInlineRename: gridFoundation.rename.finishInlineRename,
-        clearTileSelection: gridFoundation.selection.clearTileSelection,
-        openContextMenu: (x: number, y: number, t: string, e: ListEntry[]) => chrome.menu.openContextMenu(x, y, t, e),
-        emptyAreaEntries: grid.menuEntries.emptyAreaEntries,
         isTtyMode: core.isTtyMode,
       });
-      getMap(core.scrollerRefs, "p0").current = scrollers[0];
-      getMap(core.scrollerRefs, "p1").current = scrollers[1];
-      // [ui] windowed-grid: the hook wraps the scrollTop setter (wheel, drag
-      // auto-scroll, programmatic scrollTo) AND chains the scrollbar's
-      // _onChange — a thumb drag writes the position field raw, never the
-      // setter (ScrollBox exposes no scroll event)
-      hookScrollerScroll(scrollers[0], () => grid.syncWindowPane("p0"));
-      hookScrollerScroll(scrollers[1], () => grid.syncWindowPane("p1"));
       // the hover drawer's construction-time collapse wrote to no nodes (they
       // only mount here) — re-apply its panel states now that they exist
       try {
@@ -223,12 +195,9 @@ export const wireDnd = (deps: {
   fileops: FileopsWiring;
 }) => {
   const { core, nav, chrome, gridFoundation, grid, fileops } = deps;
-  // drop-target tile resolution must find a tile in EITHER pane; the merged
-  // live map unions both panes' tileRefs (pane-prefixed ids make them unique).
-  const allTileRefs = mergedMapFacade(() => [
-    getMap(gridFoundation.selections, "p0").tileRefs,
-    getMap(gridFoundation.selections, "p1").tileRefs,
-  ]);
+  // drop-target tile resolution must find a tile in ANY pane; the merged live
+  // map unions every live pane's tileRefs (pane-prefixed ids make them unique).
+  const allTileRefs = mergedMapFacade(() => [...gridFoundation.selections.values()].map((s) => s.tileRefs));
   // terminal capability -> drag path. OSC 72 wins on kitty/ghostty (the
   // richest surface: external + self-drop + hover highlight); SGR mouse is
   // OpenTUI's universal drag surface and covers sixel/xterm; anything else
@@ -255,7 +224,16 @@ export const wireDnd = (deps: {
       byNumber: (num) => Renderable.renderablesByNumber.get(num),
       placesHost: () => chrome.chrome.placesHost,
       tileRefs: allTileRefs,
-      panesCwd: () => [core.panes.stateOf("p0").cwd, core.panes.stateOf("p1").cwd],
+      panesCwd: () => {
+        // indexed by the pane NUMBER the hit-target parsed (0,1,2,…) — a
+        // drop on a pane's empty background targets that pane's directory
+        const out: string[] = [];
+        for (const id of core.panes.leafIds()) {
+          const m = /^p(\d+)$/.exec(id);
+          out[m ? Number(m[1]) : 0] = core.panes.stateOf(id).cwd;
+        }
+        return out;
+      },
     }),
     tileRefs: allTileRefs,
     setTileVisual: gridFoundation.selection.setTileVisual,
@@ -312,6 +290,9 @@ export const wireHoverDrawer = (deps: {
   fileops: FileopsWiring;
   gridFoundation: GridFoundationWiring;
   grid: GridWiring;
+  // drag-resize in flight: two writers on one panel width would fight, so the
+  // drawer stands down until the gesture commits (wired after the drawer)
+  resizing?: () => boolean;
 }) => {
   const { core, chrome, fileops, gridFoundation, grid } = deps;
   return makeHoverDrawer({
@@ -324,7 +305,8 @@ export const wireHoverDrawer = (deps: {
       core.floats.depth() > 0 ||
       chrome.activeToolbar().pathEditMode() ||
       gridFoundation.rename.isRenaming() ||
-      gridDrag.active,
+      gridDrag.active ||
+      (deps.resizing?.() ?? false),
     setEffectiveSidebar: (n) => {
       core.geometry.sidebarEff = n;
     },

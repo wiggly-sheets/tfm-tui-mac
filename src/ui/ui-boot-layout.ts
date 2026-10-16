@@ -8,11 +8,11 @@
 
 import { ASCIIFont, Box, type CliRenderer, type MouseEvent, ScrollBoxRenderable, Text } from "@opentui/core";
 import { chromeSurface, type UiStyle } from "./style";
-import type { MaybeNode } from "../lib/node-like";
 import type { SlotElement } from "./ui-slots";
 import type { ListEntry } from "./ui-menu";
 import type { Theme } from "../config/config";
 import type { SidebarTitleMode } from "../config/config-schema";
+import { type LayoutNode, paneColId, paneHostId, type PaneId, panePrefix, scrollerId } from "../app/layout";
 import {
   BAND_ID,
   DRAG_GHOST_ID,
@@ -75,16 +75,12 @@ type AppContainerOpts = {
   uiStyle: UiStyle;
   // transparent-bg force: chrome rest fills clear so the terminal shows through
   transparentForce?: boolean;
-  tabBarVisible: boolean;
   previewWidth: number;
   previewEnabled: boolean;
   // right-region: preview and the info sidebar SHARE one column (info wins
   // when both are on), so only one of the two panes is ever visible
   infoEnabled?: boolean;
-  dualPane: boolean;
   title: SlotElement;
-  // one toolbar shell per pane (ids already prefixed by the toolbar factory)
-  toolbarShells: SlotElement[];
 };
 
 export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
@@ -111,49 +107,10 @@ export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
         ...chromeSurface(o.uiStyle, o.colors, o.colors.bg, o.transparentForce ? "force" : undefined),
         flexDirection: "column",
       },
-      // Each pane is a self-contained column: its own top bar, its own tab
-      // strip, its own grid. Status + terminal stay global below both.
-      Box(
-        { id: "tfm-panes", flexGrow: 1, width: "100%", flexDirection: "row" },
-        Box(
-          { id: "tfm-pane-col-0", flexGrow: 1, height: "100%", flexDirection: "column" },
-          o.toolbarShells[0],
-          Box({
-            id: "tfm-p0-tabbar",
-            width: "100%",
-            height: 1,
-            flexDirection: "row",
-            columnGap: 1,
-            // tab chips shrink to fit, and past the minimum the tail clips
-            // here instead of bleeding over the grid
-            overflow: "hidden",
-            visible: o.tabBarVisible,
-          }),
-          Box({ id: "tfm-pane-0", flexGrow: 1, width: "100%", flexDirection: "column" }),
-        ),
-        Box({
-          id: "tfm-pane-divider",
-          width: 1,
-          height: "100%",
-          visible: o.dualPane,
-          backgroundColor: o.colors.divider,
-        }),
-        Box(
-          { id: "tfm-pane-col-1", flexGrow: 1, height: "100%", flexDirection: "column", visible: o.dualPane },
-          o.toolbarShells[1],
-          Box({
-            id: "tfm-p1-tabbar",
-            width: "100%",
-            height: 1,
-            flexDirection: "row",
-            columnGap: 1,
-            // same clip contract as pane 0 (see above)
-            overflow: "hidden",
-            visible: o.tabBarVisible,
-          }),
-          Box({ id: "tfm-pane-1", flexGrow: 1, width: "100%", flexDirection: "column" }),
-        ),
-      ),
+      // pane columns mount here at runtime (wiring/panes -> buildPaneTree):
+      // the layout tree can split/close after boot, so the skeleton only
+      // provides the host box. Status + terminal stay global below it.
+      Box({ id: "tfm-panes", flexGrow: 1, width: "100%", flexDirection: "row" }),
       // status bar sits above the embedded terminal pane (zero-height until opened),
       // so with a terminal open the bar hugs its top edge instead of sinking below it
       Box(
@@ -195,14 +152,75 @@ export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
     }),
   );
 
-type BootLayoutCtx = {
+// --- One pane column: its own top bar, tab strip and grid host. p0/p1 keep
+// their byte-identical legacy ids (paneColId/paneHostId); new leaves share the
+// same shape. `host` is returned so wiring/panes can mount the scroller in it. ---
+export const buildPaneColumn = (o: {
+  id: PaneId;
+  toolbarShell: SlotElement;
+  tabBarVisible: boolean;
+}): { col: SlotElement; host: SlotElement } => {
+  const host = Box({ id: paneHostId(o.id), flexGrow: 1, width: "100%", flexDirection: "column" });
+  const col = Box(
+    { id: paneColId(o.id), flexGrow: 1, height: "100%", flexDirection: "column" },
+    o.toolbarShell,
+    Box({
+      id: `${panePrefix(o.id)}tabbar`,
+      width: "100%",
+      height: 1,
+      flexDirection: "row",
+      columnGap: 1,
+      // tab chips shrink to fit, and past the minimum the tail clips here
+      // instead of bleeding over the grid
+      overflow: "hidden",
+      visible: o.tabBarVisible,
+    }),
+    host,
+  );
+  return { col, host };
+};
+
+// --- Recursive pane-tree renderer: an h-split is a row, a v-split a column,
+// and one divider sits between each pair of siblings (the first keeps the
+// legacy `tfm-pane-divider` id; the rest are `-N`). Leaf columns are the
+// persistent nodes owned by wiring/panes (re-added here on every rebuild). ---
+export const buildPaneTree = (
+  node: LayoutNode,
+  columnFor: (id: PaneId) => SlotElement,
+  dividerColor: string,
+  counter: { n: number } = { n: 0 },
+): SlotElement => {
+  if (node.kind === "leaf") return columnFor(node.id);
+  const row = node.orientation === "h";
+  const kids: SlotElement[] = [];
+  node.children.forEach((child, i) => {
+    if (i > 0) {
+      const id = counter.n === 0 ? "tfm-pane-divider" : `tfm-pane-divider-${counter.n}`;
+      counter.n++;
+      kids.push(
+        Box({
+          id,
+          width: row ? 1 : "100%",
+          height: row ? "100%" : 1,
+          backgroundColor: dividerColor,
+        }),
+      );
+    }
+    kids.push(buildPaneTree(child, columnFor, dividerColor, counter));
+  });
+  return Box({ flexGrow: 1, width: "100%", height: "100%", flexDirection: row ? "row" : "column" }, ...kids);
+};
+
+type PaneScrollerCtx = {
   renderer: CliRenderer;
-  byId: (id: string) => MaybeNode;
   colors: Theme; // eager object — see buildTitle
+  id: PaneId;
   bandCtx: BandCtx;
-  focusPane: (index: number) => void;
+  // clicking a pane focuses it before any selection/band work, so the facade
+  // selection + status target the right pane
+  focusPane: () => void;
   // drop released over the pane's empty background = move into that pane's cwd
-  dropIntoPane: (pane: number) => void;
+  dropIntoPane: () => void;
   closeFileMenu: () => void;
   clearSearch: () => void;
   blurTerminal: () => void;
@@ -219,9 +237,6 @@ type BootLayoutCtx = {
   isTtyMode?(): boolean;
 };
 
-// returns both scrollers (one per pane) so the wiring can keep its live
-// scrollerRefs; `tfm-scroll` stays pane 0's byte-identical id
-
 // grid scroller thumb/track in theme colors instead of the upstream gray
 // defaults (#9a9ea3 on #252527): a quiet muted thumb on an invisible bed
 // (track == main bg). Shared with rethemeChrome so a theme flip repaints
@@ -230,53 +245,54 @@ export const scrollbarTrackColors = (colors: Theme): { backgroundColor: string; 
   backgroundColor: colors.bg,
   foregroundColor: colors.sidebarFgMuted,
 });
-export const buildBootLayout = (ctx: BootLayoutCtx): [ScrollBoxRenderable, ScrollBoxRenderable] => {
-  const makeScroller = (id: string, pane: number): ScrollBoxRenderable =>
-    new ScrollBoxRenderable(ctx.renderer, {
-      id,
-      flexGrow: 1,
-      width: "100%",
-      scrollY: true,
-      viewportCulling: true,
-      contentOptions: { flexDirection: "column" },
-      // theme the built-in bar (trackOptions land on its inner Slider);
-      // visibility still auto-hides when the listing fits the viewport
-      verticalScrollbarOptions: { trackOptions: scrollbarTrackColors(ctx.colors) },
-      onMouseDown: (ev: MouseEvent) => {
-        // clicking a pane focuses it before any selection/band work, so the
-        // facade selection + status target the right pane
-        ctx.focusPane(pane);
-        ctx.closeFileMenu();
-        ctx.clearSearch();
-        ctx.blurTerminal();
-        if (ctx.pathEditMode()) {
-          ctx.exitPathEdit();
-          return;
-        }
-        if (ctx.isRenaming()) ctx.finishInlineRename(false);
-        // left-click clears (and may start a rubber band); right-click opens the
-        // background menu WITHOUT cancelling the selection (Nautilus behavior)
-        if (ev.button === 0) ctx.clearTileSelection();
-        // band shows only once a drag actually moves the pointer
-        beginBand(ev);
-        if (ev.button === 2) ctx.openContextMenu(ev.x, ev.y, "", ctx.emptyAreaEntries(ev.x, ev.y));
-      },
-      onMouseDrag: (ev: MouseEvent) => updateBandRect(ctx.bandCtx, ev),
-      onMouseDragEnd: (ev: MouseEvent) => finalizeBand(ctx.bandCtx, ev),
-      onMouseUp: (ev: MouseEvent) => {
-        if (bandActive()) finalizeBand(ctx.bandCtx, ev);
-      },
-      // dropping onto the pane's background (no tile under the cursor) targets
-      // the pane's current directory — otherwise an empty destination pane can
-      // never receive a drag
-      onMouseDrop: () => ctx.dropIntoPane(pane),
-    });
 
-  const scroller0 = makeScroller("tfm-scroll", 0);
-  const scroller1 = makeScroller("tfm-scroll-2", 1);
-  ctx.byId("tfm-pane-0")?.add?.(scroller0);
-  ctx.byId("tfm-pane-1")?.add?.(scroller1);
+// --- One pane's grid scroller. Ids stay byte-identical to the legacy pair
+// (`tfm-scroll` / `tfm-scroll-2`) so grid-input, hit-target and ui-lookup keep
+// finding them; new leaves get `tfm-scroll-<id>`. Built by wiring/panes for
+// every leaf, at boot and on each split. ---
+export const buildPaneScroller = (ctx: PaneScrollerCtx): ScrollBoxRenderable =>
+  new ScrollBoxRenderable(ctx.renderer, {
+    id: scrollerId(ctx.id),
+    flexGrow: 1,
+    width: "100%",
+    scrollY: true,
+    viewportCulling: true,
+    contentOptions: { flexDirection: "column" },
+    // theme the built-in bar (trackOptions land on its inner Slider);
+    // visibility still auto-hides when the listing fits the viewport
+    verticalScrollbarOptions: { trackOptions: scrollbarTrackColors(ctx.colors) },
+    onMouseDown: (ev: MouseEvent) => {
+      ctx.focusPane();
+      ctx.closeFileMenu();
+      ctx.clearSearch();
+      ctx.blurTerminal();
+      if (ctx.pathEditMode()) {
+        ctx.exitPathEdit();
+        return;
+      }
+      if (ctx.isRenaming()) ctx.finishInlineRename(false);
+      // left-click clears (and may start a rubber band); right-click opens the
+      // background menu WITHOUT cancelling the selection (Nautilus behavior)
+      if (ev.button === 0) ctx.clearTileSelection();
+      // band shows only once a drag actually moves the pointer
+      beginBand(ev);
+      if (ev.button === 2) ctx.openContextMenu(ev.x, ev.y, "", ctx.emptyAreaEntries(ev.x, ev.y));
+    },
+    onMouseDrag: (ev: MouseEvent) => updateBandRect(ctx.bandCtx, ev),
+    onMouseDragEnd: (ev: MouseEvent) => finalizeBand(ctx.bandCtx, ev),
+    onMouseUp: (ev: MouseEvent) => {
+      if (bandActive()) finalizeBand(ctx.bandCtx, ev);
+    },
+    // dropping onto the pane's background (no tile under the cursor) targets
+    // the pane's current directory — otherwise an empty destination pane can
+    // never receive a drag
+    onMouseDrop: () => ctx.dropIntoPane(),
+  });
 
+// --- Boot overlays: the rubber-band selection rect and the drag ghost. Built
+// ONCE, post-mount, and live for the whole app lifetime. Ids must stay
+// byte-identical (BAND_ID, DRAG_GHOST_ID + its `-label`). ---
+export const buildBootOverlays = (ctx: { renderer: CliRenderer; colors: Theme; isTtyMode?(): boolean }): void => {
   ctx.renderer.root.add(
     Box({
       id: BAND_ID,
@@ -311,6 +327,4 @@ export const buildBootLayout = (ctx: BootLayoutCtx): [ScrollBoxRenderable, Scrol
       }),
     ),
   );
-
-  return [scroller0, scroller1];
 };
