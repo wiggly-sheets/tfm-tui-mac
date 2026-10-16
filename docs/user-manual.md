@@ -67,6 +67,13 @@ Options:
   -v, --version      print version and exit
   -d, --debug        write a verbose event log (for bug reports)
   -c, --config FILE  use FILE instead of ~/.config/tfm/config.toml
+  -C, --cwd DIR      change to DIR before starting
+  --no-restore       do not restore session state on boot
+  --restore          force session state restore
+  --view=MODE        start active pane in MODE (grid | list | columns)
+  --preview          start with preview pane open
+  --info             start with info sidebar open
+  --terminal         start with terminal open
   --                 treat the rest as PATH (names that start with '-')
 
 Commands:
@@ -195,6 +202,7 @@ them:
 | toggle sidebar | `ctrl+b` | Show or hide the places sidebar |
 | toggle preview pane | `f3` | Show or hide the file preview |
 | toggle info sidebar | `f7` | Show or hide the file info sidebar |
+| toggle quicklook | `f8` | Show or hide the quicklook preview float |
 | toggle view | `ctrl+g` | Cycle grid, list and columns |
 | next theme | `alt+t` | Step through the color themes |
 | cycle sort | `alt+s` | Name, size, date, then type |
@@ -246,11 +254,25 @@ raster grids, so it falls back to list.
 
 ### Preview pane and info sidebar
 
-`f3` toggles the **preview pane** on the right. It previews text and code
-(with syntax colors), images, videos, and folder summaries. `f7` toggles the
-**info sidebar**, which lists details for the current selection. Both share the
-same right-hand width (`[ui] preview-width`); when both are on, the info
-sidebar wins. Both start off by default.
+`f3` toggles the **preview pane** on the right. It previews text and code (with
+syntax colors), images (including animated GIFs), audio files, videos, and
+folder summaries.
+
+- **Audio**: shows name, type, size, and duration (if `ffprobe` is available).
+- **GIFs**: shows first frame and frame count; true animation on kitty
+  terminals.
+- **Archives**: shows a read-only entry list (name and size rows).
+
+`f7` toggles the **info sidebar**, which lists details for the current
+selection. Both share the same right-hand width (`[ui] preview-width`); when
+both are on, the info sidebar wins. Both start off by default.
+
+### Quicklook
+
+`f8` toggles **quicklook**, a floating preview pane. It shows the current
+selection's preview even when the preview pane and info sidebar are hidden. It
+is non-modal, so you can keep it open while navigating. Press `escape` to
+dismiss it. It supports scrolling but not focus.
 
 ### Integrated terminal
 
@@ -265,6 +287,12 @@ the bottom edge.
 entering a directory in the active pane also opens that directory in the other
 pane, Finder-style. Only the pane you acted on drives the other, so it never
 recurses.
+
+### Path bar
+
+The path bar at the top of each pane shows your current location.
+`[ui] pathbar-position` sets its placement: `top` (default), `bottom`, or
+`hidden`. `ctrl+l` focuses the path bar for typing.
 
 ### Go to Folder popup
 
@@ -334,6 +362,11 @@ and `.7z`. tgz/tbz2/txz/tzst are recognized as aliases. `tar` / `unzip` / `zip`
 / `7z` do the work; `tar`, `.tar.gz`, and `.zip` also have a built-in fallback
 so they work with no external tools installed.
 
+**Archive browsing**: opening an archive shows a virtual folder listing its
+entries. You can descend into nested folders inside the archive, navigate back
+out, and the breadcrumb shows the inner path. Supported formats include tar,
+tar.gz, tar.bz2, tar.xz, zip, 7z and more (same formats as extraction).
+
 ### Mouse
 
 Click to focus, drag to rubber-band select, right-click for context menus.
@@ -345,6 +378,28 @@ Drag-resize is opt-in, and each target is off by default:
 - `[ui] mouse-resize-sidebar` — drag the sidebar's right edge.
 - `[ui] mouse-resize-preview` — drag the right panel's left edge.
 - `[ui] mouse-resize-split` — drag the divider between panes.
+
+### Exit directory
+
+`[ui] exit-cwd` sets which directory you land in when tfm exits:
+- `default` (default) — the directory where you launched tfm.
+- `active-pane` — the current directory of the active pane.
+
+To use this, set the `TFM_CWD_FILE` environment variable to a file path and
+wrap your shell launch. On exit, tfm writes the chosen directory to that file.
+
+Example bash/zsh wrapper:
+```bash
+tfm() {
+  local tmp="$(mktemp)"
+  TFM_CWD_FILE="$tmp" command tfm "$@"
+  if [ -f "$tmp" ]; then
+    local dir="$(cat "$tmp")"
+    rm -f "$tmp"
+    [ -d "$dir" ] && [ "$dir" != "$PWD" ] && cd "$dir"
+  fi
+}
+```
 
 On the Linux text console, mouse needs `gpm` running.
 
@@ -425,9 +480,15 @@ tfm plugins update [name]     # one, or all
 tfm plugins new <name>        # scaffold a starter plugin
 ```
 
-Plugins can add menu rows, file-menu entries, commands (shown in the palette
-and bindable in Settings), previews, and UI slots, and can veto file operations
-before they start. See [plugins.md](plugins.md) for the full API.
+The plugin API is v4. Two new seams ship:
+
+- `api.views.register` — custom view modes join the `ctrl+g` cycle.
+- `api.operations.register` — custom file system operations join the command
+  palette and the file context menu.
+
+Plugins can also add menu rows, file-menu entries, commands (shown in the
+palette and bindable in Settings), previews, and UI slots, and can veto file
+operations before they start. See [plugins.md](plugins.md) for full details.
 
 ## Where to go next
 
