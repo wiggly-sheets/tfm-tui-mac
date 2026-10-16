@@ -68,6 +68,9 @@ export type KeyRouterCtx = {
   // single-line prompt overlay (plugin git-URL entry): same Input-native
   // typing rule. Optional so older fakes read as closed; wiring always sets it.
   prompt?: { isOpen(): boolean; handleKey(ev: KeyPressEvent): void };
+  // go-to-folder popup (Finder-style path jump): its Input owns typing, the
+  // router delegates arrows/tab/enter/esc. Optional so older fakes read closed.
+  goToFolder?: { isOpen(): boolean; handleKey(ev: KeyPressEvent): void };
   // bulk-rename modal (F2 on a multi-selection): the focused Textarea owns
   // typing; esc cancels, alt+enter submits natively
   bulkRename: { isOpen(): boolean; handleKey(ev: KeyPressEvent): void };
@@ -97,6 +100,14 @@ export type KeyRouterCtx = {
   renderPreview(): void | Promise<void>;
   renderAll(): void;
   selection: Selection;
+  // columns (Miller/Finder) view: active when the active pane's view mode is
+  // "columns". Its left/right/up/down/enter/backspace semantics replace the
+  // grid's 2D nav for that pane. Optional so older fakes stay grid-only.
+  columns?: {
+    isActive(): boolean;
+    handleKey(ev: KeyPressEvent): boolean;
+    renderColumns(): void | Promise<void>;
+  };
   // --- sidebar kb-focus state (read by makeChrome for the highlight) ---
   placesHost: Array<{ selected: boolean; place: { scheme?: string; path?: string | null; mountDevice?: string } }>;
   normalizePlaces(): void;
@@ -136,8 +147,11 @@ export type KeyRouterCtx = {
   openProperties(paths: string[]): void;
   enterPathEdit(): void;
   openTerminal(): void;
+  // go-to-folder opener (actions table); optional so older fakes keep working
+  openGoToFolder?(): void;
   connectServer(raw?: string): void;
   togglePreview(): void;
+  toggleInfoSidebar(): void;
   toggleViewMode(): void;
   zoomTiles(dir: number): void;
   toggleDualPane(): void;
@@ -247,6 +261,11 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     // router just delegates keys and swallows the rest
     if (ctx.prompt?.isOpen()) {
       ctx.prompt.handleKey(ev);
+      return true;
+    }
+    // go-to-folder popup: same Input-native typing rule as prompt
+    if (ctx.goToFolder?.isOpen()) {
+      ctx.goToFolder.handleKey(ev);
       return true;
     }
     // bulk-rename modal: Textarea owns typing, esc closes (alt+enter reaches
@@ -459,8 +478,11 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
   };
 
   // Grid nav: move*/openSelected/page*/first/last binds. Returns true when the
-  // key moved focus, opened a tile, or entered the sidebar.
+  // key moved focus, opened a tile, or entered the sidebar. In columns view the
+  // same arrow keys drive the column stack instead — that handler claims them
+  // first so a columns pane never falls through to 2D grid nav.
   const handleGridNavKeys = (ev: KeyPressEvent): boolean => {
+    if (ctx.columns?.isActive() && ctx.columns.handleKey(ev)) return true;
     if (hit(ev, "moveUp")) {
       selection.moveFocus(0, -1);
       return true;
@@ -720,7 +742,9 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "newFolder", run: () => ctx.startInlineCreate("folder") },
     { action: "newFile", run: () => ctx.startInlineCreate("file") },
     { action: "pathEdit", run: () => ctx.enterPathEdit() },
+    { action: "goToFolder", run: () => ctx.openGoToFolder?.() },
     { action: "togglePreview", run: () => ctx.togglePreview() },
+    { action: "toggleInfoSidebar", run: () => ctx.toggleInfoSidebar() },
     { action: "openTerminal", run: () => ctx.openTerminal() },
     { action: "connectServer", run: () => ctx.connectServer() },
     { action: "toggleView", run: () => ctx.toggleViewMode() },
@@ -805,6 +829,10 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (handleFileMenuKeys(ev)) return;
     if (handleSearchKeys(ev)) return;
 
+    // columns (Miller/Finder) view: claim arrows/enter/backspace BEFORE the
+    // remapped-action block so a backspace doesn't fire parentDir first
+    if (ctx.columns?.isActive() && ctx.columns.handleKey(ev)) return;
+
     // --- remappable action keys that grid nav would otherwise swallow:
     // handleGridNavKeys consumes bare arrows/return regardless of modifiers,
     // so alt+arrows and alt+enter must dispatch BEFORE it (plain arrows and
@@ -816,7 +844,9 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "newFolder") && ev.repeated !== true && runAction("newFolder")) return;
     if (hit(ev, "newFile") && ev.repeated !== true && runAction("newFile")) return;
     if (hit(ev, "pathEdit") && runAction("pathEdit")) return;
+    if (hit(ev, "goToFolder") && ev.repeated !== true && runAction("goToFolder")) return;
     if (hit(ev, "togglePreview") && ev.repeated !== true && runAction("togglePreview")) return;
+    if (hit(ev, "toggleInfoSidebar") && ev.repeated !== true && runAction("toggleInfoSidebar")) return;
     if (hit(ev, "openTerminal") && runAction("openTerminal")) return;
     if (hit(ev, "connectServer") && runAction("connectServer")) return;
     if (hit(ev, "toggleView") && runAction("toggleView")) return;
@@ -845,6 +875,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       !ev.shift &&
       !ev.meta &&
       !ev.option &&
+      !ev.super &&
       typeof ev.name === "string" &&
       ev.name.length === 1 &&
       /[a-z0-9._-]/i.test(ev.name)

@@ -155,7 +155,7 @@ export type Theme = {
   ansi15: string;
 };
 
-type ViewMode = "grid" | "list";
+export type ViewMode = "grid" | "list" | "columns";
 
 // line-wrap vocabulary ([ui] wrap-mode): how over-long lines render
 // everywhere (grid tile labels, code preview, markdown). none cuts,
@@ -231,6 +231,7 @@ export type UiConfig = {
   recursiveSearch: boolean;
   sortMode: SortMode;
   previewEnabled: boolean;
+  infoSidebar: boolean;
   previewWidth: number;
   terminalHeight: number;
   dualPane: boolean;
@@ -350,6 +351,7 @@ export type KeyAction =
   | "newFile"
   | "pathEdit"
   | "togglePreview"
+  | "toggleInfoSidebar"
   | "openTerminal"
   | "connectServer"
   | "toggleView"
@@ -376,7 +378,8 @@ export type KeyAction =
   | "invertSelection"
   | "startSearch"
   | "cycleSort"
-  | "goHome";
+  | "goHome"
+  | "goToFolder";
 
 type KeysConfig = Record<KeyAction, string[]>;
 
@@ -439,11 +442,11 @@ const UI_ROWS: SchemaRow[] = [
     section: "ui",
     tomlKey: "view-mode",
     prop: "viewMode",
-    values: ["grid", "list"],
+    values: ["grid", "list", "columns"],
     def: "grid",
-    doc: '"grid" = icon tiles; "list" = compact rows with size + modified columns',
+    doc: '"grid" = icon tiles; "list" = compact rows with size + modified columns; "columns" = narrow left column listing, selecting one opens the next with its contents (Finder/Miller)',
     label: "view mode",
-    blurb: "Icons grid or compact list",
+    blurb: "Icon grid, compact list, or column browser",
     group: "layout",
     subsection: "view",
   },
@@ -636,6 +639,19 @@ const UI_ROWS: SchemaRow[] = [
     subsection: "preview",
   },
   {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "info-sidebar",
+    prop: "infoSidebar",
+    def: false,
+    doc: "right-side info sidebar (file details for the current selection); shares the right edge with the preview — info wins when both are on",
+    label: "info sidebar",
+    blurb: "Show file details for the selection",
+    group: "layout",
+    subsection: "preview",
+    showWhen: (ui) => ui.previewEnabled || ui.infoSidebar,
+  },
+  {
     kind: "int",
     section: "ui",
     tomlKey: "preview-width",
@@ -644,13 +660,13 @@ const UI_ROWS: SchemaRow[] = [
     max: 80,
     step: 2,
     def: 40,
-    doc: "20..80 cells",
+    doc: "20..80 cells (the shared right-region width: preview or info sidebar)",
     unit: "cells",
     label: "preview width",
     blurb: "How wide the preview pane is",
     group: "layout",
     subsection: "preview",
-    showWhen: (ui) => ui.previewEnabled,
+    showWhen: (ui) => ui.previewEnabled || ui.infoSidebar,
   },
   {
     kind: "bool",
@@ -1850,6 +1866,7 @@ const KEY_ROWS: KeyRow[] = (
     ["histForward", "forward in history", ["alt+right"], "navigation", "Step ahead through visited folders"],
     ["goHome", "go home", ["alt+home"], "navigation", "Jump to your home folder"],
     ["pathEdit", "edit the path bar", ["ctrl+l"], "navigation", "Type a path to jump to it"],
+    ["goToFolder", "go to folder", ["shift+cmd+g"], "navigation", "Jump to a folder by path"],
     ["connectServer", "connect to server", ["ctrl+shift+s"], "navigation", "Mount a folder shared on the network"],
     ["moveUp", "move up", ["up"], "navigation", "Step to the row above"],
     ["moveDown", "move down", ["down"], "navigation", "Step to the row below"],
@@ -1872,7 +1889,8 @@ const KEY_ROWS: KeyRow[] = (
     ["toggleHidden", "toggle hidden files", ["ctrl+h"], "view", "Show files starting with a dot"],
     ["reloadPlaces", "reload sidebar places", ["ctrl+r"], "view", "Refresh drives and bookmarks"],
     ["togglePreview", "toggle preview pane", ["f3"], "view", "Show or hide the file preview"],
-    ["toggleView", "toggle view", ["ctrl+g"], "view", "Swap between tiles and rows"],
+    ["toggleInfoSidebar", "toggle info sidebar", ["f7"], "view", "Show or hide the file info sidebar"],
+    ["toggleView", "toggle view", ["ctrl+g"], "view", "Cycle grid, list and columns"],
     ["cycleSort", "cycle sort", [], "view", "Name, size, date, then type"],
     ["zoomIn", "zoom in", ["ctrl+="], "view", "Grow tiles and icons a step"],
     ["zoomOut", "zoom out", ["ctrl+-"], "view", "Shrink tiles and icons a step"],

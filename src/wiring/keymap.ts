@@ -7,11 +7,16 @@
 // reads exists by now. ---
 
 import type { KeyEvent } from "@opentui/core";
+import type { KeyEventLike } from "../config/keyspec";
 import { makeKeyRouter } from "../input/keymap";
 import { makePick } from "../ui/ui-pick";
 import { makePrompt } from "../ui/ui-prompt";
+import { makeGoToFolder } from "../ui/ui-goto";
 import { zoomUiPatch } from "../ui/settings";
 import { cycleSortMode } from "../lib/sort";
+import { viewModeFor } from "../app/panes";
+import { activeFacade } from "../app/panes";
+import type { ViewMode } from "../config/config-schema";
 import { destroyChildren, errMessage } from "../lib/uiutil";
 import { flattenPluginCommands, getPluginCommandBinds, isPluginEnabled } from "../plugins/plugin-api";
 import { isVirtualUri } from "../fs/uri";
@@ -86,6 +91,27 @@ export const wireKeymap = (deps: {
     setPointer,
   });
 
+  // --- Go to Folder popup (Shift+Cmd+G): path Input + live dir completion;
+  // Enter jumps the ACTIVE pane, esc cancels. Reuses the path edit's rules
+  // (see ../ui/ui-goto) and the shared modal scrim. ---
+  const goToFolder = makeGoToFolder({
+    renderer: () => chrome.renderer,
+    byId,
+    rootAdd: (node) => chrome.renderer.root.add(node),
+    destroyChildren,
+    stripSelectable: core.lookup.stripSelectable,
+    escHintBtn: core.slots.escHintBtn,
+    drainIconQueue: core.slots.drainIconQueue,
+    colors: core.themeGet,
+    uiStyle: () => core.config.ui.uiStyle,
+    floats,
+    cwd: () => core.state.cwd,
+    home: core.home,
+    navigate: nav.navigate,
+    notify: chrome.notify,
+    setPointer,
+  });
+
   // Copy/move the active selection into the other pane's directory through the
   // same runTransfer path as every other transfer (conflict prompt, undo,
   // progress). Destination guards mirror pasteSmart's.
@@ -148,9 +174,9 @@ export const wireKeymap = (deps: {
     escMenu: { ...settings.escMenu, isOpen: () => floats.isOpen("escmenu") },
     termOwnsKeyboard: fileops.terminal.ownsKeyboard,
     pathEditMode: () => chrome.activeToolbar().pathEditMode(),
-    pathInputVisible: () => !!byId(`tfm-p${core.panes.active}-path-input`)?.visible,
+    pathInputVisible: () => !!byId(`tfm-${core.panes.activeId}-path-input`)?.visible,
     searchQuery: () => nav.activeSearch().getQuery(),
-    searchVisible: () => !!byId(`tfm-p${core.panes.active}-search`)?.visible,
+    searchVisible: () => !!byId(`tfm-${core.panes.activeId}-search`)?.visible,
     clearSearch: nav.clearSearch,
     exitPathEdit: () => chrome.activeToolbar().exitPathEdit(),
     beginTypeToSearch: nav.beginTypeToSearch,
@@ -158,6 +184,15 @@ export const wireKeymap = (deps: {
     renderPreview: grid.renderPreview,
     renderAll: nav.renderAll,
     selection: gridFoundation.selection,
+    // columns (Miller/Finder) view: the active pane's renderer owns the
+    // column-stack keyboard semantics. Resolved live so switching panes
+    // hands keys to the new side without a rebuild.
+    columns: activeFacade(() => grid.columnsRenderer(core.panes.active), {
+      isActive: () =>
+        viewModeFor(core.panes.stateOf(core.panes.activeId), core.config.ui.viewMode, core.isTtyMode) === "columns",
+      handleKey: (ev: KeyEventLike) => grid.columnsRenderer(core.panes.active).handleKey(ev),
+      renderColumns: () => grid.columnsRenderer(core.panes.active).renderColumns(),
+    }),
     placesHost: chrome.chrome.placesHost,
     normalizePlaces: chrome.chrome.normalizePlaces,
     mountDevice: chrome.chrome.mountDevice,
@@ -195,6 +230,11 @@ export const wireKeymap = (deps: {
       getRetheme().applyConfig({ ...core.config, ui: { ...ui, previewEnabled: !ui.previewEnabled } });
       getRetheme().scheduleSaveConfig();
     },
+    toggleInfoSidebar: () => {
+      const ui = core.config.ui;
+      getRetheme().applyConfig({ ...core.config, ui: { ...ui, infoSidebar: !ui.infoSidebar } });
+      getRetheme().scheduleSaveConfig();
+    },
     toggleDualPane: () => {
       const ui = core.config.ui;
       getRetheme().applyConfig({ ...core.config, ui: { ...ui, dualPane: !ui.dualPane } });
@@ -203,10 +243,12 @@ export const wireKeymap = (deps: {
       // active pane when turning off
     },
     toggleViewMode: () => {
-      const ui = core.config.ui;
-      const viewMode = ui.viewMode === "grid" ? "list" : "grid";
-      getRetheme().applyConfig({ ...core.config, ui: { ...ui, viewMode } });
-      getRetheme().scheduleSaveConfig();
+      const s = core.activeState();
+      const current = viewModeFor(s, core.config.ui.viewMode, core.isTtyMode);
+      const order: ViewMode[] = core.isTtyMode() ? ["list", "columns"] : ["grid", "list", "columns"];
+      const next = order[(order.indexOf(current) + 1) % order.length];
+      s.viewMode = next;
+      void grid.renderGrid();
     },
     // single-key sort cycle on the ACTIVE pane's state (same nautilus
     // semantics + renderGrid tail as the sort menu's pick)
@@ -228,7 +270,7 @@ export const wireKeymap = (deps: {
     switchPane: () => {
       if (!core.config.ui.dualPane) return;
       // a selection must not survive a pane switch
-      gridFoundation.selections[core.panes.active].clearTileSelection();
+      gridFoundation.selections.get(core.panes.activeId)?.clearTileSelection();
       core.togglePane();
       nav.renderAll();
     },
@@ -253,11 +295,16 @@ export const wireKeymap = (deps: {
       isOpen: () => prompt.isOpen(),
       handleKey: prompt.handleKey,
     },
+    openGoToFolder: () => goToFolder.open(),
+    goToFolder: {
+      isOpen: () => goToFolder.isOpen(),
+      handleKey: goToFolder.handleKey,
+    },
   });
 
   coreCommands = () => keyRouter.commands();
 
   chrome.renderer.keyInput.on("keypress", (e: KeyEvent) => keyRouter.handleKey(e));
 
-  return { keyRouter, pick, prompt };
+  return { keyRouter, pick, prompt, goToFolder };
 };

@@ -164,9 +164,11 @@ const makeHarness = (over: Partial<KeyRouterCtx> = {}) => {
     },
     openProperties: (ps) => calls.push(`props:${ps.join(",")}`),
     enterPathEdit: rec("pathedit:enter"),
+    openGoToFolder: rec("gotofolder:open"),
     openTerminal: rec("term:open"),
     connectServer: rec("connect:server"),
     togglePreview: rec("preview:toggle"),
+    toggleInfoSidebar: rec("info:toggle"),
     toggleViewMode: rec("view:toggle"),
     zoomTiles: (d) => calls.push(`zoom:${d}`),
     toggleDualPane: rec("pane:toggle-dual"),
@@ -191,13 +193,14 @@ const makeHarness = (over: Partial<KeyRouterCtx> = {}) => {
   const router = makeKeyRouter(ctx);
   const key = (
     name: string,
-    opts: { ctrl?: boolean; shift?: boolean; meta?: boolean; repeated?: boolean } = {},
+    opts: { ctrl?: boolean; shift?: boolean; meta?: boolean; super?: boolean; repeated?: boolean } = {},
   ): void =>
     router.handleKey({
       name,
       ctrl: !!opts.ctrl,
       shift: !!opts.shift,
       meta: !!opts.meta,
+      super: !!opts.super,
       repeated: !!opts.repeated,
     });
   return {
@@ -962,12 +965,30 @@ describe("remappable action keys", () => {
     expect(h.calls).toEqual(["create:folder", "create:file"]);
   });
 
-  test("ctrl+l enters path edit, f3 toggles preview, ctrl+` opens the terminal", () => {
+  test("ctrl+l enters path edit, f3 toggles preview, f7 toggles info sidebar, ctrl+` opens the terminal", () => {
     const h = makeHarness();
     h.key("l", { ctrl: true });
     h.key("f3");
+    h.key("f7");
     h.key("`", { ctrl: true });
-    expect(h.calls).toEqual(["pathedit:enter", "preview:toggle", "term:open"]);
+    expect(h.calls).toEqual(["pathedit:enter", "preview:toggle", "info:toggle", "term:open"]);
+  });
+
+  test("a remap moves the info sidebar toggle off f7", () => {
+    const h = makeHarness();
+    h.binds.toggleInfoSidebar = ["ctrl+i"];
+    h.key("f7");
+    expect(h.calls).toEqual([]);
+    h.key("i", { ctrl: true });
+    expect(h.calls).toEqual(["info:toggle"]);
+  });
+
+  test("shift+cmd+g opens go-to-folder; bare g does not (cmd is not meta)", () => {
+    const h = makeHarness();
+    h.key("g", { shift: true, super: true });
+    // alt+g must NOT match the cmd bind
+    h.key("g", { shift: true, meta: true });
+    expect(h.calls).toEqual(["gotofolder:open"]);
   });
 
   test("ctrl+shift+s opens the network connect prompt", () => {
@@ -1308,7 +1329,7 @@ describe("dual-pane actions", () => {
     expect(h.calls).toEqual([]);
   });
 
-  test("autorepeat never re-runs cycleSort/togglePreview/toggleHidden/history", () => {
+  test("autorepeat never re-runs cycleSort/togglePreview/toggleInfoSidebar/toggleHidden/history", () => {
     const h = makeHarness();
     // cycleSort/histBack default to [] (or non-ctrl) — remap onto ctrl chords
     h.binds.cycleSort = ["ctrl+s"];
@@ -1316,6 +1337,7 @@ describe("dual-pane actions", () => {
     const before = [...h.calls];
     h.key("s", { ctrl: true, repeated: true });
     h.key("f3", { repeated: true });
+    h.key("f7", { repeated: true });
     h.key("h", { ctrl: true, repeated: true });
     h.key("b", { ctrl: true, repeated: true });
     expect(h.calls).toEqual(before);
@@ -1323,10 +1345,12 @@ describe("dual-pane actions", () => {
     // a non-repeat still fires (proves each bind itself works)
     h.key("s", { ctrl: true });
     h.key("f3");
+    h.key("f7");
     h.key("h", { ctrl: true });
     h.key("b", { ctrl: true });
     expect(h.calls).toContain("sort:cycle");
     expect(h.calls).toContain("preview:toggle");
+    expect(h.calls).toContain("info:toggle");
     expect(h.calls).toContain("renderGrid");
     expect(h.calls).toContain("back");
     // NOTE: reloadPlaces (ctrl+r) carries the same guard but isn't unit-

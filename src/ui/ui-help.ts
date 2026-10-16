@@ -39,7 +39,8 @@ export const prettyKey = (spec: string): string =>
       const l = p.toLowerCase();
       if (l === "ctrl" || l === "control") return "Ctrl";
       if (l === "shift") return "Shift";
-      if (l === "alt" || l === "meta") return "Alt";
+      if (l === "cmd" || l === "super" || l === "command") return "⌘";
+      if (l === "alt" || l === "meta" || l === "option") return "Alt";
       const map: Record<string, string> = {
         return: "Enter",
         enter: "Enter",
@@ -88,8 +89,9 @@ const EDIT_ENTRIES: HelpEntry[] = [
 
 const VIEW_ENTRIES: HelpEntry[] = [
   { action: "toggleHidden", verb: "Hidden files" },
-  { action: "toggleView", verb: "Grid or list" },
+  { action: "toggleView", verb: "Grid, list or columns" },
   { action: "togglePreview", verb: "Preview" },
+  { action: "toggleInfoSidebar", verb: "Info sidebar" },
   { action: "zoomIn", verb: "Bigger" },
   { action: "zoomOut", verb: "Smaller" },
 ];

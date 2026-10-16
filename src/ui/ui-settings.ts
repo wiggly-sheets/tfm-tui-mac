@@ -371,7 +371,7 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
     // only an UNMODIFIED escape/return/tab cancels: ctrl+tab / ctrl+shift+tab
     // are next/prev-tab binds and must be recordable (they were unbindable
     // through the GUI — every tab chord cancelled capture)
-    const unmodified = !e.ctrl && !e.shift && !e.meta && !e.option;
+    const unmodified = !e.ctrl && !e.shift && !e.meta && !e.option && !e.super;
     // whether the key below drops an open offer: the unrecordable/invalid
     // early returns must repaint then, or a stale offer stays on screen
     let droppedOffer = false;

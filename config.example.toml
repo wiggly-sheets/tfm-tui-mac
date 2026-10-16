@@ -8,7 +8,7 @@
 # from filtering. The settings capture UI still reserves them.
 
 [ui]
-view-mode                             = "grid"      # "grid" = icon tiles; "list" = compact rows with size + modified columns
+view-mode                             = "grid"      # "grid" = icon tiles; "list" = compact rows with size + modified columns; "columns" = narrow left column listing, selecting one opens the next with its contents (Finder/Miller)
 wrap-mode                             = "none"      # none = cut names with … and clip code preview; char = character-wrap tile names and code lines; word = break at spaces (spaceless runs still slice). Markdown prose (paragraphs, tables) always word-wraps.
 tab-bar                               = false       # true = strip always visible (even with one tab); false = adaptive (only while 2+ tabs are open)
 sidebar-width                         = 26          # 16..60 cells (grid + list)
@@ -24,7 +24,8 @@ sidebar-show-network                  = true        # true = show shared servers
 sidebar-auto-hide                     = false       # true = collapse the places sidebar until the mouse nears its edge (see sidebar-collapse-style)
 sidebar-collapse-style                = "hidden"    # "rail" = icon-only strip; "hidden" = width 0; "min" = shrink to a sliver
 preview-enabled                       = false       # right-side preview pane (text files, folder stats)
-preview-width                         = 40          # 20..80 cells
+info-sidebar                          = false       # right-side info sidebar (file details for the current selection); shares the right edge with the preview — info wins when both are on
+preview-width                         = 40          # 20..80 cells (the shared right-region width: preview or info sidebar)
 preview-auto-hide                     = false       # true = collapse the preview pane until the mouse nears the right edge
 preview-collapse-style                = "hidden"    # "rail" = narrow strip; "hidden" = width 0; "min" = shrink to a sliver
 terminal-height                       = 12          # embedded terminal pane height in rows, 4..30 (applies live to the open pane)
@@ -138,57 +139,59 @@ ansi14         = "#7dcfff"  # terminal color 14 (bright cyan)
 ansi15         = "#c0caf5"  # terminal color 15 (bright white)
 
 [keys]
-quit               = ["ctrl+q"]                  # default: ctrl+q
-restart            = ["ctrl+alt+r"]              # default: ctrl+alt+r
-open-menu          = ["escape"]                  # default: escape
-toggle-help        = ["f1"]                      # default: f1
-new-tab            = ["ctrl+t"]                  # default: ctrl+t
-close-tab          = ["ctrl+w"]                  # default: ctrl+w
-next-tab           = ["ctrl+tab"]                # default: ctrl+tab
-prev-tab           = ["ctrl+shift+tab"]          # default: ctrl+shift+tab
-select-all         = ["ctrl+a"]                  # default: ctrl+a
-trash              = ["delete"]                  # default: delete
-rename-or-restore  = ["f2"]                      # default: f2
-copy               = ["ctrl+c"]                  # default: ctrl+c
-cut                = ["ctrl+x"]                  # default: ctrl+x
-duplicate          = ["ctrl+d"]                  # default: ctrl+d
-paste              = ["ctrl+v"]                  # default: ctrl+v
-undo               = ["ctrl+z"]                  # default: ctrl+z
-redo               = ["ctrl+y", "ctrl+shift+z"]  # default: ctrl+y or ctrl+shift+z
-show-props         = ["alt+enter"]               # default: alt+enter
-new-folder         = ["ctrl+shift+n"]            # default: ctrl+shift+n
-new-file           = ["ctrl+alt+n"]              # default: ctrl+alt+n
-parent-dir         = ["backspace", "alt+up"]     # default: backspace or alt+up
-hist-back          = ["alt+left"]                # default: alt+left
-hist-forward       = ["alt+right"]               # default: alt+right
-go-home            = ["alt+home"]                # default: alt+home
-path-edit          = ["ctrl+l"]                  # default: ctrl+l
-connect-server     = ["ctrl+shift+s"]            # default: ctrl+shift+s
-move-up            = ["up"]                      # default: up
-move-down          = ["down"]                    # default: down
-move-left          = ["left"]                    # default: left
-move-right         = ["right"]                   # default: right
-open-selected      = ["return"]                  # default: return
-page-up            = ["pageup"]                  # default: pageup
-page-down          = ["pagedown"]                # default: pagedown
-first-item         = ["home"]                    # default: home
-last-item          = ["end"]                     # default: end
-start-search       = []                          # default: 
-extend-up          = ["shift+up"]                # default: shift+up
-extend-down        = ["shift+down"]              # default: shift+down
-extend-left        = ["shift+left"]              # default: shift+left
-extend-right       = ["shift+right"]             # default: shift+right
-toggle-focused     = ["space"]                   # default: space
-invert-selection   = []                          # default: 
-toggle-hidden      = ["ctrl+h"]                  # default: ctrl+h
-reload-places      = ["ctrl+r"]                  # default: ctrl+r
-toggle-preview     = ["f3"]                      # default: f3
-toggle-view        = ["ctrl+g"]                  # default: ctrl+g
-cycle-sort         = []                          # default: 
-zoom-in            = ["ctrl+="]                  # default: ctrl+=
-zoom-out           = ["ctrl+-"]                  # default: ctrl+-
-toggle-dual-pane   = ["ctrl+shift+d"]            # default: ctrl+shift+d
-switch-pane        = ["tab"]                     # default: tab
-copy-to-other-pane = ["f5"]                      # default: f5
-move-to-other-pane = ["f6"]                      # default: f6
-open-terminal      = ["ctrl+`", "f4"]            # default: ctrl+` or f4
+quit                = ["ctrl+q"]                  # default: ctrl+q
+restart             = ["ctrl+alt+r"]              # default: ctrl+alt+r
+open-menu           = ["escape"]                  # default: escape
+toggle-help         = ["f1"]                      # default: f1
+new-tab             = ["ctrl+t"]                  # default: ctrl+t
+close-tab           = ["ctrl+w"]                  # default: ctrl+w
+next-tab            = ["ctrl+tab"]                # default: ctrl+tab
+prev-tab            = ["ctrl+shift+tab"]          # default: ctrl+shift+tab
+select-all          = ["ctrl+a"]                  # default: ctrl+a
+trash               = ["delete"]                  # default: delete
+rename-or-restore   = ["f2"]                      # default: f2
+copy                = ["ctrl+c"]                  # default: ctrl+c
+cut                 = ["ctrl+x"]                  # default: ctrl+x
+duplicate           = ["ctrl+d"]                  # default: ctrl+d
+paste               = ["ctrl+v"]                  # default: ctrl+v
+undo                = ["ctrl+z"]                  # default: ctrl+z
+redo                = ["ctrl+y", "ctrl+shift+z"]  # default: ctrl+y or ctrl+shift+z
+show-props          = ["alt+enter"]               # default: alt+enter
+new-folder          = ["ctrl+shift+n"]            # default: ctrl+shift+n
+new-file            = ["ctrl+alt+n"]              # default: ctrl+alt+n
+parent-dir          = ["backspace", "alt+up"]     # default: backspace or alt+up
+hist-back           = ["alt+left"]                # default: alt+left
+hist-forward        = ["alt+right"]               # default: alt+right
+go-home             = ["alt+home"]                # default: alt+home
+path-edit           = ["ctrl+l"]                  # default: ctrl+l
+go-to-folder        = ["shift+cmd+g"]             # default: shift+cmd+g
+connect-server      = ["ctrl+shift+s"]            # default: ctrl+shift+s
+move-up             = ["up"]                      # default: up
+move-down           = ["down"]                    # default: down
+move-left           = ["left"]                    # default: left
+move-right          = ["right"]                   # default: right
+open-selected       = ["return"]                  # default: return
+page-up             = ["pageup"]                  # default: pageup
+page-down           = ["pagedown"]                # default: pagedown
+first-item          = ["home"]                    # default: home
+last-item           = ["end"]                     # default: end
+start-search        = []                          # default: 
+extend-up           = ["shift+up"]                # default: shift+up
+extend-down         = ["shift+down"]              # default: shift+down
+extend-left         = ["shift+left"]              # default: shift+left
+extend-right        = ["shift+right"]             # default: shift+right
+toggle-focused      = ["space"]                   # default: space
+invert-selection    = []                          # default: 
+toggle-hidden       = ["ctrl+h"]                  # default: ctrl+h
+reload-places       = ["ctrl+r"]                  # default: ctrl+r
+toggle-preview      = ["f3"]                      # default: f3
+toggle-info-sidebar = ["f7"]                      # default: f7
+toggle-view         = ["ctrl+g"]                  # default: ctrl+g
+cycle-sort          = []                          # default: 
+zoom-in             = ["ctrl+="]                  # default: ctrl+=
+zoom-out            = ["ctrl+-"]                  # default: ctrl+-
+toggle-dual-pane    = ["ctrl+shift+d"]            # default: ctrl+shift+d
+switch-pane         = ["tab"]                     # default: tab
+copy-to-other-pane  = ["f5"]                      # default: f5
+move-to-other-pane  = ["f6"]                      # default: f6
+open-terminal       = ["ctrl+`", "f4"]            # default: ctrl+` or f4

@@ -5,7 +5,10 @@
 // and can be pulled in by the keymap, the settings capture UI and the plugin
 // loader without dragging the schema along. ---
 
-export type KeySpec = { name: string; ctrl: boolean; shift: boolean; meta: boolean };
+// `meta` stays the alt/option modifier (OpenTUI folds alt into meta and keeps
+// option separate); `cmd` is the distinct macOS Command / Super key, matched
+// against the event's `super` field only.
+export type KeySpec = { name: string; ctrl: boolean; shift: boolean; meta: boolean; cmd: boolean };
 
 export const parseKeySpec = (s: string): KeySpec | null => {
   if (typeof s !== "string") return null;
@@ -14,11 +17,12 @@ export const parseKeySpec = (s: string): KeySpec | null => {
     .map((p) => p.trim().toLowerCase())
     .filter(Boolean);
   if (!parts.length) return null;
-  const spec: KeySpec = { name: "", ctrl: false, shift: false, meta: false };
+  const spec: KeySpec = { name: "", ctrl: false, shift: false, meta: false, cmd: false };
   for (const p of parts) {
     if (p === "ctrl" || p === "control") spec.ctrl = true;
     else if (p === "shift") spec.shift = true;
     else if (p === "alt" || p === "meta" || p === "option") spec.meta = true;
+    else if (p === "cmd" || p === "super" || p === "command") spec.cmd = true;
     else if (spec.name)
       return null; // two key names
     else spec.name = p;
@@ -64,10 +68,10 @@ const KNOWN_KEY_NAMES = new Set([
 export const validateKeybindSpec = (s: string): string | null => {
   const spec = parseKeySpec(s);
   if (!spec) return `can't parse key "${s}"`;
-  if (BARE_KEY_RE.test(spec.name) && !spec.ctrl && !spec.shift && !spec.meta)
+  if (BARE_KEY_RE.test(spec.name) && !spec.ctrl && !spec.shift && !spec.meta && !spec.cmd)
     return "bare letters/numbers are used for type-to-search";
   if (spec.name.length > 1 && !KNOWN_KEY_NAMES.has(spec.name)) return `unknown key "${spec.name}"`;
-  if (spec.name.length === 1 && !/[a-z0-9._-]/i.test(spec.name) && !spec.ctrl && !spec.meta)
+  if (spec.name.length === 1 && !/[a-z0-9._-]/i.test(spec.name) && !spec.ctrl && !spec.meta && !spec.cmd)
     return "symbol keys must carry ctrl/alt";
   return null;
 };
@@ -80,11 +84,18 @@ export type KeyEventLike = {
   shift?: boolean;
   meta?: boolean;
   option?: boolean;
+  super?: boolean;
   baseCode?: number;
 };
 
 export const keyMatch = (e: KeyEventLike, spec: KeySpec): boolean => {
-  if (!!e.ctrl !== spec.ctrl || !!e.shift !== spec.shift || (!!e.meta || !!e.option) !== spec.meta) return false;
+  if (
+    !!e.ctrl !== spec.ctrl ||
+    !!e.shift !== spec.shift ||
+    (!!e.meta || !!e.option) !== spec.meta ||
+    !!e.super !== spec.cmd
+  )
+    return false;
   if (e.name === spec.name) return true;
   const bc = e.baseCode;
   if (typeof bc === "number" && bc >= 32 && bc !== 127) {
@@ -98,7 +109,12 @@ export const keyMatch = (e: KeyEventLike, spec: KeySpec): boolean => {
 export const keySpecFromEvent = (e: KeyEventLike): string | null => {
   const name = typeof e.name === "string" ? e.name.trim().toLowerCase() : "";
   if (!name || name.length > 24) return null;
-  const mods = [e.ctrl ? "ctrl" : "", e.shift ? "shift" : "", e.meta || e.option ? "alt" : ""].filter(Boolean);
+  const mods = [
+    e.ctrl ? "ctrl" : "",
+    e.shift ? "shift" : "",
+    e.super ? "cmd" : "",
+    e.meta || e.option ? "alt" : "",
+  ].filter(Boolean);
   return [...mods, name].join("+");
 };
 
@@ -120,6 +136,7 @@ export const keySpecEqual = (a: string, b: string): boolean => {
     canonKeyName(pa.name) === canonKeyName(pb.name) &&
     pa.ctrl === pb.ctrl &&
     pa.shift === pb.shift &&
-    pa.meta === pb.meta
+    pa.meta === pb.meta &&
+    pa.cmd === pb.cmd
   );
 };
