@@ -360,10 +360,10 @@ export const wrapYesNoMessage = (message: string, width: number = YESNO_W): stri
       // hard-slice space-less runs (never a silent cut — ellipsis marks it)
       let rest = w;
       while (rest.length > budget) {
-        lines.push(rest.slice(0, budget - 1) + "…");
+        lines.push(`${rest.slice(0, budget - 1)}…`);
         rest = rest.slice(budget - 1);
         if (lines.length === 2) {
-          lines[1] = `${lines[1]}`.slice(0, budget - 1) + "…";
+          lines[1] = `${`${lines[1]}`.slice(0, budget - 1)}…`;
           return lines;
         }
       }
@@ -376,7 +376,7 @@ export const wrapYesNoMessage = (message: string, width: number = YESNO_W): stri
       lines.push(cur);
       cur = w;
       if (lines.length === 2) {
-        lines[1] = `${lines[1]}`.slice(0, budget - 1) + "…";
+        lines[1] = `${`${lines[1]}`.slice(0, budget - 1)}…`;
         return lines;
       }
     }

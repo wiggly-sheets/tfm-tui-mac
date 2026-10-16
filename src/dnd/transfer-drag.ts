@@ -39,18 +39,18 @@ export type MoveCommitCtx = {
   runTransfer(op: "copy" | "move", destDir: string, srcs: string[], label: string): Promise<void>;
 };
 
-export const commitMove = (ctx: MoveCommitCtx) => async (destDir: string, items: ClipItem[]): Promise<void> => {
-  // dropping a folder onto itself / into its own subtree would recurse forever;
-  // runTransfer's own isWithinOrEqual check handles it, but filtering here
-  // keeps the label honest ("move N items" vs "Moved 0 items").
-  const srcs = items
-    .filter((it) => it.path !== destDir)
-    .map((it) => it.path);
-  if (!srcs.length) return;
-  await ctx.runTransfer(
-    "move",
-    destDir,
-    srcs,
-    `move ${srcs.length} item${srcs.length === 1 ? "" : "s"} to ${destDir.split("/").pop() || "/"}`,
-  );
-};
+export const commitMove =
+  (ctx: MoveCommitCtx) =>
+  async (destDir: string, items: ClipItem[]): Promise<void> => {
+    // dropping a folder onto itself / into its own subtree would recurse forever;
+    // runTransfer's own isWithinOrEqual check handles it, but filtering here
+    // keeps the label honest ("move N items" vs "Moved 0 items").
+    const srcs = items.filter((it) => it.path !== destDir).map((it) => it.path);
+    if (!srcs.length) return;
+    await ctx.runTransfer(
+      "move",
+      destDir,
+      srcs,
+      `move ${srcs.length} item${srcs.length === 1 ? "" : "s"} to ${destDir.split("/").pop() || "/"}`,
+    );
+  };

@@ -481,7 +481,7 @@ export const makeEntryMouseHandlers = (ctx: GridInputCtx) => {
             const keys = gridDrag.keys;
             gridDrag.keys = null; // clears the fallback's too (see the setter)
             gridDrag.fallback = false;
-            if (keys && keys.length) {
+            if (keys?.length) {
               void ctx.moveInto(
                 key,
                 keys.filter((item) => item.path !== key),
