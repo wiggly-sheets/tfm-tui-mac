@@ -16,6 +16,7 @@ import type { ListEntry } from "./ui-menu";
 import { FLOAT_Z, type Floats } from "./floats";
 import { hoverEvents, IconStateIdx, toggleIconState } from "./ui-slots";
 import { mountPermsEditor } from "./ui-props-perms";
+import { mountTagsSection } from "./ui-tags";
 import type { NotifyLevel } from "../lib/notify-level";
 import type { MaybeNode, NodeLike } from "../lib/node-like";
 import type { PointerStyle } from "../lib/pointer";
@@ -398,6 +399,18 @@ export const makeProps = (ctx: PropsCtx) => {
       },
       { panel, targetPath, st, isDirTarget, row },
     );
+    // Finder tags (macOS only — the helper no-ops elsewhere)
+    mountTagsSection(
+      {
+        byId: ctx.byId,
+        setOnId: ctx.setOnId,
+        colors: () => colors,
+        uiStyle: ctx.uiStyle,
+        setPointer: ctx.setPointer,
+      },
+      panel,
+      [targetPath],
+    );
     ctx.stripSelectable();
     void ctx.drainIconQueue();
     void ctx.drainThumbs();
@@ -527,6 +540,18 @@ export const makeProps = (ctx: PropsCtx) => {
         ),
       );
     }
+    // Finder tags apply to the whole selection (macOS only; no-op elsewhere)
+    mountTagsSection(
+      {
+        byId: ctx.byId,
+        setOnId: ctx.setOnId,
+        colors: () => colors,
+        uiStyle: ctx.uiStyle,
+        setPointer: ctx.setPointer,
+      },
+      panel,
+      items.map((it) => it.path),
+    );
     ctx.stripSelectable();
     void ctx.drainIconQueue();
   };
@@ -555,9 +580,10 @@ export const makeProps = (ctx: PropsCtx) => {
   };
 
   // theme-switch repaint while open: rebuild with the retained target (live
-  // colors throughout — icon slots, rows, perms). No text inputs exist in
-  // the dialog, so close+reopen loses nothing user-typed; the perm-class
-  // cursor popup above it (if any) closes with the rebuild by floats policy.
+  // colors throughout — icon slots, rows, perms, tags). Only the tag field
+  // holds user input, so a theme flip mid-type drops the unsubmitted tag; the
+  // perm-class cursor popup above the dialog (if any) closes with the rebuild
+  // by floats policy.
   const repaint = (): void => {
     if (!propsOpen || lastTarget === null) return;
     try {

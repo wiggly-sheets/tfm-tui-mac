@@ -261,6 +261,51 @@ export const syncStarTag = (deps: StarTagDeps, starred: boolean, targetPath: str
   void deps.exec(tagBin, starred ? ["-a", "Starred", targetPath] : ["-r", "Starred", targetPath]);
 };
 
+// --- Finder user tags (kMDItemUserTags) as a read/write surface for the
+// Properties tag editor. Read reuses mdls + parseMdlsTags (the same value the
+// star toggle adopts); write goes through the `tag` CLI only (same binary-plist
+// reasoning as syncStarTag). Pure argv builders + parser are exported so tests
+// pin them without a Mac. Off darwin, or with the CLI absent, or on any
+// failure, everything degrades to a no-op that never throws. ---
+
+export const mdlsTagsArgs = (p: string): string[] => ["-raw", "-name", "kMDItemUserTags", p];
+
+export const tagAddArgs = (tag: string, p: string): string[] => ["-a", tag, p];
+export const tagRemoveArgs = (tag: string, p: string): string[] => ["-r", tag, p];
+// replace the whole tag set (comma-joined, the CLI's list separator)
+export const tagSetArgs = (tags: string[], p: string): string[] => ["-s", tags.join(","), p];
+
+export type TagReadDeps = {
+  run: (bin: string, args: string[]) => Promise<{ stdout?: unknown }>;
+  platform?: string;
+};
+
+// all Finder user tags for one path. Empty off darwin or on any failure.
+export const readFinderTags = async (deps: TagReadDeps, p: string): Promise<string[]> => {
+  if (!isDarwin(deps.platform ?? process.platform)) return [];
+  try {
+    const r = await deps.run("mdls", mdlsTagsArgs(p));
+    return parseMdlsTags(String(r?.stdout ?? ""));
+  } catch {
+    return [];
+  }
+};
+
+export type TagWriteDeps = StarTagDeps & { platform?: string };
+
+// apply one `tag` CLI argv per target. No-op off darwin or when the CLI is
+// absent; each failure is swallowed (best-effort — never throws).
+export const writeFinderTags = (deps: TagWriteDeps, argvs: string[][]): void => {
+  if (!isDarwin(deps.platform ?? process.platform)) return;
+  const tagBin = deps.which("tag");
+  if (!tagBin) return;
+  for (const args of argvs) {
+    try {
+      void deps.exec(tagBin, args);
+    } catch {}
+  }
+};
+
 // --- extended attributes: Finder tags (com.apple.metadata:_kMDItemUserTags),
 // quarantine, download provenance and resource forks (com.apple.ResourceFork)
 // live in xattrs, which a byte/mode/mtime copy silently drops. `xattr -p -x`
