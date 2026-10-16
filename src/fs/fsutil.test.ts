@@ -484,14 +484,14 @@ describe("allTrashFilesDirs", () => {
     // a child that "hangs" (stdout closes empty, exited resolves nonzero like
     // a timeout kill), and assert the probe still resolves — home only, no
     // throw, no hang.
-    let captured: { timeout?: number } | null = null;
+    let captured: Record<string, unknown> | null = null;
     const fakeStdout = new ReadableStream<Uint8Array>({
       start(c) {
         c.enqueue(new TextEncoder().encode(""));
         c.close();
       },
     });
-    const spy = spyOn(Bun, "spawn").mockImplementation(((_cmd: unknown, opts?: { timeout?: number }) => {
+    const spy = spyOn(Bun, "spawn").mockImplementation(((_cmd: unknown, opts?: any) => {
       captured = opts ?? null;
       return {
         stdout: fakeStdout,
@@ -501,7 +501,7 @@ describe("allTrashFilesDirs", () => {
     }) as typeof Bun.spawn);
     try {
       const out = await allTrashFilesDirs(undefined, "darwin");
-      expect(captured?.timeout).toBe(2_000);
+      expect((captured as any)?.timeout).toBe(2_000);
       expect(out[0]).toBe(trashFilesDir("darwin"));
       expect(out.length).toBe(1); // empty mount text -> no volumes, home only
     } finally {
