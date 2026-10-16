@@ -6,11 +6,14 @@
 //
 // Model: at most ONE modal layer (escmenu/props/conflict/yesno) plus at most
 // ONE cursor popup (filemenu) on top of it — the popup legitimately spawns
-// from inside a modal (the permission menu inside the properties dialog).
+// from inside a modal (the permission menu inside the properties dialog). The
+// NON-MODAL layers (filemenu, quicklook) are the exception the set below
+// spells out: they never count as modals and never dim the desktop.
 //
 // Policy (lives here, nowhere else):
 // - opening a modal clears the whole desktop (popup + any other modal) first;
-// - opening the popup replaces an existing popup and keeps the modal below;
+// - opening a non-modal layer replaces an existing layer of the same kind and
+//   keeps the modals below;
 // - closing a layer also closes everything opened above it (closing props
 //   takes its permission popup with it);
 // - closers are raw teardowns captured at open time — they must never call
@@ -27,7 +30,13 @@ export type FloatKind =
   | "pick"
   | "prompt"
   | "gotofolder"
-  | "bulkrename";
+  | "bulkrename"
+  | "quicklook";
+
+// layers that are NOT modals: they neither dim the desktop (hasModal stays
+// false, so no raster scrim) nor swallow the keyboard, and opening one leaves
+// the modals below it alone.
+const NON_MODAL: ReadonlySet<FloatKind> = new Set<FloatKind>(["filemenu", "quicklook"]);
 
 // z-order of the floating layers — the one table documenting which layer
 // renders above which. Outside the stack: band rect 2500 (gesture), progress
@@ -37,6 +46,9 @@ export const FLOAT_Z: Record<FloatKind, number> = {
   props: 3300,
   conflict: 3400,
   yesno: 3450,
+  // quicklook overlay (the preview without the preview pane): non-modal, so it
+  // sits UNDER the cursor popup — a context menu opened over it stays on top
+  quicklook: 3590,
   filemenu: 3600,
   // generic filter-list overlay (api.ui.pick, e.g. the palette plugin): the
   // newest modal wins, so it sits on top; opening one dismisses the rest
@@ -63,8 +75,8 @@ export type Floats = {
   isOpen(kind: FloatKind): boolean;
   top(): FloatKind | null;
   depth(): number;
-  /** any layer above the filemenu popup is a modal (the popup may live
-   * inside one — props + its permission menu). Used for the raster scrim. */
+  /** any layer that is not one of the non-modal ones is a modal (a filemenu
+   * popup may live inside one — props + its permission menu). Raster scrim. */
   hasModal(): boolean;
 };
 
@@ -82,7 +94,7 @@ export const makeFloats = (opts: { onModalChange?: (open: boolean) => void } = {
     for (const e of [...entries].reverse()) e.closer();
   };
 
-  const hasModal = (): boolean => stack.some((e) => e.kind !== "filemenu");
+  const hasModal = (): boolean => stack.some((e) => !NON_MODAL.has(e.kind));
 
   const syncModal = (): void => {
     if (!onModalChange) return;
@@ -95,9 +107,10 @@ export const makeFloats = (opts: { onModalChange?: (open: boolean) => void } = {
   };
 
   const open = (kind: FloatKind, closer: () => void): void => {
-    if (kind === "filemenu") {
-      const old = stack.filter((e) => e.kind === "filemenu");
-      stack = stack.filter((e) => e.kind !== "filemenu");
+    if (NON_MODAL.has(kind)) {
+      // replaces an existing layer of its own kind; the modals below stay
+      const old = stack.filter((e) => e.kind === kind);
+      stack = stack.filter((e) => e.kind !== kind);
       runClosers(old);
     } else {
       const all = stack;

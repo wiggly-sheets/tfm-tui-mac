@@ -93,6 +93,8 @@ export const FILE_ICON_BY_EXT: Record<string, string> = {
   m4a: "file-music",
   opus: "file-music",
   aac: "file-music",
+  wma: "file-music",
+  aiff: "file-music",
   zip: "zip-box",
   tar: "zip-box",
   gz: "zip-box",
@@ -386,4 +388,65 @@ export const fileIsVideo = (name: string): boolean => {
   if (FILE_ICON_BY_EXT[ext] === "file-video") return true;
   const mime = globs2ByExt?.get(ext);
   return !!mime && mime.startsWith("video/");
+};
+
+export const fileIsAudio = (name: string): boolean => {
+  const ext = extOf(name);
+  if (FILE_ICON_BY_EXT[ext] === "file-music") return true;
+  const mime = globs2ByExt?.get(ext);
+  return !!mime && mime.startsWith("audio/");
+};
+
+export const fileIsGif = (name: string): boolean => {
+  const ext = extOf(name);
+  if (ext === "gif") return true;
+  const mime = globs2ByExt?.get(ext);
+  return mime === "image/gif";
+};
+
+// Frames of a GIF (the count an animated one animates), read from the block
+// structure: header + logical screen descriptor, then image descriptors (0x2C)
+// counted, extension (0x21) and image data skipped by their sub-block lengths.
+// 0 = not a GIF or a truncated walk (never throws, never over-counts — a
+// corrupt tail stops the count where it broke).
+export const gifFrameCount = (bytes: Uint8Array): number => {
+  try {
+    if (bytes.length < 13) return 0;
+    if (String.fromCharCode(bytes[0] ?? 0, bytes[1] ?? 0, bytes[2] ?? 0) !== "GIF") return 0;
+    const packed = bytes[10] ?? 0;
+    // 0x80 = global color table present, low 3 bits = its size exponent
+    let p = 13 + (packed & 0x80 ? 3 * 2 ** ((packed & 7) + 1) : 0);
+    // sub-blocks: one length byte + that many bytes, 0-length terminator ends
+    const skipBlocks = (from: number): number => {
+      let q = from;
+      for (;;) {
+        if (q >= bytes.length) return -1;
+        const len = bytes[q] ?? 0;
+        if (len === 0) return q + 1;
+        q += 1 + len;
+      }
+    };
+    let frames = 0;
+    for (;;) {
+      if (p >= bytes.length) return frames;
+      const block = bytes[p];
+      if (block === 0x3b) return frames; // trailer
+      if (block === 0x21) {
+        const next = skipBlocks(p + 2); // 0x21 + extension label
+        if (next < 0) return frames;
+        p = next;
+        continue;
+      }
+      if (block !== 0x2c) return frames; // corrupt block: keep what we counted
+      // image descriptor: separator + left/top/width/height + packed = 10 bytes
+      if (p + 10 > bytes.length) return frames;
+      const imgFlags = bytes[p + 9] ?? 0;
+      const next = skipBlocks(p + 10 + (imgFlags & 0x80 ? 3 * 2 ** ((imgFlags & 7) + 1) : 0) + 1);
+      if (next < 0) return frames;
+      frames++;
+      p = next;
+    }
+  } catch {
+    return 0;
+  }
 };

@@ -152,6 +152,15 @@ export type KeyRouterCtx = {
   connectServer(raw?: string): void;
   togglePreview(): void;
   toggleInfoSidebar(): void;
+  // quicklook float (non-modal preview overlay): optional so older fakes read
+  // as closed. `scroll`/`page` move the float's body, `close` dismisses it.
+  toggleQuicklook?(): void;
+  quicklook?: {
+    isOpen(): boolean;
+    close(): void;
+    scroll(lines: number): void;
+    page(dir: -1 | 1): void;
+  };
   toggleSidebar(): void;
   nextTheme(): void;
   reverseSort(): void;
@@ -752,6 +761,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "goToFolder", run: () => ctx.openGoToFolder?.() },
     { action: "togglePreview", run: () => ctx.togglePreview() },
     { action: "toggleInfoSidebar", run: () => ctx.toggleInfoSidebar() },
+    { action: "toggleQuicklook", run: () => ctx.toggleQuicklook?.() },
     { action: "toggleSidebar", run: () => ctx.toggleSidebar() },
     { action: "openTerminal", run: () => ctx.openTerminal() },
     { action: "connectServer", run: () => ctx.connectServer() },
@@ -843,6 +853,32 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (handleFileMenuKeys(ev)) return;
     if (handleSearchKeys(ev)) return;
 
+    // quicklook float open: esc closes it and the scroll keys drive its body
+    // instead of the grid (left/right still move the grid). Everything else
+    // falls through on purpose — the overlay is non-modal.
+    if (ctx.quicklook?.isOpen()) {
+      if (ev.name === "escape") {
+        ctx.quicklook.close();
+        return;
+      }
+      if (hit(ev, "moveUp")) {
+        ctx.quicklook.scroll(-1);
+        return;
+      }
+      if (hit(ev, "moveDown")) {
+        ctx.quicklook.scroll(1);
+        return;
+      }
+      if (hit(ev, "pageUp")) {
+        ctx.quicklook.page(-1);
+        return;
+      }
+      if (hit(ev, "pageDown")) {
+        ctx.quicklook.page(1);
+        return;
+      }
+    }
+
     // columns (Miller/Finder) view: claim arrows/enter/backspace BEFORE the
     // remapped-action block so a backspace doesn't fire parentDir first
     if (ctx.columns?.isActive() && ctx.columns.handleKey(ev)) return;
@@ -861,6 +897,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "goToFolder") && ev.repeated !== true && runAction("goToFolder")) return;
     if (hit(ev, "togglePreview") && ev.repeated !== true && runAction("togglePreview")) return;
     if (hit(ev, "toggleInfoSidebar") && ev.repeated !== true && runAction("toggleInfoSidebar")) return;
+    if (hit(ev, "toggleQuicklook") && ev.repeated !== true && runAction("toggleQuicklook")) return;
     if (hit(ev, "toggleSidebar") && ev.repeated !== true && runAction("toggleSidebar")) return;
     if (hit(ev, "nextTheme") && ev.repeated !== true && runAction("nextTheme")) return;
     if (hit(ev, "openTerminal") && runAction("openTerminal")) return;
