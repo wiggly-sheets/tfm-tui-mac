@@ -403,7 +403,7 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
       // other UI path to empty them — include every mounted one. Extra roots
       // read best-effort (a device yanked mid-empty just yields per-item
       // failures below); home stays the source of truth above.
-      const dirs = sink.trashFilesDirs ? sink.trashFilesDirs() : allTrashFilesDirs(undefined, platform);
+      const dirs = sink.trashFilesDirs ? sink.trashFilesDirs() : await allTrashFilesDirs(undefined, platform);
       for (const dir of new Set(
         dirs.map((d) => {
           try {
