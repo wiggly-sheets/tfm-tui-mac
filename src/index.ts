@@ -16,6 +16,9 @@ import { statSync, type Stats } from "node:fs";
 import { parseArgs, usageText } from "./app/cli";
 // type-only: erased at load, so it does not pull the graph into --version
 import type { MouseResizeWiring } from "./wiring/mouse-resize";
+// gridDrag is a pure shared-state singleton (no renderer imports); static
+// import is side-effect-free and does not pull the app graph into --version
+import { gridDrag } from "./input/grid-input";
 
 // --- CLI: one parse for the whole process. --help/--version and parse errors
 // answer BEFORE the lazy app graph loads, so they stay instant. ---
@@ -359,6 +362,8 @@ wireResize({
   core,
   nav,
   chrome,
+  fileops,
+  busy: () => mouseResize?.active() ?? gridDrag.active,
 });
 
 // drag-resize (opt-in per target): one gesture machine on the renderer root,

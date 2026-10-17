@@ -273,6 +273,81 @@ describe("syncTerminalHeight", () => {
   });
 });
 
+describe("sync (PTY resize from the resize path)", () => {
+  let t: TestRendererSetup;
+  let resizeCalls: Array<[number, number]>;
+  let child: TermChild;
+
+  const mkTerm = (overrides: Record<string, unknown> = {}) =>
+    makeTerminal({
+      renderer: t.renderer,
+      byId: (id: string) => t.renderer.root.findDescendantById(id),
+      uiStyle: () => "solid",
+      colors: () => ({
+        sidebarBg: "#0000aa",
+        sidebarFgMuted: "#555555",
+        bg: "#aaaaaa",
+        white: "#ffffff",
+        accent: "#ffffff",
+      }),
+      sw: () => 26,
+      termH: () => 9,
+      escHintBtn: (id: string) => Box({ id, width: 3, height: 1 }),
+      stripSelectable: () => {},
+      drainIconQueue: () => {},
+      notify: () => {},
+      renderAll: () => {},
+      cwd: () => "/tmp",
+      virtualCwd: () => false,
+      home: "/tmp",
+      finishDrag: () => {},
+      dlog: () => {},
+      spawnPty: (o: TermSpawnOpts) => {
+        resizeCalls.push([o.cols, o.rows]);
+        return child;
+      },
+      ...overrides,
+    } as any);
+
+  beforeAll(async () => {
+    t = await createTestRenderer({ width: 80, height: 24 });
+    t.renderer.root.add(Box({ id: "tfm-term-host", width: "100%", height: 0, flexDirection: "column" }));
+    await t.renderOnce();
+  });
+
+  afterAll(() => t.renderer.destroy());
+
+  beforeEach(() => {
+    resizeCalls = [];
+    child = {
+      terminal: { write: () => {}, resize: (c, r) => resizeCalls.push([c, r]), close: () => {} },
+      kill: () => {},
+      exited: new Promise<void>(() => {}),
+    };
+  });
+
+  test("resizes the PTY to the VT node's current cell size", async () => {
+    const fac = mkTerm();
+    fac.openTerminalHere("/tmp");
+    await t.renderOnce();
+    resizeCalls.length = 0;
+    fac.sync();
+    // the node is 80x9 (terminalWidth - sw 26 = 54 cols? no: width "100%" of
+    // an 80-wide host = 80 cols, rows = termH 9)
+    expect(resizeCalls).toHaveLength(1);
+    expect(resizeCalls[0]![0]).toBe(80);
+    expect(resizeCalls[0]![1]).toBe(9);
+    fac.closeTerminalPane();
+  });
+
+  test("no-ops when the pane is closed", () => {
+    const fac = mkTerm({ byId: () => null });
+    resizeCalls.length = 0;
+    expect(() => fac.sync()).not.toThrow();
+    expect(resizeCalls).toHaveLength(0);
+  });
+});
+
 // The pane must open on terminals that never answer OpenTUI's pixel-size query
 // (the Linux console, tmux, dumb frontends): renderer.resolution stays null
 // there forever, and the old `if (!resolution) return` guard made "Open

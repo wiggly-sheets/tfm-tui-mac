@@ -274,11 +274,35 @@ export const wireDnd = (deps: {
 // in ./lib/uiutil (debounced) — the same timing tenant ui-status uses; only
 // the body differs (icon-queue reset first so every raster re-renders at the
 // new cell pixels). ---
-export const wireResize = (deps: { core: CoreWiring; nav: NavWiring; chrome: ChromeWiring }) => {
-  const { core, nav, chrome } = deps;
-  const onResize = debounced(150, () => {
+export const wireResize = (deps: {
+  core: CoreWiring;
+  nav: NavWiring;
+  chrome: ChromeWiring;
+  fileops: FileopsWiring;
+  // an active gesture (mouse-resize drag, grid drag) must not repave tiles
+  // under the cursor mid-drag — when busy, the resize reschedules itself via
+  // setTimeout instead of running immediately
+  busy?: () => boolean;
+}) => {
+  const { core, nav, chrome, fileops } = deps;
+  const run = () => {
     core.slots.resetIconQueue();
     nav.renderAll();
+    // the VT node may have resized during renderAll; onTerminalResize only
+    // fires when the node actually changes, so a resize that lands while the
+    // host box is clipped/unchanged would leave the PTY on stale cols/rows.
+    // Re-sync to the node's current cell size (no-op while closed).
+    if (fileops.terminal.isOpen()) fileops.terminal.sync();
+  };
+  const onResize = debounced(150, () => {
+    if (deps.busy?.()) {
+      // reschedule the same work rather than repaving under the gesture;
+      // the debounce window resets on each resize event, so a drag that
+      // keeps the terminal in flux keeps deferring until it settles
+      setTimeout(run, 250);
+      return;
+    }
+    run();
   });
   chrome.renderer.on(CliRenderEvents.RESIZE, onResize);
 };

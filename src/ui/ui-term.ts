@@ -581,6 +581,19 @@ export const makeTerminal = (ctx: TermCtx) => {
   return {
     openTerminalHere,
     closeTerminalPane,
+    // re-sync the PTY to the VT node's current cell size. Called from the
+    // resize path (after renderAll): onTerminalResize only fires when the VT
+    // node actually resizes, so a terminal resize that lands while the host
+    // box is clipped/unchanged would otherwise leave the PTY on stale
+    // cols/rows. Reads the live node size (no config, no guess) and is a
+    // no-op while the pane is closed.
+    sync: () => {
+      if (!term || !termChild?.terminal) return;
+      try {
+        const s = term.screen();
+        if (s.columns > 0 && s.rows > 0) termChild.terminal.resize(s.columns, s.rows);
+      } catch {}
+    },
     // run a file in the embedded shell: open the pane at the file's dir (or
     // focus it when already open — the path is absolute so the shell's cwd
     // doesn't matter) and feed the quoted path + newline, i.e. exactly what
