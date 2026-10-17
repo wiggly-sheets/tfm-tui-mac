@@ -7,7 +7,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { Text } from "@opentui/core";
 import { stickyClose, truncateToastText, wrapToastText } from "../ui/notify";
-import { THEME_PRESETS } from "../config/themes";
+import { THEME_PRESETS, loadUserThemes } from "../config/themes";
 import { themePresetIdx } from "../ui/settings";
 import { makeSettingModel } from "../ui/settings-model";
 import { makeSystemTheme } from "../ui/ui-system-theme";
@@ -38,6 +38,11 @@ import type { PluginsWiring } from "./plugins";
 
 export type RethemeWiring = ReturnType<typeof wireRetheme>;
 
+// built-ins + user themes from ~/.config/tfm/themes; the settings model and
+// the plugin `theme` event read this list so a ported theme is named, not
+// "custom". Computed once at boot — rescanning needs a restart.
+const allPresets = [...THEME_PRESETS, ...loadUserThemes().presets];
+
 export const wireSettings = (deps: {
   core: CoreWiring;
   nav: NavWiring;
@@ -53,6 +58,19 @@ export const wireSettings = (deps: {
   };
 }) => {
   const { core, nav, chrome, grid, plugins, getRetheme, getPrompt } = deps;
+  // a broken theme file is dropped silently by the loader — tell the user on
+  // boot instead of leaving them wondering why their port didn't land. Falls
+  // back to the built-ins (Tokyo Night first) by construction, never a crash.
+  {
+    const failed = loadUserThemes().failed;
+    if (failed.length) {
+      chrome.notify(
+        `${failed.length} theme file${failed.length === 1 ? "" : "s"} skipped — ${failed.join("; ")}`,
+        "themes",
+        "info",
+      );
+    }
+  }
 
   // --- Plugin git installer orchestration: prompt -> validate -> danger
   // confirm -> clone/pull/rm -> rescan + live panel rebuild. Fire-and-forget
@@ -257,6 +275,10 @@ export const wireSettings = (deps: {
     // cycle row shows what ctrl+g will flip next (not the global default)
     activeViewMode: () => viewModeFor(core.panes.states[core.panes.active], core.config.ui.viewMode, core.isTtyMode),
     plugins: () => plugins.plugins,
+    // user themes from ~/.config/tfm/themes append after the built-ins; the
+    // cycle row and nextTheme keybind read this list, so a ported theme is
+    // selectable instead of reading as "custom"
+    themePresets: allPresets,
     // on/off toggle: register or drop the plugin's slots right away, then
     // repaint so the change is visible without a navigation
     onPluginEnabledChanged: (name, enabled) => {
@@ -420,11 +442,11 @@ export const wireRetheme = (deps: {
         getHover().refresh();
       } catch {}
       try {
-        const idx = themePresetIdx(THEME_PRESETS, core.config.theme);
+        const idx = themePresetIdx(allPresets, core.config.theme);
         // `?.` rather than an `idx >= 0` guard + assertion: a stale idx past
         // the preset list falls back to custom exactly like a miss
         sharedPluginEvents().emit("theme", {
-          preset: core.config.ui.followTerminal ? "System" : (THEME_PRESETS[idx]?.name ?? "custom"),
+          preset: core.config.ui.followTerminal ? "System" : (allPresets[idx]?.name ?? "custom"),
           theme: core.config.theme,
         });
       } catch {}

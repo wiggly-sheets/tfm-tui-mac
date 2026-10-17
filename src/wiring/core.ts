@@ -9,6 +9,7 @@
 import os from "node:os";
 import type { CliRenderer, ScrollBoxRenderable } from "@opentui/core";
 import { loadConfig, type Theme } from "../config/config";
+import { ensureThemeSample } from "../config/themes";
 import { deriveColors } from "../config/color";
 import { applySurface, sideInnerWidth } from "../ui/style";
 import { ensureGlyphFallbacks, glyphFor } from "../ui/glyphs";
@@ -51,6 +52,9 @@ export const wireCore = (deps: {
 }) => {
   // --- Config (TOML at ~/.config/tfm/config.toml, TFM_CONFIG overrides path) ---
   const config = loadConfig();
+  // first run only: drop a sample theme template into ~/.config/tfm/themes so
+  // porting another theme is copy/paste instead of reverse-engineering the schema
+  ensureThemeSample();
 
   // --- Color palette (theme from config; transparent-bg nudge lives in ./color).
   // Tty mode forces opaque AND ignores the user's [theme] hues: the VT ignores

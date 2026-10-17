@@ -15,8 +15,14 @@ import { makePrompt } from "../ui/ui-prompt";
 import { makeGoToFolder } from "../ui/ui-goto";
 import { makeQuicklook } from "../ui/ui-quicklook";
 import { themePresetIdx, zoomUiPatch } from "../ui/settings";
-import { THEME_PRESETS } from "../config/themes";
-import { presetKeys } from "../config/keymap-presets";
+import { THEME_PRESETS, loadUserThemes } from "../config/themes";
+import {
+  KEYMAP_PRESET_NAMES,
+  PRESET_TYPE_TO_SEARCH,
+  PRESET_VIEW_MODE,
+  keymapPresetIdx,
+  presetKeys,
+} from "../config/keymap-presets";
 import { cycleSortMode } from "../lib/sort";
 import { currentViewSlot, nextViewSlot, setPluginViewId, viewCycle, viewModeFor } from "../app/panes";
 import { activeFacade } from "../app/panes";
@@ -46,6 +52,9 @@ export const wireKeymap = (deps: {
   getRetheme: () => RethemeWiring;
 }) => {
   const { core, nav, chrome, gridFoundation, grid, fileops, settings, plugins, getRetheme } = deps;
+  // user themes append after the built-ins so nextTheme cycles through them
+  // (settings.ts owns the boot warning for failed files; this is the cycle list)
+  const presets = [...THEME_PRESETS, ...loadUserThemes().presets];
   const { state, floats } = core;
   const { byId } = core.lookup;
 
@@ -363,8 +372,8 @@ export const wireKeymap = (deps: {
     // theme cycler: hand-edited [theme] matches no preset (idx -1), so the
     // first press lands on the first preset, then the list wraps
     nextTheme: () => {
-      const idx = themePresetIdx(THEME_PRESETS, core.config.theme);
-      const next = THEME_PRESETS[(idx + 1) % THEME_PRESETS.length];
+      const idx = themePresetIdx(presets, core.config.theme);
+      const next = presets[(idx + 1) % presets.length];
       if (!next) return;
       getRetheme().applyConfig({
         ...core.config,
@@ -374,6 +383,30 @@ export const wireKeymap = (deps: {
       });
       getRetheme().scheduleSaveConfig();
       chrome.notify(next.name, "theme", "info");
+    },
+    // keymap cycler: hand-edited binds match no preset (idx -1), so the first
+    // press lands on the first preset, then the list wraps. One batch commit
+    // over [keys] + the type-to-search/view flips the preset row owns.
+    nextKeymap: () => {
+      const idx = keymapPresetIdx(core.config.keys);
+      const names: string[] = [...KEYMAP_PRESET_NAMES];
+      const next = names[(idx + 1) % names.length];
+      if (next === undefined) return;
+      const name = next as "tfm" | "yazi";
+      getRetheme().applyConfig({
+        ...core.config,
+        ui: { ...core.config.ui, typeToSearch: PRESET_TYPE_TO_SEARCH[name], viewMode: PRESET_VIEW_MODE[name] },
+        theme: { ...core.config.theme },
+        keys: presetKeys(name),
+      });
+      getRetheme().scheduleSaveConfig();
+      chrome.notify(
+        name === "yazi"
+          ? "yazi keymap on · list view, hjkl move, space toggles, q quits, / searches"
+          : "tfm keymap on · grid view, type-to-search restored",
+        "keymap preset",
+        "info",
+      );
     },
     toggleDualPane: () => {
       const ui = core.config.ui;

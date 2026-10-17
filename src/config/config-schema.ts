@@ -388,6 +388,7 @@ export type KeyAction =
   | "zoomIn"
   | "zoomOut"
   | "nextTheme"
+  | "nextKeymap"
   | "toggleDualPane"
   | "toggleSyncBrowsing"
   | "splitPaneHorizontal"
@@ -2093,6 +2094,7 @@ const KEY_ROWS: KeyRow[] = (
     // unbound by default: the trailing pencil on the strip is the in-place entry
     ["editToolbar", "edit toolbar", [], "view", "Customize the toolbar"],
     ["nextTheme", "next theme", ["alt+t"], "view", "Step through the color themes"],
+    ["nextKeymap", "next keymap", ["alt+shift+t"], "view", "Step through the keymap presets (tfm / yazi)"],
     ["cycleSort", "cycle sort", ["alt+s"], "view", "Name, size, date, then type"],
     ["reverseSort", "reverse sort", ["alt+shift+s"], "view", "Flip the sort direction"],
     ["zoomIn", "zoom in", ["ctrl+="], "view", "Grow tiles and icons a step"],

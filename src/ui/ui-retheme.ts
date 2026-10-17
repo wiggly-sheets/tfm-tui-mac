@@ -6,13 +6,14 @@
 // colors actually changed. No module-level renderer imports — the widget
 // repaint fns arrive via ctx (same seam as ui-dialogs). ---
 import type { CliRenderer } from "@opentui/core";
-import { mkdirSync, watch } from "node:fs";
+import { existsSync, mkdirSync, watch } from "node:fs";
 import path from "node:path";
 import { bumpHex } from "../config/color";
 import { isDark, resolveTtyMode, ttyStaticTheme } from "./tty";
 import { applySurface, chromeSurface, floatSurface } from "./style";
 import { BAND_ID, DRAG_GHOST_ID } from "../input/grid-input";
 import { loadConfig, saveConfig, configPath, type Config, type Theme } from "../config/config";
+import { THEMES_DIR } from "../config/themes";
 import { describeKeybindConflicts, findKeybindConflicts } from "../config/config-schema";
 import { debounced } from "../lib/uiutil";
 import type { NotifyLevel } from "../lib/notify-level";
@@ -513,6 +514,13 @@ export const makeRetheme = (ctx: RethemeCtx) => {
       applyFreshConfig();
     });
     watcher.on("error", () => {});
+    // the themes folder is NOT config.toml — editing a user theme file adds
+    // or removes a preset, so the cycle row's list is stale until it repaints.
+    // Re-applying the live theme is a visual no-op but refreshes the row.
+    const themesDir = THEMES_DIR();
+    if (existsSync(themesDir)) {
+      watch(themesDir, () => applyConfig(ctx.config)).on("error", () => {});
+    }
   } catch {}
 
   return { rethemeChrome, applyConfig, scheduleSaveConfig };

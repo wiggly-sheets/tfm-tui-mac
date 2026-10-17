@@ -173,6 +173,9 @@ export type KeyRouterCtx = {
   };
   toggleSidebar(): void;
   nextTheme(): void;
+  // optional so the keymap test's stub ctx (which only exercises the grid
+  // nav + menu paths) keeps working without wiring the full app
+  nextKeymap?(): void;
   reverseSort(): void;
   toggleViewMode(): void;
   zoomTiles(dir: number): void;
@@ -794,6 +797,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "toggleView", run: () => ctx.toggleViewMode() },
     { action: "refresh", run: () => ctx.refreshFolder() },
     { action: "nextTheme", run: () => ctx.nextTheme() },
+    { action: "nextKeymap", run: () => ctx.nextKeymap?.() },
     { action: "zoomIn", run: () => ctx.zoomTiles(1) },
     { action: "zoomOut", run: () => ctx.zoomTiles(-1) },
     { action: "toggleDualPane", run: () => ctx.toggleDualPane() },
@@ -942,6 +946,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "toggleQuicklook") && ev.repeated !== true && runAction("toggleQuicklook")) return;
     if (hit(ev, "toggleSidebar") && ev.repeated !== true && runAction("toggleSidebar")) return;
     if (hit(ev, "nextTheme") && ev.repeated !== true && runAction("nextTheme")) return;
+    if (hit(ev, "nextKeymap") && ev.repeated !== true && runAction("nextKeymap")) return;
     if (hit(ev, "openTerminal") && runAction("openTerminal")) return;
     if (hit(ev, "connectServer") && runAction("connectServer")) return;
     if (hit(ev, "toggleView") && runAction("toggleView")) return;

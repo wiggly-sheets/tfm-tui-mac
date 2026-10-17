@@ -203,6 +203,7 @@ toggle-view           = ["ctrl+g"]                  # default: ctrl+g
 refresh               = []                          # default: 
 edit-toolbar          = []                          # default: 
 next-theme            = ["alt+t"]                   # default: alt+t
+next-keymap           = ["alt+shift+t"]             # default: alt+shift+t
 cycle-sort            = ["alt+s"]                   # default: alt+s
 reverse-sort          = ["alt+shift+s"]             # default: alt+shift+s
 zoom-in               = ["ctrl+="]                  # default: ctrl+=

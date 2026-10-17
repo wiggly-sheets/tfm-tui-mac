@@ -7,7 +7,7 @@
 import { spawnSafe } from "../fs/spawn-safe";
 import { spawnOpenTarget } from "../fs/open-url";
 import { errMessage } from "../lib/uiutil";
-import { THEME_PRESETS } from "../config/themes";
+import { THEME_PRESETS, type ThemePreset } from "../config/themes";
 import type { LoadedPlugin } from "../plugins/plugin-api";
 import {
   themeNearestIdx as settingsThemeNearestIdx,
@@ -59,6 +59,10 @@ export type SettingsModelCtx = {
   // console-mode read: when active the theme row is display-only (one static
   // console palette paints regardless of presets). Optional so tests stay light.
   isTtyMode?(): boolean;
+  // built-ins + user themes from ~/.config/tfm/themes. Absent = bare
+  // THEME_PRESETS (tests). The cycle row and nextTheme keybind read this so a
+  // user theme lands in the list instead of being treated as "custom".
+  themePresets?: ThemePreset[];
   // per-pane view mode: the ACTIVE pane's stored mode (not the global default),
   // so the settings view-mode cycle row shows what ctrl+g will flip next.
   // Absent = fall back to the global config value (older fakes).
@@ -77,7 +81,8 @@ export type SettingsModelCtx = {
 };
 
 export const makeSettingModel = (ctx: SettingsModelCtx) => {
-  const themePresetIdx = (): number => settingsThemePresetIdx(THEME_PRESETS, ctx.config.theme);
+  const presets = ctx.themePresets ?? THEME_PRESETS;
+  const themePresetIdx = (): number => settingsThemePresetIdx(presets, ctx.config.theme);
   // plugin rows are boot-loaded once (restart-to-reload); absent without plugins
   const loadedPlugins = (): LoadedPlugin[] => ctx.plugins?.() ?? [];
 
@@ -219,7 +224,7 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
     // On the console the row is display-only: one static palette paints no
     // matter the preset, so adjusting warns instead of committing (config is
     // still stored, and applies back on a graphical terminal).
-    const names = ["System", ...THEME_PRESETS.map((p) => p.name)];
+    const names = ["System", ...presets.map((p) => p.name)];
     return {
       kind: "cycle",
       label: "theme",
@@ -249,7 +254,7 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
           return;
         }
         // i - 1 indexes the preset list; a stale index leaves the theme alone
-        const preset = THEME_PRESETS[i - 1];
+        const preset = presets[i - 1];
         if (!preset) return;
         commit({
           ui: { ...ctx.config.ui, followTerminal: false },
@@ -262,8 +267,8 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
       // the static palette is named instead.
       customLabel: () => {
         if (ctx.isTtyMode?.()) return isDark(ctx.config.theme.bg) ? "Console" : "Console Light";
-        const n = settingsThemeNearestIdx(THEME_PRESETS, ctx.config.theme);
-        const near = n >= 0 ? THEME_PRESETS[n] : undefined;
+        const n = settingsThemeNearestIdx(presets, ctx.config.theme);
+        const near = n >= 0 ? presets[n] : undefined;
         return near ? `~${near.name}` : "custom";
       },
     };

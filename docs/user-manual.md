@@ -205,6 +205,7 @@ them:
 | toggle quicklook | `f8` | Show or hide the quicklook preview float |
 | toggle view | `ctrl+g` | Cycle grid, list and columns |
 | next theme | `alt+t` | Step through the color themes |
+| next keymap | `alt+shift+t` | Step through the keymap presets (tfm / yazi) |
 | cycle sort | `alt+s` | Name, size, date, then type |
 | reverse sort | `alt+shift+s` | Flip the sort direction |
 | zoom in | `ctrl+=` | Grow tiles and icons a step |
@@ -431,6 +432,22 @@ Dracula, Everforest, Flexoki, Frappe, GitHub, Gruvbox, Kanagawa, Macchiato,
 Material, Matrix, Mercury, Monokai, Night Owl, Nord, One Dark, Orng, Osaka
 Jade, Palenight, Rose Pine, Solarized, Synth '84, Vercel, Vesper, and Zenburn.
 Individual colors live in the `[theme]` table.
+
+### Custom themes
+
+Port another color scheme by dropping a `.toml` file into the themes folder:
+
+```
+~/.config/tfm/themes/
+```
+
+Each file is one `[theme]` section named after the file — every one of the 27
+keys must be a `#rrggbb` hex or the file is skipped on load. Built-in presets
+load first, then user files in alphabetical order, so the cycle row and `alt+t`
+step through all of them. On first run tfm drops a `sample.toml` template there;
+copy it, rename it, and paste your colors. Editing a theme file while it is
+selected needs a re-select — `config.toml` live-reloads, the themes folder does
+not (the app commits a theme's values, not a path).
 
 ## Configuration
 

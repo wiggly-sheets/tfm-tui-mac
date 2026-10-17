@@ -172,6 +172,7 @@ const makeHarness = (over: Partial<KeyRouterCtx> = {}) => {
     toggleInfoSidebar: rec("info:toggle"),
     toggleSidebar: rec("sidebar:toggle"),
     nextTheme: rec("theme:next"),
+    nextKeymap: rec("keymap:next"),
     toggleViewMode: rec("view:toggle"),
     zoomTiles: (d) => calls.push(`zoom:${d}`),
     toggleDualPane: rec("pane:toggle-dual"),
@@ -1006,6 +1007,12 @@ describe("remappable action keys", () => {
     h.key("s", { meta: true });
     h.key("s", { meta: true, shift: true });
     expect(h.calls).toEqual(["sidebar:toggle", "theme:next", "sort:cycle", "sort:reverse"]);
+  });
+
+  test("alt+shift+t cycles the keymap preset", () => {
+    const h = makeHarness();
+    h.key("t", { meta: true, shift: true });
+    expect(h.calls).toEqual(["keymap:next"]);
   });
 
   test("a remap moves the sidebar toggle off ctrl+b", () => {
