@@ -10,7 +10,7 @@ import { hookScrollerScroll } from "../ui/ui-grid";
 import type { SlotElement } from "../ui/ui-slots";
 import { destroyChildren, destroyNode } from "../lib/uiutil";
 import type { NodeLike } from "../lib/node-like";
-import type { PaneId } from "../app/layout";
+import type { LayoutNode, PaneId } from "../app/layout";
 import type { CoreWiring } from "./core";
 import type { ChromeWiring, FileopsWiring, GridFoundationWiring, GridWiring, NavWiring } from "./types";
 
@@ -79,16 +79,31 @@ export const wirePanes = (deps: {
     scrollers.delete(id);
   };
 
-  // legacy 2-pane h-split: the session split ratio rides the two columns'
-  // flexGrow (mouse-resize-split writes the same cells by id)
+  // the session split ratio rides each leaf column's flexGrow (mouse-resize-split
+  // writes the same cells by id). The default 2-pane h-split was the only case
+  // that got a ratio — a v-split, a 3-pane tree, or any split whose leaves
+  // aren't p0/p1 left the divider fixed 50/50 and drag did nothing visible.
+  // Walk the tree: every h-split node distributes its width across its leaf
+  // descendants proportionally, so nested splits all follow the gesture.
   const applySplitRatio = (): void => {
-    const t = core.panes.tree;
-    if (t.kind !== "split" || t.orientation !== "h" || t.children.length !== 2) return;
-    t.children.forEach((child, i) => {
-      if (child.kind !== "leaf") return;
-      const col = columns.get(child.id) as unknown as NodeLike | undefined;
-      if (col) col.flexGrow = i === 0 ? core.geometry.splitPct : 100 - core.geometry.splitPct;
-    });
+    const walk = (node: LayoutNode, pct: number): void => {
+      if (node.kind === "leaf") {
+        const col = columns.get(node.id) as unknown as NodeLike | undefined;
+        if (col) col.flexGrow = pct;
+        return;
+      }
+      if (node.orientation !== "h") return;
+      const count = node.children.length;
+      if (count === 0) return;
+      // the last child absorbs the rounding remainder (same as layoutGeometry)
+      const base = Math.floor(pct / count);
+      const rem = pct - base * count;
+      for (let i = 0; i < count; i++) {
+        const child = node.children[i];
+        if (child) walk(child, base + (i === count - 1 ? rem : 0));
+      }
+    };
+    walk(core.panes.tree, 100);
   };
 
   const collectDividers = (): NodeLike[] => {

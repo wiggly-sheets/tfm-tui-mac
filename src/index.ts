@@ -348,6 +348,10 @@ const retheme = wireRetheme({
   getKeymap: () => keymap,
   getGrid: () => grid,
   getGridFoundation: () => gridFoundation,
+  // [ui] vim: the binds merge live onto config.keys, so flipping the toggle
+  // must re-merge AND persist — hand the merge fn over here as a getter so
+  // the retheme hook runs it on every applyConfig (same path as the GUI row)
+  getVimApply: () => keymap.applyVimBinds,
 });
 
 // --- dnd (OSC 72) + resize + keyboard router ---

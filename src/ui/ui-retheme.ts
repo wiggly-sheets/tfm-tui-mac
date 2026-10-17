@@ -73,6 +73,9 @@ type RethemeCtx = {
   // side-effect hook for non-visual config consumers (undo journal sync).
   // Runs at the end of every applyConfig — optional so tests stay light.
   onConfigApplied?(): void;
+  // [ui] vim: re-merge the live binds after a config commit (the GUI row and
+  // a live-reload both land here). Optional so tests stay light.
+  onVimApply?(): void;
   // dual pane: re-clamp the active pane when dual is disabled (a hidden pane
   // must never own input/status) and repaint the focus cue.
   normalizePanes?(): void;
@@ -446,6 +449,11 @@ export const makeRetheme = (ctx: RethemeCtx) => {
     }
     try {
       ctx.onConfigApplied?.();
+    } catch {}
+    // [ui] vim: the binds merge live onto config.keys, so a commit (GUI row,
+    // live-reload, keymap switch) must re-merge after the keys are written
+    try {
+      ctx.onVimApply?.();
     } catch {}
     // terminal-height is RENDER_EXEMPT (no renderAll above) — the open pane
     // resizes its VT node itself, after the hover drawer settled the host.

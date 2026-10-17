@@ -8,7 +8,7 @@
 
 import os from "node:os";
 import type { CliRenderer, ScrollBoxRenderable } from "@opentui/core";
-import { loadConfig, type Theme } from "../config/config";
+import { consumeBrokenConfigNotice, loadConfig, type Theme } from "../config/config";
 import { ensureThemeSample } from "../config/themes";
 import { deriveColors } from "../config/color";
 import { applySurface, sideInnerWidth } from "../ui/style";
@@ -335,6 +335,7 @@ export const wireCore = (deps: {
     config,
     colors,
     themeGet,
+    brokenConfigNotice: consumeBrokenConfigNotice,
     isTtyMode,
     forceGlyph,
     setPointer,

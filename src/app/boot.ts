@@ -53,13 +53,17 @@ const guard = (ctx: BootCtx, name: string, fn: () => void | Promise<void>): Prom
     if (r instanceof Promise) {
       return r.catch((err) => {
         debugLog(`boot ${name} failed: ${err instanceof Error ? (err.stack ?? err.message) : err}`);
-        ctx.reportBootError?.(name, err);
+        try {
+          ctx.reportBootError?.(name, err);
+        } catch {}
       });
     }
     return Promise.resolve();
   } catch (err) {
     debugLog(`boot ${name} failed: ${err instanceof Error ? (err.stack ?? err.message) : err}`);
-    ctx.reportBootError?.(name, err);
+    try {
+      ctx.reportBootError?.(name, err);
+    } catch {}
     return Promise.resolve();
   }
 };

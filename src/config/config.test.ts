@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { configPath, defaultConfig, loadConfig, saveConfig } from "./config";
@@ -84,12 +84,36 @@ describe("loadConfig", () => {
     expect(errs[0]).toContain("malformed config");
   });
 
-  test("unknown keys are ignored, not merged", () => {
+  test("unknown keys are ignored, not merge", () => {
     process.env.TFM_CONFIG = file;
     writeFileSync(file, '[ui]\nbogus-key = "x"\nsidebar-width = 30\n');
     const cfg = loadConfig();
     expect(cfg.ui.sidebarWidth).toBe(30);
     expect("bogusKey" in cfg.ui).toBe(false);
+  });
+
+  // a malformed file used to silently collapse to defaults and get overwritten
+  // by the next save — it now backs the broken copy aside and surfaces the
+  // notice once (the caller toasts the user)
+  test("malformed TOML backs up the broken file and surfaces a notice", () => {
+    process.env.TFM_CONFIG = file;
+    writeFileSync(file, "this is = not = toml [[[\n");
+    const errs: string[] = [];
+    const realErr = console.error;
+    console.error = (...a: unknown[]) => {
+      errs.push(a.join(" "));
+    };
+    try {
+      expect(loadConfig()).toEqual(structuredClone(defaultConfig));
+    } finally {
+      console.error = realErr;
+    }
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain("malformed config");
+    // the broken copy is alongside the original, not overwriting it
+    const broken = readdirSync(dir).filter((f) => f.startsWith("config.toml.broken-"));
+    expect(broken.length).toBe(1);
+    expect(readFileSync(path.join(dir, broken[0]!), "utf8")).toBe("this is = not = toml [[[\n");
   });
 });
 

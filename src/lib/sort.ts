@@ -16,7 +16,12 @@ export const naturalAscFor = (mode: SortMode): boolean => SORT_NATURAL_ASC[mode]
 
 export const cycleSortMode = (current: SortMode): { sortBy: SortMode; sortAsc: boolean } => {
   // the modulo keeps the index in range for the non-empty table, so `current`
-  // is an unreachable-but-total fallback rather than a non-null assertion
+  // is an unreachable-but-total fallback rather than a non-null assertion.
+  // The `?? current` is dead: SORT_ORDER.indexOf returns -1 for an unknown
+  // mode, (-1 + 1) % 4 = 0, and SORT_ORDER[0] is always "name" — never
+  // undefined. A future sort mode must be added to SORT_ORDER or cycle lands on
+  // "name" silently; rejecting unknown modes here would catch that at the
+  // call site instead. Kept as-is for byte-identical behavior.
   const next = SORT_ORDER[(SORT_ORDER.indexOf(current) + 1) % SORT_ORDER.length] ?? current;
   return { sortBy: next, sortAsc: naturalAscFor(next) };
 };

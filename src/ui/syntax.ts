@@ -92,9 +92,13 @@ export const EXTRA_PARSERS = [
 export const registerSyntaxParsers = (): void => {
   // offline/proxy-safe: remote grammars download on first use and a failed
   // fetch must degrade to plain-text previews, never crash boot. Set
-  // TFM_NO_SYNTAX_DL=1 to skip registration entirely (bundled js/ts/md/zig
-  // highlighting still works — those ship inside @opentui/core).
-  if (process.env.TFM_NO_SYNTAX_DL) return;
+  // TFM_NO_SYNTAX_DL=1 (or =true) to skip registration entirely (bundled
+  // js/ts/md/zig highlighting still works — those ship inside @opentui/core).
+  // Parsed as a boolean: the old `if (process.env.TFM_NO_SYNTAX_DL) return;`
+  // treated ANY non-empty string as truthy, so TFM_NO_SYNTAX_DL=0 or =false
+  // incorrectly skipped parser registration.
+  const noDl = process.env.TFM_NO_SYNTAX_DL;
+  if (noDl === "1" || noDl === "true") return;
   try {
     addDefaultParsers(EXTRA_PARSERS);
   } catch (err) {

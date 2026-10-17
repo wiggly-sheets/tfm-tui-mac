@@ -9,15 +9,27 @@ describe("tdzSafe", () => {
     expect(tdzSafe(() => 42, 0)()).toBe(42);
   });
 
-  test("a throwing getter (TDZ pre-init access) yields the fallback, never throws", () => {
+  test("the first failure (pre-boot TDZ) yields the fallback; a second failure propagates", () => {
     // mirrors index.ts: `keymap` is a const initialized after wirePlugins
     // scans, so an eager api.commands() at activate top level would throw a
-    // ReferenceError without the guard
+    // ReferenceError without the guard. The guard is one-shot per closure: the
+    // pre-boot failure logs and returns the fallback, then the SAME closure
+    // propagates later errors instead of swallowing them forever. A fresh
+    // tdzSafe() call re-arms (each api surface gets its own guard).
     const read = (): string[] => keymap.commands();
     expect(() => read()).toThrow(ReferenceError);
-    expect(tdzSafe(read, [] as string[])()).toEqual([]);
+    const guarded = tdzSafe(read, [] as string[]);
+    expect(guarded()).toEqual([]);
     const keymap = { commands: () => ["quit"] };
-    expect(tdzSafe(read, [] as string[])()).toEqual(["quit"]);
+    expect(guarded()).toEqual(["quit"]);
+    // a second failure on the SAME guarded closure propagates — a real
+    // wiring-order bug is loud, not a permanent silent fallback
+    const readBroken = (): string[] => {
+      throw new ReferenceError("keymap is not initialized");
+    };
+    const guardedBroken = tdzSafe(readBroken, [] as string[]);
+    expect(guardedBroken()).toEqual([]);
+    expect(() => guardedBroken()).toThrow(ReferenceError);
   });
 });
 

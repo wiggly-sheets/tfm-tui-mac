@@ -503,6 +503,7 @@ export const wireGrid = (deps: {
       entryMouseHandlers: get(entryMouseHandlers, id),
       isCutKey: core.isCutKey,
       openFileDefault: chrome.openFileDefault,
+      navigate: nav.navigate,
       fileAnim: (target) => get(fileAnims, id).play(target),
       fileAnimVisibleOnly: () => core.config.ui.fileAnimationVisibleOnly,
     });

@@ -272,8 +272,11 @@ export const wireSettings = (deps: {
     // console mode: the theme row is display-only (static palette paints)
     isTtyMode: core.isTtyMode,
     // per-pane view mode: the ACTIVE pane's stored mode, so the view-mode
-    // cycle row shows what ctrl+g will flip next (not the global default)
-    activeViewMode: () => viewModeFor(core.panes.states[core.panes.active], core.config.ui.viewMode, core.isTtyMode),
+    // cycle row shows what ctrl+g will flip next (not the global default).
+    // Read by id, not the boot-frozen 0|1 shim — closing p1 and splitting to
+    // p2 made the shim index p0's mode while ctrl+g flipped p2 (the shim maps
+    // every id except p1 to 0).
+    activeViewMode: () => viewModeFor(core.panes.stateOf(core.panes.activeId), core.config.ui.viewMode, core.isTtyMode),
     plugins: () => plugins.plugins,
     // user themes from ~/.config/tfm/themes append after the built-ins; the
     // cycle row and nextTheme keybind read this list, so a ported theme is
@@ -349,10 +352,15 @@ export const wireRetheme = (deps: {
   // wires last, grid/grid-foundation own props/bulk-rename. Only read at
   // repaint time, long after the wiring settled.
   getKeymap: () => { pick: { isOpen(): boolean; repaint(): void } };
+  // [ui] vim: the binds merge live onto config.keys, so flipping the toggle
+  // must re-merge AND persist. keymap wires last (TDZ) — it hands the merge
+  // fn here as a getter, and the hook below runs it on every applyConfig (so
+  // the existing GUI row + a live-reload both land). Absent = no vim.
+  getVimApply?: () => () => void;
   getGrid: () => { props: { isOpen(): boolean; repaint(): void } };
   getGridFoundation: () => { bulkRename: { isOpen(): boolean; repaint(): void } };
 }) => {
-  const { core, nav, chrome, fileops, settings, getHover, getKeymap, getGrid, getGridFoundation } = deps;
+  const { core, nav, chrome, fileops, settings, getHover, getKeymap, getGrid, getGridFoundation, getVimApply } = deps;
   // --- Config application & persistence: lives in ./ui-retheme (rethemeChrome,
   // applyConfig, scheduleSaveConfig, live reload). Geometry rewrites go
   // through the core cell's setters — never bake them into consts. ---
@@ -449,6 +457,11 @@ export const wireRetheme = (deps: {
           preset: core.config.ui.followTerminal ? "System" : (allPresets[idx]?.name ?? "custom"),
           theme: core.config.theme,
         });
+      } catch {}
+      // [ui] vim: the binds merge live onto config.keys, so a commit (GUI row,
+      // live-reload, keymap switch) must re-merge after the keys are written
+      try {
+        getVimApply?.()?.();
       } catch {}
     },
     normalizePanes: () => {

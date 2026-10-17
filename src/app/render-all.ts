@@ -21,12 +21,16 @@ export type RenderAllCtx = {
 };
 
 export const makeRenderAll = (ctx: RenderAllCtx): (() => void) => {
-  const names = Object.keys(ctx.steps);
+  // NOTE (accepted as-is): the names list is derived fresh on every call, so
+  // steps added/removed after makeRenderAll is created are picked up by the
+  // next render. Removed steps are already safe (the loop skips a missing
+  // step); only *added* steps were ever invisible, and this closes that one
+  // direction. Object.keys on ~10 entries per render is free. No tradeoff.
   return () => {
     ctx.syncTabFromState();
     ctx.state.cwd = ctx.state.history[ctx.state.histIdx] ?? ctx.state.cwd;
     ctx.syncPaneCwds?.();
-    for (const name of names) {
+    for (const name of Object.keys(ctx.steps)) {
       const step = ctx.steps[name];
       if (!step) continue;
       // per-step timings feed slow-boot reports; measured always (ns-cheap),

@@ -66,6 +66,10 @@ export const wireGridFoundation = (deps: {
   // --- inline rename/create: widget + state live in ./ui-rename ---
   const rename = makeRename({
     renderer: () => chrome.renderer,
+    // the inline rename input is namespaced per pane (see ui-rename) so a
+    // path-edit on one pane can't collide with a rename on the other — the
+    // shared instance always acts on the active pane's tileRefs
+    prefix: () => `tfm-${core.panes.activeId}-`,
     byId: core.lookup.byId,
     colors: core.themeGet,
     tileW: () => core.geometry.tileW,

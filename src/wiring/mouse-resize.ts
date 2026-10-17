@@ -28,7 +28,7 @@ const boundsOf = (prop: string): ResizeBounds => {
   for (const row of UI_SCHEMA) {
     if (row.kind === "int" && row.prop === prop) return { min: row.min, max: row.max };
   }
-  return { min: 1, max: 200 };
+  throw new Error(`mouse-resize: no schema row for ${prop}`);
 };
 
 export type { MouseResizeWiring };

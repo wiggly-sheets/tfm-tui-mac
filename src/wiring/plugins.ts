@@ -39,18 +39,22 @@ import type { ChromeWiring, GridFoundationWiring, NavWiring } from "./types";
 
 export type PluginsWiring = Awaited<ReturnType<typeof wirePlugins>>;
 
-// TDZ-safe late-cluster reader: getKeymap/getPick close over wirings that
-// initialize AFTER the first plugin scan (an eager plugin calling
+// TDZ-safe late-cluster reader: getKeymap/getPick/getPrompt close over
+// wirings that initialize AFTER the first plugin scan (an eager plugin calling
 // api.commands()/ui.pick at activate top level would otherwise throw a
-// ReferenceError and fail its own load). The fallback only ever surfaces
-// pre-boot; lazy post-boot calls see the real values.
+// ReferenceError and fail its own load). The guard is ONE-SHOT: the first
+// failure (the legitimate pre-boot case) logs and returns the fallback; every
+// later call propagates. Re-arming on every call converted any real
+// wiring-order bug into a permanent silent fallback — indistinguishable from
+// pre-boot except via a --debug dlog line.
 export const tdzSafe = <T>(get: () => T, fallback: T): (() => T) => {
+  let armed = true;
   return () => {
     try {
       return get();
     } catch (err) {
-      // pre-boot eager calls legitimately hit this; a dlog keeps a REAL
-      // wiring-order bug honest instead of a silent fallback forever
+      if (!armed) throw err;
+      armed = false;
       try {
         dlog(`tdzSafe fallback: ${errMessage(err)}`);
       } catch {}

@@ -1,7 +1,7 @@
 // --- Config file IO. All key definitions, defaults, parsing rules, the
 // serializer (with regenerated doc comments) and the example TOML live in
 // ./config-schema — this module is just file location + read/write. ---
-import { readFileSync } from "node:fs";
+import { copyFileSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +18,18 @@ export function configPath(): string {
   return path.join(base, "tfm", "config.toml");
 }
 
+// A malformed file used to silently collapse to defaults, and every
+// scheduleSaveConfig (f3/f7 toggle, keymap switch) then wrote sanitized
+// defaults back over the user's broken file with no backup. On parse failure
+// we copy it aside and surface the notice once — the caller (core wiring)
+// consumes it and toasts the user. Defaults still load, so boot never blocks.
+let brokenNotice: string | null = null;
+export const consumeBrokenConfigNotice = (): string | null => {
+  const n = brokenNotice;
+  brokenNotice = null;
+  return n;
+};
+
 export function loadConfig(): Config {
   const file = configPath();
   let raw: string;
@@ -31,6 +43,12 @@ export function loadConfig(): Config {
   try {
     doc = parse(raw);
   } catch (err) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const broken = `${file}.broken-${stamp}`;
+    try {
+      copyFileSync(file, broken);
+      brokenNotice = `config was malformed — backed up to ${broken}`;
+    } catch {}
     console.error(`[tfm] ignoring malformed config ${file}: ${err}`);
     return parseConfigDoc(undefined);
   }

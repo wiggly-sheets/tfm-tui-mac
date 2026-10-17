@@ -198,31 +198,44 @@ export const wireKeymap = (deps: {
   // switcher already behaves this way — a preset commit overwrites every bind);
   // any other hand edit is left untouched. No vim state machine: the binds ARE
   // the mode.
+  let applyingVim = false;
   const applyVimBinds = (): void => {
-    const vim = core.config.ui.vim;
-    const yazi = presetKeys("yazi");
-    const keys = core.config.keys;
-    const changed: Partial<Record<KeyAction, string[]>> = {};
-    for (const action of ["parentDir", "moveUp", "moveDown", "openSelected"] as KeyAction[]) {
-      const want = yazi[action];
-      if (want && !want.every((spec) => (keys[action] ?? []).includes(spec))) changed[action] = want;
-    }
-    // vim off: drop the bare j/k/h/l/o that the vim mode added (the yazi preset
-    // also owns these; it stays intact because its table matches verbatim)
-    if (!vim) {
-      const vimKeys: Array<[KeyAction, string]> = [
-        ["parentDir", "h"],
-        ["moveUp", "k"],
-        ["moveDown", "j"],
-        ["openSelected", "l"],
-        ["openSelected", "o"],
-      ];
-      for (const [action, spec] of vimKeys) {
-        if ((keys[action] ?? []).includes(spec)) changed[action] = (keys[action] ?? []).filter((s) => s !== spec);
+    if (applyingVim) return; // applyConfig -> onVimApply re-enters here; no-op
+    applyingVim = true;
+    try {
+      const vim = core.config.ui.vim;
+      const yazi = presetKeys("yazi");
+      const keys = core.config.keys;
+      const changed: Partial<Record<KeyAction, string[]>> = {};
+      for (const action of ["parentDir", "moveUp", "moveDown", "openSelected"] as KeyAction[]) {
+        const want = yazi[action];
+        if (want && !want.every((spec) => (keys[action] ?? []).includes(spec))) changed[action] = want;
       }
+      // vim off: drop the bare j/k/h/l/o that the vim mode added (the yazi preset
+      // also owns these; it stays intact because its table matches verbatim)
+      if (!vim) {
+        const vimKeys: Array<[KeyAction, string]> = [
+          ["parentDir", "h"],
+          ["moveUp", "k"],
+          ["moveDown", "j"],
+          ["openSelected", "l"],
+          ["openSelected", "o"],
+        ];
+        for (const [action, spec] of vimKeys) {
+          if ((keys[action] ?? []).includes(spec)) changed[action] = (keys[action] ?? []).filter((s) => s !== spec);
+        }
+      }
+      const any = Object.keys(changed).length > 0;
+      if (!any) return;
+      // route through the single applyConfig -> scheduleSaveConfig path so the
+      // merge persists (the old direct mutation vanished on the next save or
+      // survived a crash, and a GUI keybind commit would serialize the merged
+      // binds permanently — no longer round-tripping through the toggle)
+      getRetheme().applyConfig({ ...core.config, keys: { ...keys, ...changed } });
+      getRetheme().scheduleSaveConfig();
+    } finally {
+      applyingVim = false;
     }
-    const any = Object.keys(changed).length > 0;
-    if (any) core.config.keys = { ...keys, ...changed };
   };
 
   // boot: [ui] vim on means the vim binds are already live before the first
@@ -551,6 +564,7 @@ export const wireKeymap = (deps: {
       plugins.plugins
         .filter(isPluginEnabled)
         .flatMap((p) => p.commands.map((c) => ({ id: c.id, binds: getPluginCommandBinds(p, c.id), run: c.run }))),
+    log: (msg) => dlog(msg),
     pick: {
       isOpen: () => pick.isOpen(),
       handleKey: pick.handleKey,
@@ -571,5 +585,5 @@ export const wireKeymap = (deps: {
 
   chrome.renderer.keyInput.on("keypress", (e: KeyEvent) => keyRouter.handleKey(e));
 
-  return { keyRouter, pick, prompt, goToFolder, quicklook };
+  return { keyRouter, pick, prompt, goToFolder, quicklook, applyVimBinds };
 };

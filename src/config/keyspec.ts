@@ -127,16 +127,14 @@ const canonKeyName = (name: string): string => (name === "enter" || name === "re
 // Shared by keybindConflict and the plugin bind checks in settings-model —
 // one comparator so validation and dispatch can't disagree. (The runtime
 // baseCode fallback in keyMatch is event-specific and stays in the router.)
-export const keySpecEqual = (a: string, b: string): boolean => {
-  const pa = parseKeySpec(a);
-  const pb = parseKeySpec(b);
-  return (
-    !!pa &&
-    !!pb &&
-    canonKeyName(pa.name) === canonKeyName(pb.name) &&
-    pa.ctrl === pb.ctrl &&
-    pa.shift === pb.shift &&
-    pa.meta === pb.meta &&
-    pa.cmd === pb.cmd
-  );
+export const keySpecEqual = (a: string, b: string): boolean => canonicalKeySpec(a) === canonicalKeySpec(b);
+
+// canonical spec string for use as a Map key: modifiers in fixed order, name
+// canonicalized (enter == return). Two specs that keySpecEqual considers equal
+// produce the same string, so conflict lookups become O(1) instead of a
+// linear scan of a growing groups array.
+export const canonicalKeySpec = (s: string): string => {
+  const p = parseKeySpec(s);
+  if (!p) return "";
+  return `${p.ctrl ? "ctrl+" : ""}${p.shift ? "shift+" : ""}${p.meta ? "alt+" : ""}${p.cmd ? "cmd+" : ""}${canonKeyName(p.name)}`;
 };

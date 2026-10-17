@@ -214,6 +214,16 @@ export const makeFileAnim = (ctx: FileAnimCtx) => {
     } catch {}
   };
 
+  // TRADEOFF (accepted as-is): apply() loops over EVERY node on every frame —
+  // 1000 nodes × 60fps = 60k property writes/frame. Two mitigations already in
+  // place, so no change is needed:
+  //   1. MAX_PER_NODE_ANIM (1000): the grid caps its list to the viewport, so
+  //      a 20k folder animates at most 1000 tiles per wave.
+  //   2. the degrade-to-container path (below): over the ceiling with a
+  //      container available, ids collapses to [target.inner] — one push/frame
+  //      instead of N, still animating. The bare stop() survives only as the
+  //      no-container defensive guard.
+  // Raising the ceiling would need per-frame batching, not taste.
   const apply = (raw: number): void => {
     const n = total > 0 ? total : nodes.length;
     for (let i = 0; i < nodes.length; i++) {
@@ -344,6 +354,26 @@ export const makeFileAnim = (ctx: FileAnimCtx) => {
       const running = !!tl && holder.p < 1 && style === rm.style && !(style === "stagger-slide" && cfg.dir !== rm.dir);
       if (running) {
         for (const node of resolved) if (!nodes.includes(node)) nodes.push(node);
+        // MAX_PER_NODE_ANIM is enforced at play() entry but NOT here: the
+        // running-wave branch accumulates across notches, so a continuous
+        // scroll-reveal over a huge folder grows nodes past the ceiling and
+        // hits the exact 60k-writes/frame scenario the cap exists to prevent.
+        // Re-check and degrade to the container path when exceeded.
+        if (!container && nodes.length > MAX_PER_NODE_ANIM) {
+          if (target?.inner) {
+            const innerNode = ctx.byId(target.inner);
+            if (innerNode) {
+              nodes = [innerNode];
+              container = true;
+            } else {
+              stop();
+              return null;
+            }
+          } else {
+            stop();
+            return null;
+          }
+        }
         // indices only ever grow, so earlier nodes' staggerLocal(i/n) moves
         // FORWARD (never rewinds) as the wave absorbs the new set
         total = Math.max(total, nodes.length);

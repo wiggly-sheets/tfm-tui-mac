@@ -50,6 +50,7 @@ export const wireWatcher = (deps: {
       },
       isRenaming: () => getGridFoundation().rename.isRenaming(),
       renderGrid: () => getGrid().renderPane(id),
+      platform: process.platform,
       // our own diagnostic sinks: dlog appends on every mouse event and defaults
       // to /tmp/tfm-dnd.log — when that IS the cwd, each click would otherwise
       // full-rebuild the grid 200ms later (visible flash after every select)
@@ -178,6 +179,12 @@ export const wireBoot = (deps: {
           dlog(`keybind conflicts: ${text}`);
           chrome.notify(`${text} — Settings → keys`, "keybind conflict");
         }
+      } catch {}
+      // a malformed config.toml used to silently collapse to defaults and get
+      // overwritten by the next save; the broken copy is now alongside it
+      try {
+        const broken = core.brokenConfigNotice();
+        if (broken) chrome.notify(broken, "config", "error");
       } catch {}
     })
     .catch(() => {}); // every step is guarded in ./boot; this catches the tail

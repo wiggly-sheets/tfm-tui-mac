@@ -10,6 +10,7 @@ import { makeConflict, makeYesNo } from "../ui/ui-dialogs";
 import { makeProgress } from "../ui/ui-progress";
 import { makeFileOps } from "../fs/fileops";
 import { makeTerminal } from "../ui/ui-term";
+import { makeDefaultSudoExec } from "../fs/elevate";
 import { makeTrashOps, makeTrashConfirms } from "../fs/trashops";
 import { shouldToast } from "../fs/fsutil";
 import { appendLog, dlog } from "../app/log";
@@ -106,6 +107,27 @@ export const wireFileops = (deps: {
   // sudo gate: chrome wires it first (same getPrompt dep + notify) — one
   // shared gate, the factory is stateless.
   const ensureSudo = chrome.ensureSudo;
+  // sudo exec with a cancel hook: a hung `sudo -S` (password prompt wedged,
+  // or a tool that ignores EOF) used to hold the serial op queue for the full
+  // 120s bound with no cancel path — quit/restart refuse while busy and the
+  // toast's ✕ did nothing. The hook arms prog.processCancel (the toast's ✕)
+  // for the duration of the sudo call and clears it after, so a later archive
+  // child can still register its own cancel without a stale hook firing.
+  const sudoExec = makeDefaultSudoExec({
+    // one-shot: the toast's ✕ fires the sudo cancel once and clears the hook,
+    // so a stale cancel never survives to kill a later unrelated child (the
+    // archive child's own processCancel overwrites it anyway, but a sudo
+    // call with no following archive op would leave a dead hook installed)
+    onCancel: (cancel) => {
+      progress.prog.processCancel = () => {
+        try {
+          cancel();
+        } finally {
+          progress.prog.processCancel = null;
+        }
+      };
+    },
+  });
   const fileops = makeFileOps({
     conflict,
     prog: progress.prog,
@@ -119,6 +141,7 @@ export const wireFileops = (deps: {
     home,
     refreshCutVisuals: gridFoundation.refreshCutVisuals,
     ensureSudo,
+    sudoExec,
     log: (msg) => dlog(msg),
     onFileOp: (op, paths, dest, outcome) =>
       sharedPluginEvents().emit("file-op", { op, paths, ...(dest ? { dest } : {}), ...(outcome ? { outcome } : {}) }),
@@ -153,6 +176,7 @@ export const wireFileops = (deps: {
     notify: chrome.notify,
     renderAll: nav.renderAll,
     ensureSudo,
+    sudoExec,
     // delete progress: the driver maps trashops' calls onto the SAME prog
     // state + toast transfers use (pause/cancel included). Flags reset at
     // start so a stale cancel from an earlier op can't abort the delete.

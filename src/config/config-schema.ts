@@ -9,7 +9,7 @@
 // The key-spec vocabulary (parse / validate / match / compare) is its own leaf,
 // ./keyspec — imported back only for the KEY_ROWS-driven conflict check below.
 
-import { keySpecEqual, parseKeySpec } from "./keyspec";
+import { canonicalKeySpec, keySpecEqual, parseKeySpec } from "./keyspec";
 import type { SortMode } from "../lib/sort";
 // Settings-row type lives HERE (a leaf, no imports) so the plugin api can
 // reference plugin-provided rows without importing a ui/ module — ui/settings
@@ -2178,16 +2178,23 @@ export const keybindConflict = (cfg: Config, action: KeyAction, specStr: string)
 export type KeybindConflict = { spec: string; actions: KeyAction[] };
 
 export const findKeybindConflicts = (cfg: Config): KeybindConflict[] => {
-  const groups: KeybindConflict[] = [];
+  // O(1) lookup by canonical spec string: the old groups.find() linear-scanned
+  // a growing array per spec (~60 actions = ~1800 comparisons, negligible
+  // today, but the pattern degrades linearly per added keybind — plugins
+  // multiply specs). canonicalKeySpec (keyspec.ts) folds enter==return and
+  // normalizes modifier order, so two equivalent specs share one group.
+  const groups = new Map<string, KeybindConflict>();
   for (const row of KEY_ROWS) {
     for (const s of cfg.keys[row.action] ?? []) {
-      const g = groups.find((g) => keySpecEqual(g.spec, s));
-      if (g) {
-        if (!g.actions.includes(row.action)) g.actions.push(row.action);
-      } else groups.push({ spec: s, actions: [row.action] });
+      const k = canonicalKeySpec(s);
+      if (!k) continue;
+      const existing = groups.get(k);
+      if (existing) {
+        if (!existing.actions.includes(row.action)) existing.actions.push(row.action);
+      } else groups.set(k, { spec: s, actions: [row.action] });
     }
   }
-  return groups.filter((g) => g.actions.length > 1);
+  return [...groups.values()].filter((g) => g.actions.length > 1);
 };
 
 // steal one spec: the owner loses exactly that bind (possibly unbinding it —

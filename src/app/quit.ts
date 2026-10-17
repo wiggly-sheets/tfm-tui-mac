@@ -135,19 +135,26 @@ export const makeSignalShutdown = (ctx: QuitCtx, beforeExit?: () => Promise<void
       // the PTY dies FIRST: teardown is synchronous, so the async work that
       // must land before process.exit (config save, xattr drain) waits behind
       // it and cannot delay closeTerminal past the bounded cap
+      let failed = false;
       try {
-        runTeardownSteps(ctx);
-      } catch {}
+        failed = runTeardownSteps(ctx);
+      } catch {
+        failed = true;
+      }
       try {
         await beforeExit?.();
       } catch {}
       try {
         ctx.destroy();
-      } catch {}
+      } catch {
+        failed = true;
+      }
       // the signal code wins over quit's 0/1 health code — a signal-killed
       // process reports the signal. No isBusy refusal either: file ops cannot
-      // veto a window that is already gone.
-      ctx.exit(SIGNAL_EXIT_CODES[signal] ?? 1);
+      // veto a window that is already gone. A failed teardown (e.g. the session
+      // flush died with the renderer) must still surface as 1, not mask the
+      // signal code.
+      ctx.exit(failed ? 1 : (SIGNAL_EXIT_CODES[signal] ?? 1));
     })();
   };
 };

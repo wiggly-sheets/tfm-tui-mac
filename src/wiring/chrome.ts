@@ -64,6 +64,7 @@ export const wireChrome = async (deps: {
       initial?: string;
       password?: boolean;
     }): Promise<string | null>;
+    close(): void;
   };
   // grid's finishDragCtx (internal drag commit) — grid wiring builds it later
   finishDrag(): void;
@@ -571,6 +572,11 @@ export const wireChrome = async (deps: {
         try {
           proc.kill();
         } catch {}
+        // the credential prompt may be mid-open above a dead proc — settle
+        // it as cancel so answerPrompt's await resolves instead of hanging
+        try {
+          deps.getPrompt().close();
+        } catch {}
       }, GIO_TIMEOUT_MS);
     };
     arm();
@@ -584,13 +590,20 @@ export const wireChrome = async (deps: {
         const line = p.message.split("\n").filter(Boolean).pop();
         if (line) nav.setStatusMsg(line.slice(0, 120));
       }
-      const answer = await deps.getPrompt().open({
-        title: p.title,
-        ...(p.default ? { initial: p.default } : {}),
-        ...(p.kind === "choice" ? { placeholder: "Number" } : {}),
-        okLabel: p.kind === "choice" ? "Send" : "OK",
-        password: p.password,
-      });
+      let answer: string | null = null;
+      try {
+        answer = await deps.getPrompt().open({
+          title: p.title,
+          ...(p.default ? { initial: p.default } : {}),
+          ...(p.kind === "choice" ? { placeholder: "Number" } : {}),
+          okLabel: p.kind === "choice" ? "Send" : "OK",
+          password: p.password,
+        });
+      } catch {
+        // renderer teardown while the credential prompt was up: treat the
+        // rejection like a cancel — the proc is already dead underneath us
+        answer = null;
+      }
       if (answer === null) {
         cancelled = true;
         try {
