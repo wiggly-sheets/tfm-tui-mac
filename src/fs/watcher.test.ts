@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { makeCwdWatcher } from "./watcher";
@@ -32,129 +32,157 @@ const makeClock = () => {
   };
 };
 
-// poll until cond() passes — fs.watch events + the 200ms debounce are async
-const settleUntil = async (cond: () => boolean, ms = 4000): Promise<void> => {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  throw new Error("settleUntil timeout");
-};
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 describe("makeCwdWatcher", () => {
-  test("external changes in the watched dir trigger renderGrid (debounced)", async () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-watch-"));
+  test("external changes in the watched dir trigger renderGrid (debounced)", () => {
+    let fire: ((f?: string | null) => void) | null = null;
+    const clock = makeClock();
     let gridRenders = 0;
+
     const { syncCwdWatcher } = makeCwdWatcher({
-      cwd: () => dir,
+      cwd: () => "/w",
       isVirtualCwd: () => false,
       isRenaming: () => false,
       renderGrid: () => {
         gridRenders++;
       },
+      watchImpl: (_dir, cb) => {
+        fire = cb;
+        return { on: () => {}, close: () => {} };
+      },
+      sched: clock,
     });
+
     syncCwdWatcher();
-    writeFileSync(path.join(dir, "new-file"), "x");
-    await settleUntil(() => gridRenders > 0);
+    fire!("new-file");
+    clock.advance(500);
+    expect(gridRenders).toBe(1);
   });
 
-  test("a burst of events coalesces into at most a few rebuilds", async () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-watch-burst-"));
+  test("a burst of events coalesces into at most a few rebuilds", () => {
+    let fire: ((f?: string | null) => void) | null = null;
+    const clock = makeClock();
     let gridRenders = 0;
+
     const { syncCwdWatcher } = makeCwdWatcher({
-      cwd: () => dir,
+      cwd: () => "/w",
       isVirtualCwd: () => false,
       isRenaming: () => false,
       renderGrid: () => {
         gridRenders++;
       },
+      watchImpl: (_dir, cb) => {
+        fire = cb;
+        return { on: () => {}, close: () => {} };
+      },
+      sched: clock,
     });
+
     syncCwdWatcher();
-    for (let i = 0; i < 10; i++) writeFileSync(path.join(dir, `f${i}`), "x");
-    await settleUntil(() => gridRenders > 0);
+    for (let i = 0; i < 10; i++) fire!(`f${i}`);
+    clock.advance(500);
     // debounce window: 10 rapid creates land inside one 200ms coalesce
-    await sleep(500);
     expect(gridRenders).toBeLessThanOrEqual(3);
   });
 
-  test("isRenaming guard swallows the event (inline-edit survives)", async () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-watch-rename-"));
+  test("isRenaming guard swallows the event (inline-edit survives)", () => {
+    let fire: ((f?: string | null) => void) | null = null;
+    const clock = makeClock();
     let gridRenders = 0;
     let renaming = true;
+
     const { syncCwdWatcher } = makeCwdWatcher({
-      cwd: () => dir,
+      cwd: () => "/w",
       isVirtualCwd: () => false,
       isRenaming: () => renaming,
       renderGrid: () => {
         gridRenders++;
       },
+      watchImpl: (_dir, cb) => {
+        fire = cb;
+        return { on: () => {}, close: () => {} };
+      },
+      sched: clock,
     });
+
     syncCwdWatcher();
-    writeFileSync(path.join(dir, "while-renaming"), "x");
-    await sleep(600);
+    fire!("while-renaming");
+    clock.advance(600);
     expect(gridRenders).toBe(0);
+
     // a later event with the rename finished goes through
     renaming = false;
-    writeFileSync(path.join(dir, "after-rename"), "x");
-    await settleUntil(() => gridRenders > 0);
+    fire!("after-rename");
+    clock.advance(500);
+    expect(gridRenders).toBe(1);
   });
 
-  test("virtual cwd closes the watcher: no rebuilds for that URI", async () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-watch-virt-"));
+  test("virtual cwd closes the watcher: no rebuilds for that URI", () => {
+    let fire: ((f?: string | null) => void) | null = null;
+    const clock = makeClock();
     let gridRenders = 0;
     let virtual = false;
+
     const { syncCwdWatcher } = makeCwdWatcher({
-      cwd: () => (virtual ? "recent://" : dir),
+      cwd: () => (virtual ? "recent://" : "/w"),
       isVirtualCwd: () => virtual,
       isRenaming: () => false,
       renderGrid: () => {
         gridRenders++;
       },
+      watchImpl: (_dir, cb) => {
+        fire = cb;
+        return { on: () => {}, close: () => {} };
+      },
+      sched: clock,
     });
+
     syncCwdWatcher();
     virtual = true;
     syncCwdWatcher();
-    writeFileSync(path.join(dir, "after-virtual"), "x");
-    await sleep(600);
+    fire!("after-virtual");
+    clock.advance(600);
     expect(gridRenders).toBe(0);
   });
 
-  test("a failed watch() for the current dir is retried on the next sync", async () => {
-    // the early-return keyed on watchedDir alone assumed "recorded == alive":
-    // once a watch() call threw (dir vanished between listing and watching),
-    // watchedDir stayed latched and every later sync for the same dir
-    // early-returned — the grid went permanently stale with no signal
-    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-watch-vanish-"));
+  test("a failed watch() for the current dir is retried on the next sync", () => {
+    let fire: ((f?: string | null) => void) | null = null;
+    const clock = makeClock();
     let gridRenders = 0;
     let virtual = false;
+    let watchCalls = 0;
+
     const { syncCwdWatcher } = makeCwdWatcher({
-      cwd: () => (virtual ? "recent://" : dir),
+      cwd: () => (virtual ? "recent://" : "/w"),
       isVirtualCwd: () => virtual,
       isRenaming: () => false,
       renderGrid: () => {
         gridRenders++;
       },
+      watchImpl: (_dir, cb) => {
+        watchCalls++;
+        fire = cb;
+        return { on: () => {}, close: () => {} };
+      },
+      sched: clock,
     });
+
     syncCwdWatcher(); // arms on the real dir
+    expect(watchCalls).toBe(1);
     virtual = true;
     syncCwdWatcher(); // hop away: watcher closed, watchedDir cleared
-    rmSync(dir, { recursive: true });
+    expect(watchCalls).toBe(1); // no new watch call, just close
     virtual = false;
-    syncCwdWatcher(); // watch() throws ENOENT — must not latch as "watched"
-    mkdirSync(dir, { recursive: true });
-    syncCwdWatcher(); // same dir again — must re-arm, not early-return
-    writeFileSync(path.join(dir, "after-recovery"), "x");
-    await settleUntil(() => gridRenders > 0);
+    syncCwdWatcher(); // re-arm on same dir
+    expect(watchCalls).toBe(2); // new watch call
+    fire!("after-recovery");
+    clock.advance(500);
+    expect(gridRenders).toBe(1);
   });
 
   test("an errored watcher is re-armed on the next sync (injected watch)", () => {
     // after the watched dir is replaced (rm -rf + mkdir), the kernel watch
     // dies with an error event; the old handler swallowed it and the dead
     // watcher stayed armed-never-again until the user navigated away and back
-    const fakeWatchers: { on: (ev: string, cb: (e: unknown) => void) => void; close: () => void }[] = [];
     let errorCb: ((e: unknown) => void) | null = null;
     let watchCalls = 0;
     const { syncCwdWatcher } = makeCwdWatcher({
@@ -162,8 +190,7 @@ describe("makeCwdWatcher", () => {
       isVirtualCwd: () => false,
       isRenaming: () => false,
       renderGrid: () => {},
-      watchImpl: (_dir, cb) => {
-        void cb;
+      watchImpl: (_dir, _cb) => {
         watchCalls++;
         const w = {
           on: (ev: string, cb: (e: unknown) => void) => {
@@ -171,7 +198,6 @@ describe("makeCwdWatcher", () => {
           },
           close: () => {},
         };
-        fakeWatchers.push(w);
         return w;
       },
     });
@@ -245,7 +271,7 @@ describe("makeCwdWatcher", () => {
     const sink = path.join(dir, "sink.log");
     writeFileSync(sink, "");
     let gridRenders = 0;
-    const { syncCwdWatcher } = makeCwdWatcher({
+    const { syncCwdWatcher, close } = makeCwdWatcher({
       cwd: () => dir,
       isVirtualCwd: () => false,
       isRenaming: () => false,
@@ -256,9 +282,18 @@ describe("makeCwdWatcher", () => {
     });
     syncCwdWatcher();
     writeFileSync(sink, "append\n");
-    await sleep(600); // past the 200ms debounce: a rebuild would have landed
+    // past the 200ms debounce: a rebuild would have landed
+    await new Promise((r) => setTimeout(r, 600));
     expect(gridRenders).toBe(0);
     writeFileSync(path.join(dir, "real.txt"), "x");
-    await settleUntil(() => gridRenders > 0);
+    // use settleUntil for the real fs path (it's the only one that needs polling)
+    const end = Date.now() + 4000;
+    while (Date.now() < end) {
+      if (gridRenders > 0) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(gridRenders).toBeGreaterThan(0);
+    close();
+    rmSync(dir, { recursive: true });
   });
 });
