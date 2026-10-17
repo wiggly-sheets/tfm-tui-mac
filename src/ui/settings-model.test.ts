@@ -315,6 +315,8 @@ describe("settingGroups shape", () => {
       "##panes",
       "dual pane",
       "sync browsing",
+      "vim navigation",
+      "dim inactive panes",
       "##grid",
       "grid tile width",
       "grid tile height",
@@ -408,6 +410,10 @@ describe("settingGroups shape", () => {
       "split pane top/bottom",
       "close pane",
       "switch pane",
+      "focus pane left",
+      "focus pane right",
+      "focus pane up",
+      "focus pane down",
       "copy to other pane",
       "move to other pane",
       "open terminal here",
@@ -621,6 +627,7 @@ describe("settingGroups shape", () => {
       expect(h.model.pluginGroups()[0]!.rows.map((r) => r.label)).toEqual([
         "add from git URL…",
         "open plugins folder…",
+        "reload plugins…",
       ]);
     }
   });
@@ -1025,6 +1032,7 @@ describe("plugin installer rows", () => {
         openFolder: () => calls.push("open"),
         update: (n) => calls.push(`update:${n}`),
         remove: (n) => calls.push(`remove:${n}`),
+        reload: () => calls.push("reload"),
       };
       const install = h.model.pluginGroups().find((g) => g.header === "add plugins")!;
       for (const row of install.rows) asAction(row).run();
@@ -1032,7 +1040,29 @@ describe("plugin installer rows", () => {
       for (const row of demo.rows.filter((r) => r.label === "update from git" || r.label === "remove…")) {
         asAction(row).run();
       }
-      expect(calls).toEqual(["add", "open", "update:demo", "remove:demo"]);
+      expect(calls).toEqual(["add", "open", "reload", "update:demo", "remove:demo"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reload plugins row dispatches to the injected installer", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tfm-model-plugins-"));
+    try {
+      const h = mk(() => [mkPlugin({ name: "demo", store: makePluginStore(dir, "demo") })]);
+      let reloaded = false;
+      h.ctx.pluginInstall = {
+        addFromUrl: () => {},
+        openFolder: () => {},
+        update: () => {},
+        remove: () => {},
+        reload: () => (reloaded = true),
+      };
+      const install = h.model.pluginGroups().find((g) => g.header === "add plugins")!;
+      const reload = install.rows.find((r) => r.label === "reload plugins…")!;
+      expect(reload.kind).toBe("action");
+      asAction(reload).run();
+      expect(reloaded).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1044,7 +1074,13 @@ describe("plugin installer rows", () => {
       const h = mk(() => [mkPlugin({ name: "demo", store: makePluginStore(dir, "demo") })]);
       expect(h.ctx.pluginInstall).toBeUndefined();
       const all = h.model.pluginGroups().flatMap((g) => g.rows);
-      for (const label of ["add from git URL…", "open plugins folder…", "update from git", "remove…"]) {
+      for (const label of [
+        "add from git URL…",
+        "open plugins folder…",
+        "reload plugins…",
+        "update from git",
+        "remove…",
+      ]) {
         const row = all.find((r) => r.label === label)!;
         expect(() => asAction(row).run()).not.toThrow();
       }
@@ -1141,6 +1177,8 @@ describe("dependent rows hide behind their master toggle (progressive disclosure
       "##panes",
       "dual pane",
       "sync browsing",
+      "vim navigation",
+      "dim inactive panes",
       "##grid",
       "grid tile width",
       "grid tile height",

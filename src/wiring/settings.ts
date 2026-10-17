@@ -263,7 +263,7 @@ export const wireSettings = (deps: {
       plugins.setSlotEnabled(name, enabled);
       nav.renderAll();
     },
-    pluginInstall: { addFromUrl, openFolder, update: updateOne, remove: removeOne },
+    pluginInstall: { addFromUrl, openFolder, update: updateOne, remove: removeOne, reload: refreshPluginsView },
     // picking the System theme entry resolves the terminal colors now
     // (fire-and-forget — failures keep the committed flag + current theme)
     resolveSystemTheme: () => {

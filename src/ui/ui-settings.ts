@@ -150,39 +150,54 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
     hint?: string;
     keepOpen?: boolean;
     action: () => void;
-  }[] => [
-    {
-      icon: "cog",
-      label: "Settings",
-      // stays open: the action switches the menu to the settings view; closing
-      // first would destroy the scrim/panel the view renders into
-      keepOpen: true,
-      action: () => enterView("settings"),
-    },
-    // plugins get their OWN view (same panel UI, separate entry) — and only
-    // when at least one plugin contributes rows
-    ...(ctx.pluginGroups().length
-      ? [
-          {
-            icon: "power-plug",
-            label: "Plugins",
-            keepOpen: true,
-            action: () => enterView("plugins"),
-          },
-        ]
-      : []),
-    // the help view sits below Plugins: everything above quits the app,
-    // this one just explains it
-    { icon: "help", label: "Help", keepOpen: true, action: () => enterView("help") },
-    // the about view sits below Help: brand + version + links, no controls
-    { icon: "information", label: "About", keepOpen: true, action: () => enterView("about") },
-    {
-      icon: "power",
-      label: "Quit",
-      hint: "ctrl+q",
-      action: ctx.quit,
-    },
-  ];
+  }[] => {
+    // every plugin group is led by an on/off toggle (the install group has none
+    // — its rows are all actions, so it never counts). Count enabled toggles
+    // across all groups; a throwing get() is read as disabled (never escapes).
+    const plugGroups = ctx.pluginGroups();
+    let enabledPlugins = 0;
+    for (const g of plugGroups) {
+      for (const r of g.rows) {
+        if (r.kind === "toggle" && r.get()) {
+          enabledPlugins++;
+          break; // one toggle per plugin group
+        }
+      }
+    }
+    return [
+      {
+        icon: "cog",
+        label: "Settings",
+        // stays open: the action switches the menu to the settings view; closing
+        // first would destroy the scrim/panel the view renders into
+        keepOpen: true,
+        action: () => enterView("settings"),
+      },
+      // plugins get their OWN view (same panel UI, separate entry) — and only
+      // when at least one plugin contributes rows
+      ...(plugGroups.length
+        ? [
+            {
+              icon: "power-plug",
+              label: enabledPlugins ? `Plugins (${enabledPlugins})` : "Plugins",
+              keepOpen: true,
+              action: () => enterView("plugins"),
+            },
+          ]
+        : []),
+      // the help view sits below Plugins: everything above quits the app,
+      // this one just explains it
+      { icon: "help", label: "Help", keepOpen: true, action: () => enterView("help") },
+      // the about view sits below Help: brand + version + links, no controls
+      { icon: "information", label: "About", keepOpen: true, action: () => enterView("about") },
+      {
+        icon: "power",
+        label: "Quit",
+        hint: "ctrl+q",
+        action: ctx.quit,
+      },
+    ];
+  };
 
   const switchCategory = (gi: number): void => {
     const n = groups().length;

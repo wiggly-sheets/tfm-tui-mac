@@ -1063,6 +1063,36 @@ describe("plugins view (separate from settings)", () => {
     plugGroups = [];
   });
 
+  test("Plugins root entry shows the enabled-plugin count", async () => {
+    // one enabled + one disabled (toggle off) -> "Plugins (1)"
+    const offGroup = (run: () => void): SettingGroup => ({
+      header: "off",
+      rows: [
+        { kind: "toggle", label: "enabled", get: () => false, set: () => {} },
+        { kind: "action", label: "Say off", run },
+      ],
+    });
+    plugGroups = [helloGroup(() => {}), offGroup(() => {})];
+    await openRoot();
+    expect(t.captureCharFrame()).toContain("Plugins (1)");
+    plugGroups = [];
+  });
+
+  test("Plugins root entry has no count suffix when every plugin is off", async () => {
+    const offGroup = (run: () => void): SettingGroup => ({
+      header: "off",
+      rows: [
+        { kind: "toggle", label: "enabled", get: () => false, set: () => {} },
+        { kind: "action", label: "Say off", run },
+      ],
+    });
+    plugGroups = [offGroup(() => {})];
+    await openRoot();
+    expect(t.captureCharFrame()).toContain("Plugins");
+    expect(t.captureCharFrame()).not.toMatch(/Plugins \(\d+\)/);
+    plugGroups = [];
+  });
+
   test("activating Plugins opens its own view rendering that plugin's rows", async () => {
     plugGroups = [helloGroup(() => {})];
     await openRoot();

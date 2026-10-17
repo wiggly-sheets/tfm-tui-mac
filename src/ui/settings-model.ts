@@ -71,6 +71,8 @@ export type SettingsModelCtx = {
     openFolder(): void;
     update(name: string): void;
     remove(name: string): void;
+    // rescan + live panel rebuild (same path the install flow uses)
+    reload(): void;
   };
 };
 
@@ -536,6 +538,17 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
         // in the folder
         run: () => {
           guardedRun("open plugins folder failed", () => ctx.pluginInstall?.openFolder());
+        },
+      },
+      {
+        kind: "action",
+        label: "reload plugins…",
+        blurb: "Rescan and rebuild the panel",
+        // keepOpen: the rescan repopulates the panel in place; closing first
+        // would wipe the user's position in the install group
+        keepOpen: true,
+        run: () => {
+          guardedRun("reload plugins failed", () => ctx.pluginInstall?.reload());
         },
       },
     ],

@@ -21,12 +21,7 @@ import { cycleSortMode } from "../lib/sort";
 import { currentViewSlot, nextViewSlot, setPluginViewId, viewCycle, viewModeFor } from "../app/panes";
 import { activeFacade } from "../app/panes";
 import { destroyChildren, errMessage } from "../lib/uiutil";
-import {
-  flattenPluginCommands,
-  flattenPluginOperations,
-  getPluginCommandBinds,
-  isPluginEnabled,
-} from "../plugins/plugin-api";
+import { flattenPluginCommands, getPluginCommandBinds, isPluginEnabled } from "../plugins/plugin-api";
 import { isVirtualUri } from "../fs/uri";
 import { isTrashFilesDir } from "../fs/fsutil";
 import { dlog } from "../app/log";
@@ -71,20 +66,26 @@ export const wireKeymap = (deps: {
     floats,
     escHintBtn: core.slots.escHintBtn,
     drainIconQueue: core.slots.drainIconQueue,
-    commands: () =>
-      [
-        ...coreCommands(),
-        ...flattenPluginCommands(plugins.plugins.filter(isPluginEnabled)),
-        // plugin FS operations: the palette half of api.operations.register
-        // (the file context menu half is synthesized onto LoadedPlugin.fileMenu)
-        ...flattenPluginOperations(plugins.pluginOperations(), () =>
-          gridFoundation.selection.selPaths().map((s) => s.path),
-        ),
-      ].map((c) => ({
+    commands: () => {
+      // palette-only prefix: plugin-sourced entries carry their plugin name so
+      // users can tell them apart from core commands. The file context menu
+      // synthesizes operations separately (plugins.ts → menu-entries.ts) and
+      // api.commands() stays untouched — only this palette path is prefixed.
+      const plugCmds = plugins.plugins
+        .filter(isPluginEnabled)
+        .flatMap((p) => flattenPluginCommands([p]).map((c) => ({ ...c, title: `${p.name} · ${c.title}` })));
+      const plugOps = plugins.pluginOperations().map((op) => ({
+        id: op.id,
+        title: `${op.plugin} · ${op.title}`,
+        hint: "",
+        run: () => op.run(gridFoundation.selection.selPaths().map((s) => s.path)),
+      }));
+      return [...coreCommands(), ...plugCmds, ...plugOps].map((c) => ({
         label: c.title,
         hint: c.hint || undefined,
         run: c.run,
-      })),
+      }));
+    },
     onError: (err) => {
       const msg = `plugin command failed: ${errMessage(err)}`;
       dlog(msg);
