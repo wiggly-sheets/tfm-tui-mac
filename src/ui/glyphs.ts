@@ -19,9 +19,13 @@ import type { IconStyle } from "../config/config-schema";
 // Defined before glyphChains so it can be referenced inline.
 export const FILE_GLYPH = "\u{F0214}";
 
-// Fallback chains for common Nerd Fonts. Each entry tries primary (Meslo-verified),
-// then alternatives for JetBrainsMono, FiraCode, Hack, UbuntuMono, etc.
-// The first codepoint present in the terminal's font will render correctly.
+// Fallback chains for common Nerd Fonts. Each entry lists a primary
+// (Meslo-verified) plus alternatives for JetBrainsMono, FiraCode, Hack,
+// UbuntuMono, etc. TRADEOFF (accepted as-is): resolveChain returns only
+// chain[0] — no font-availability probing exists at runtime, so the
+// alternatives are dead (~100 entries × 2-3 strings). The primary codepoints
+// are MesloLGLDZ-verified and the table is intentionally Nerd-Font-only; see
+// the resolveChain comment for when to trim.
 type GlyphChain = string | string[];
 
 const glyphChains: Record<string, GlyphChain> = {
@@ -145,6 +149,15 @@ const glyphChains: Record<string, GlyphChain> = {
 // Resolve a glyph chain to the first available codepoint (fallback to tofu).
 // The `?? "\u{FFFD}"` only satisfies the type: every chain in the table is a
 // non-empty array or a bare string, so the empty-array branch never runs.
+//
+// TRADEOFF (accepted as-is): the chains below carry 2-3 codepoints each as
+// font-availability fallbacks, but resolveChain returns only chain[0] — no
+// font-availability probing exists at runtime. The alternatives are dead
+// (~100 entries × 2-3 strings). Implementing the probe (measureText on a
+// hidden canvas per codepoint, per icon, per render) would cost more than it
+// saves; the primary codepoints are MesloLGLDZ-verified and the table is
+// intentionally Nerd-Font-only. Trim to single codepoints only if a font
+// probe is ever added — until then the chains document the intent.
 const resolveChain = (chain: GlyphChain): string => (Array.isArray(chain) ? (chain[0] ?? "\u{FFFD}") : chain);
 
 // Build the flat glyph table from chains (primary codepoints only)

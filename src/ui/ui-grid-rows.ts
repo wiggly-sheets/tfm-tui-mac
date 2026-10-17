@@ -11,21 +11,18 @@
 
 import { Box, Text } from "@opentui/core";
 import { errMessage } from "../lib/uiutil";
-import { readlinkSync, statSync } from "node:fs";
+import { readlinkSync } from "node:fs";
 import path from "node:path";
 import { fileIconFor, fileIsImage, fileIsVideo } from "../fs/filetype";
 import type { Entry } from "../fs/listing";
 import { fmtBytes, pad2 } from "../fs/propsinfo";
 import { FILE_GLYPH, glyph } from "./glyphs";
-import { canThumbVideo } from "./icons";
+import { canThumbVideo, THUMB_MAX_BYTES } from "./icons";
 import { sidePadDelta } from "./style";
 import type { GridRendererCtx } from "./ui-grid-types";
 import type { IconSpec, SlotElement } from "./ui-slots";
+import type { MaybeNode } from "../lib/node-like";
 import { visibleTileCap } from "./ui-grid-window";
-
-// thumbnail raster cap: files over this keep their icon (thumbPlanFor).
-// Module scope so thumbStatsChanged can mirror the same predicate.
-const THUMB_MAX_BYTES = 26214400;
 
 // does this entry currently raster a thumbnail (mirrors thumbPlanFor's
 // useThumb)? 0-byte / oversize files and videos without ffmpeg never do.
@@ -65,31 +62,32 @@ export const thumbStatsChanged = (prev: Entry[] | null, next: Entry[]): boolean 
 const thumbPlanFor = (
   entry: Entry,
   key: string,
-): { isVideo: boolean; stat: { size: number; mtimeMs: number } | null; useThumb: boolean } => {
+): {
+  isVideo: boolean;
+  stat: { size: number; mtimeMs: number } | null;
+  useThumb: boolean;
+  // when true the caller reserves an empty thumbnail slot and pushes a job
+  // whose stat is fetched lazily by the drain (the synchronous statSync per
+  // thumbnail-eligible tile used to block the build phase — 500-image folder
+  // = 500 sync fs calls during paint). Links always probe: their entry stats
+  // are link-own, but the raster reads target pixels.
+  probe?: string;
+} => {
   const isVideo = !entry.isDir && fileIsVideo(entry.name);
   const wantsThumb = !entry.isDir && (fileIsImage(entry.name) || (isVideo && canThumbVideo()));
-  let stat: { size?: number; mtimeMs?: number } | null = null;
-  if (wantsThumb) {
-    // recursive-search entries (and sort-filled listDir rows) already carry
-    // size/mtime — reuse them instead of a second stat per thumbnail.
-    // Links NEVER reuse: entry stats are link-own since the on-disk change,
-    // but the raster reads target pixels, so the job key must be the target's
-    // (an edited target photo would otherwise never re-raster)
-    if (!entry.isLink && entry.size !== undefined && entry.mtimeMs !== undefined)
-      stat = { size: entry.size, mtimeMs: entry.mtimeMs };
-    else {
-      try {
-        stat = statSync(key);
-      } catch {}
-    }
+  if (!wantsThumb) return { isVideo, stat: null, useThumb: false };
+  // recursive-search entries (and sort-filled listDir rows) already carry
+  // size/mtime — reuse them instead of a second stat per thumbnail.
+  if (!entry.isLink && entry.size !== undefined && entry.mtimeMs !== undefined) {
+    const size = entry.size;
+    if (typeof size === "number" && size > 0 && size <= THUMB_MAX_BYTES)
+      return { isVideo, stat: { size, mtimeMs: entry.mtimeMs ?? 0 }, useThumb: true };
+    // oversize/zero: keep the icon, no job
+    return { isVideo, stat: null, useThumb: false };
   }
-  const size = stat?.size;
-  const useThumb = wantsThumb && typeof size === "number" && size > 0 && size <= THUMB_MAX_BYTES;
-  // the plan reports a stat ONLY when it is rasterable: the raster keys on
-  // size/mtime, so a 0-byte or oversize file must not look like a job, and
-  // callers then get a size they can pass straight to pushThumbJob
-  if (!useThumb || typeof size !== "number") return { isVideo, stat: null, useThumb };
-  return { isVideo, stat: { size, mtimeMs: stat?.mtimeMs ?? 0 }, useThumb: true };
+  // links, or rows without stats: reserve the slot, probe in the drain.
+  // The byte cap is applied there too (a statSync here would block the build).
+  return { isVideo, stat: null, useThumb: true, probe: key };
 };
 
 // list-row link badge: `name → target` with the target's basename (the full
@@ -229,7 +227,7 @@ export const makeGridBuilders = (ctx: GridRendererCtx) => {
     const baseFg = dim ? colors.sidebarFgMuted : colors.sidebarFg;
     const slotW = Math.max(1, Math.round(aspect * ICON_CELLS_H));
 
-    const { isVideo, stat, useThumb } = thumbPlanFor(entry, key);
+    const { isVideo, stat, useThumb, probe } = thumbPlanFor(entry, key);
 
     let slotId: string;
     let iconSpec: IconSpec | undefined;
@@ -318,18 +316,24 @@ export const makeGridBuilders = (ctx: GridRendererCtx) => {
       labelId,
       isDir: entry.isDir,
       hoverLift,
+      // cache the resolved DOM nodes so setTileVisual skips its 3 ctx.byId
+      // walks per tile (10k-folder selectAll used to do 30k tree traversals)
+      tileNode: tile as unknown as MaybeNode,
+      labelNode: labelText as unknown as MaybeNode,
+      slotNode: iconSlotEl as unknown as MaybeNode,
     });
 
-    if (stat) {
+    if (stat || probe) {
       ctx.pushThumbJob({
         slotId,
         path: key,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
+        mtimeMs: stat?.mtimeMs ?? 0,
+        size: stat?.size ?? 0,
         wCells: slotW,
         vector: entry.name.toLowerCase().endsWith(".svg"),
         video: isVideo,
         visible: inViewport,
+        probe,
         fallbackGlyph: glyph[fileIconFor(entry.name)] ?? FILE_GLYPH,
       });
     }
@@ -368,7 +372,7 @@ export const makeGridBuilders = (ctx: GridRendererCtx) => {
     // image/video rows get thumbnails like grid tiles (hCells passed
     // explicitly — the drain default is the grid's ICON_CELLS_H, not the
     // list-row-height knob).
-    const { isVideo, stat, useThumb } = thumbPlanFor(entry, key);
+    const { isVideo, stat, useThumb, probe } = thumbPlanFor(entry, key);
 
     let slotId: string;
     let iconSpec: IconSpec | undefined;
@@ -415,17 +419,18 @@ export const makeGridBuilders = (ctx: GridRendererCtx) => {
       labelId,
       isDir: entry.isDir,
     });
-    if (stat) {
+    if (stat || probe) {
       ctx.pushThumbJob({
         slotId,
         path: key,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
+        mtimeMs: stat?.mtimeMs ?? 0,
+        size: stat?.size ?? 0,
         wCells: iconW,
         hCells: h,
         vector: entry.name.toLowerCase().endsWith(".svg"),
         video: isVideo,
         visible: inViewport,
+        probe,
         fallbackGlyph: glyph[fileIconFor(entry.name)] ?? FILE_GLYPH,
       });
     }

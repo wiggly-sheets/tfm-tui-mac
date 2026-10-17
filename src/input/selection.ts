@@ -4,8 +4,7 @@
 // focus/anchor lets and the tileRefs map live HERE (not index) so ui-grid and
 // keymap reach them through one injected object. Visual painting (surfaces,
 // icon states) still flows through ctx — no renderer imports. ---
-import { readdir } from "node:fs/promises";
-import { lstatSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import { applySurface, tileSurface, type UiStyle } from "../ui/style";
 import { fmtBytes, inodeKey } from "../fs/propsinfo";
 import type { Theme } from "../config/config";
@@ -25,6 +24,13 @@ export type SelTileRef = {
   // grid tiles with room for the configured hover distance/direction move
   // their icon on hover (rest layout untouched); the rest keep the highlight.
   hoverLift?: boolean;
+  // Resolved DOM nodes cached at build time. setTileVisual reads these directly
+  // instead of walking ctx.byId three times per tile (a 10k-folder selectAll
+  // used to do 30k tree traversals). Test fakes that build refs by hand leave
+  // them undefined and setTileVisual falls back to byId for those.
+  tileNode?: MaybeNode;
+  labelNode?: MaybeNode;
+  slotNode?: MaybeNode;
 };
 
 export type SelectionCtx = {
@@ -75,11 +81,11 @@ export const makeSelection = (ctx: SelectionCtx) => {
     if (!refs.iconSpec) {
       // thumbnail slots have no state rasters — fade the whole slot instead
       try {
-        const slot = ctx.byId(refs.iconSlotId ?? "");
+        const slot = refs.slotNode ?? ctx.byId(refs.iconSlotId ?? "");
         if (slot) slot.opacity = cut ? 0.45 : 1;
       } catch {}
     }
-    const labelReal = ctx.byId(refs.labelId);
+    const labelReal = refs.labelNode ?? ctx.byId(refs.labelId);
     if (labelReal) {
       try {
         // hover lifts the label to white (readable on the blue hover fill);
@@ -161,35 +167,36 @@ export const makeSelection = (ctx: SelectionCtx) => {
     // names sharing one dev:ino count their body once — like du. lstat never
     // reports a link as a directory, so links-to-dirs land in bytes while real
     // dirs contribute their item count below instead.
-    let bytes = 0;
-    const seen = new Set<string>();
-    for (const s of sel) {
-      try {
-        const lst = lstatSync(s.key);
-        if (lst.isDirectory()) continue;
-        const k = inodeKey(lst);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        bytes += lst.size;
-      } catch {}
-    }
-    const dirs = sel.filter((s) => s.isDir);
-    if (dirs.length === 0) {
-      setStatus(`${sel.length} selected${bytes > 0 ? ` · ${fmtBytes(bytes)}` : ""}`);
-      return;
-    }
+    // Async batched (was a sync lstatSync loop: a 100-file rubber-band drag
+    // froze the render loop). Same semantics as the old loop — lstat each
+    // selected key, skip real dirs, dedupe hardlinks by dev:ino — just off the
+    // main thread. The count renders immediately; bytes land on the next
+    // microtask and re-paint the same label.
     void (async () => {
-      let contained = 0;
-      await Promise.all(
-        dirs.map(async (d) => {
-          try {
-            contained += (await readdir(d.key)).length;
-          } catch {}
-        }),
-      );
+      let bytes = 0;
+      const seen = new Set<string>();
+      for (const s of sel) {
+        try {
+          const lst = await lstat(s.key);
+          if (lst.isDirectory()) continue;
+          const k = inodeKey(lst);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          bytes += lst.size;
+        } catch {}
+      }
+      const dirs = sel.filter((s) => s.isDir);
       const bits = [`${sel.length} selected`];
       if (bytes > 0) bits.push(fmtBytes(bytes));
-      if (dirs.length === 1 && sel.length === 1) bits.push(`${contained} items`);
+      if (dirs.length === 1 && sel.length === 1) {
+        const d = dirs[0];
+        if (d) {
+          try {
+            bits.push(`${(await readdir(d.key)).length} items`);
+          } catch {}
+        }
+      }
+      if (gen !== selStatusGen) return;
       setStatus(bits.join(" · "));
     })();
   };

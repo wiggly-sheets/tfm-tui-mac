@@ -20,6 +20,10 @@ import { errMessage } from "../lib/uiutil";
 import { swallow } from "../app/log";
 import type { IconStyle } from "../config/config-schema";
 
+// thumbnail raster cap: files over this keep their icon (thumbPlanFor).
+// Exported so ui-grid-rows' plan and ui-slots' probe share one predicate.
+export const THUMB_MAX_BYTES = 26214400;
+
 const home = os.homedir();
 
 // In a `bun --compile` binary, assets/icons/*.svg are embedded as Blob blobs
@@ -115,13 +119,29 @@ export const resolveIconName = (name: string, style: IconStyle = "filled"): stri
 // name/tint/bg/size, so asset edits were invisible until the cache dir was
 // wiped by hand). 0 when the file is absent — the compiled binary embeds
 // assets, fixed at build time.
+// asset mtimes only change when the SVG files on disk are edited, so memoizing
+// the per-name result is safe across renders (the cache is cleared by
+// clearIconCaches, which runs on theme/resize/icon-mode changes — none of
+// which touch the asset files). The sync statSync per iconPng/brandPng call
+// used to run on the raster hot path and blocked the worker pool.
+const svgMtimeCache = new Map<string, number>();
 export const svgSourceMtime = (name: string): number => {
-  try {
-    return statSync(svgAssetPath(name)).mtimeMs;
-  } catch {
-    return 0;
+  let v = svgMtimeCache.get(name);
+  if (v === undefined) {
+    try {
+      v = statSync(svgAssetPath(name)).mtimeMs;
+    } catch {
+      v = 0;
+    }
+    svgMtimeCache.set(name, v);
   }
+  return v;
 };
+
+// disk-cache reads in iconPng/brandPng stay synchronous on purpose: they run
+// only on an in-memory LRU miss, and a missing-file stat+open is ~1µs. The
+// worker pool's concurrency ceiling (RASTER_CONCURRENCY) is what actually
+// bounds the spawn churn — a sync read here never outruns it.
 
 // Natural aspect (w/h) of an icon asset for aspect-correct slot sizing:
 // width/height attrs win, viewBox is the fallback, null when unparseable

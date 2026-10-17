@@ -2,8 +2,33 @@
 
 tfm plugins are small TypeScript files, loaded with **full trust** (like vim
 plugins). They run in the same process, so a plugin can touch `node:fs`,
-`node:child_process`, the network, anything Bun can. Only install plugins you
-trust.
+`node:child_process`, the network, anything Bun can. **Only install plugins you
+trust.**
+
+## Trust boundary
+
+A plugin is imported in-process with the full Node.js/Bun runtime: it can read
+or write any file the user can reach, spawn children, open sockets, and hold
+arbitrary state for the lifetime of tfm. There is no sandbox, no seccomp, no
+separate user — this is a deliberate design choice (vim-style, not a browser
+extension model).
+
+What isolation exists is narrow and defense-in-depth only:
+
+- **Namespaced stores** — `api.store(name)` always returns the plugin's own
+  store, whatever name it passes. Cross-plugin reads warn and return the
+  caller's own store.
+- **Name validation** — `PLUGIN_NAME_RE` (`[a-z0-9_-]`) gates the folder name
+  and rejects unsafe plugin names before activation.
+- **Symlink stripping** — staged plugin copies have symlinks stripped, so a
+  malicious source tree cannot escape the plugin directory via a link.
+- **Per-plugin error isolation** — a throwing `activate`, a rejected renderer,
+  or a failed command surfaces as a toast or log line; it never takes tfm
+  down. One bad plugin cannot crash another.
+
+Install from a git URL, the bundled index, or `tfm plugins new` — all of which
+are **your** sources. The bundled index is curated but not audited; treat every
+plugin as code that runs with your user's privileges.
 
 ## Layout
 

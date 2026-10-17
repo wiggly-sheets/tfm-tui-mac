@@ -208,6 +208,9 @@ export type KeyRouterCtx = {
   // type-to-search — same priority as core togglePreview etc. Core wins ties
   // (checked first), so a conflicting plugin bind is shadowed until remapped.
   pluginCommands?: () => Array<{ id: string; binds: string[]; run: () => void }>;
+  // optional so the keymap test's stub ctx (which only exercises the grid
+  // nav + menu paths) keeps working without wiring the full app
+  log?: (message: string) => void;
 };
 
 export const makeKeyRouter = (ctx: KeyRouterCtx) => {
@@ -1050,18 +1053,28 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     // accepts key NAMES like enter/arrows, so a plugin registering one is
     // shadowed silently by the core bind — remap the core bind to free the key.
     if (ctx.pluginCommands) {
+      let cmds: ReturnType<typeof ctx.pluginCommands>;
       try {
-        for (const cmd of ctx.pluginCommands()) {
-          if (cmd.binds.length && hitBinds(ev, cmd.binds)) {
-            // invokeIsolated: async plugin runs must not reject unhandled
-            invokeIsolated(
-              () => cmd.run(),
-              () => {},
-            );
-            return;
-          }
+        cmds = ctx.pluginCommands();
+      } catch (err) {
+        // a broken plugin (its command list throws) is a diagnostic, not a
+        // silent swallow — route it through the same log path every other
+        // plugin failure uses
+        ctx.log?.(`plugin commands failed: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      for (const cmd of cmds) {
+        if (cmd.binds.length && hitBinds(ev, cmd.binds)) {
+          // invokeIsolated: async plugin runs must not reject unhandled.
+          // The old () => {} error callback discarded every throw/rejection,
+          // so a broken plugin produced zero diagnostics.
+          invokeIsolated(
+            () => cmd.run(),
+            (err) => ctx.log?.(`plugin command ${cmd.id} failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
+          return;
         }
-      } catch {}
+      }
     }
   };
 
