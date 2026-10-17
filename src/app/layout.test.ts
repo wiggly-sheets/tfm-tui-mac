@@ -188,3 +188,73 @@ describe("layout→geometry mapping", () => {
     expect(p2?.rect).toEqual({ x: 50, y: 20, w: 50, h: 20 });
   });
 });
+
+describe("layout→geometry min-size clamp", () => {
+  // a 3-leaf h-split in a 20-column terminal: floor 8 each. 20 - 24 = -4
+  // shortfall; the first two leaves keep 8, the last absorbs -4 (extends past
+  // the area edge — the renderer clips, which is acceptable).
+  test("narrow terminal with 3 h-split panes: floor on the first two, last absorbs shortfall", () => {
+    const tree: LayoutNode = {
+      kind: "split",
+      orientation: "h",
+      children: [
+        { kind: "leaf", id: "p0" },
+        { kind: "leaf", id: "p1" },
+        { kind: "leaf", id: "p2" },
+      ],
+    };
+    layoutGeometry(tree, { x: 0, y: 0, w: 20, h: 40 });
+
+    const p0 = findLeaf(tree, "p0");
+    const p1 = findLeaf(tree, "p1");
+    const p2 = findLeaf(tree, "p2");
+
+    expect(p0?.rect).toEqual({ x: 0, y: 0, w: 8, h: 40 });
+    expect(p1?.rect).toEqual({ x: 8, y: 0, w: 8, h: 40 });
+    // last leaf absorbs the shortfall: 20 - 8 - 8 = 4, i.e. -4 past the edge
+    expect(p2?.rect).toEqual({ x: 16, y: 0, w: 4, h: 40 });
+  });
+
+  // a 3-leaf v-split in a 10-row terminal: floor 3 each. 10 - 9 = +1 surplus,
+  // base 0, remainder 1 to the last child.
+  test("short terminal with 3 v-split panes: floor on the first two, last gets the remainder", () => {
+    const tree: LayoutNode = {
+      kind: "split",
+      orientation: "v",
+      children: [
+        { kind: "leaf", id: "p0" },
+        { kind: "leaf", id: "p1" },
+        { kind: "leaf", id: "p2" },
+      ],
+    };
+    layoutGeometry(tree, { x: 0, y: 0, w: 100, h: 10 });
+
+    const p0 = findLeaf(tree, "p0");
+    const p1 = findLeaf(tree, "p1");
+    const p2 = findLeaf(tree, "p2");
+
+    expect(p0?.rect).toEqual({ x: 0, y: 0, w: 100, h: 3 });
+    expect(p1?.rect).toEqual({ x: 0, y: 3, w: 100, h: 3 });
+    expect(p2?.rect).toEqual({ x: 0, y: 6, w: 100, h: 4 });
+  });
+
+  // the normal case must not change: floor + evenly-divided surplus with the
+  // remainder to the last child reproduces the old division exactly.
+  test("normal 2-leaf h-split at 101 columns keeps the old division", () => {
+    const tree: LayoutNode = {
+      kind: "split",
+      orientation: "h",
+      children: [
+        { kind: "leaf", id: "p0" },
+        { kind: "leaf", id: "p1" },
+      ],
+    };
+    layoutGeometry(tree, { x: 0, y: 0, w: 101, h: 40 });
+
+    const p0 = findLeaf(tree, "p0");
+    const p1 = findLeaf(tree, "p1");
+
+    expect(p0?.rect).toEqual({ x: 0, y: 0, w: 50, h: 40 });
+    expect(p1?.rect).toEqual({ x: 50, y: 0, w: 51, h: 40 });
+  });
+});

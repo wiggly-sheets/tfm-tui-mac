@@ -265,15 +265,22 @@ export const layoutGeometry = (tree: LayoutNode, rect: Rect): void => {
   if (count === 0) return;
 
   if (tree.orientation === "v") {
-    // vertical split divides height
-    const baseH = Math.floor(rect.h / count);
-    const remainder = rect.h - baseH * count;
+    // vertical split divides height; each leaf keeps at least 3 rows.
+    // Surplus (total - floor*count) divides evenly with the remainder to the
+    // last child. When the terminal is too short for every leaf to keep the
+    // floor, the first (count-1) leaves still keep it and the LAST absorbs the
+    // shortfall (its rect may extend past the area edge — the renderer clips).
+    const floor = 3;
+    const total = rect.h;
+    const surplus = total - floor * count;
+    const base = surplus >= 0 ? Math.floor(surplus / count) : 0;
+    const rem = surplus >= 0 ? surplus - base * count : surplus;
     let curY = rect.y;
 
     for (let i = 0; i < count; i++) {
       const child = tree.children[i];
       if (!child) continue;
-      const childH = baseH + (i === count - 1 ? remainder : 0);
+      const childH = floor + base + (i === count - 1 ? rem : 0);
       const childRect: Rect = {
         x: rect.x,
         y: curY,
@@ -284,15 +291,22 @@ export const layoutGeometry = (tree: LayoutNode, rect: Rect): void => {
       curY += childH;
     }
   } else {
-    // horizontal split divides width
-    const baseW = Math.floor(rect.w / count);
-    const remainder = rect.w - baseW * count;
+    // horizontal split divides width; each leaf keeps at least 8 columns.
+    // Surplus (total - floor*count) divides evenly with the remainder to the
+    // last child. When the terminal is too narrow for every leaf to keep the
+    // floor, the first (count-1) leaves still keep it and the LAST absorbs the
+    // shortfall (its rect may extend past the area edge — the renderer clips).
+    const floor = 8;
+    const total = rect.w;
+    const surplus = total - floor * count;
+    const base = surplus >= 0 ? Math.floor(surplus / count) : 0;
+    const rem = surplus >= 0 ? surplus - base * count : surplus;
     let curX = rect.x;
 
     for (let i = 0; i < count; i++) {
       const child = tree.children[i];
       if (!child) continue;
-      const childW = baseW + (i === count - 1 ? remainder : 0);
+      const childW = floor + base + (i === count - 1 ? rem : 0);
       const childRect: Rect = {
         x: curX,
         y: rect.y,
