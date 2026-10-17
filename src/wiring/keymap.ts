@@ -406,6 +406,48 @@ export const wireKeymap = (deps: {
       core.panes.cyclePane(1);
       nav.renderAll();
     },
+    // directional focus steps: the leaf list is document order, so left/up are
+    // idx-1 and right/down are idx+1. No wrap — that's switchPane's job on tab.
+    focusPaneLeft: () => {
+      if (core.panes.leafIds().length < 2) return;
+      const ids = core.panes.leafIds();
+      const idx = ids.indexOf(core.panes.activeId);
+      const next = ids[idx - 1];
+      if (!next) return;
+      gridFoundation.selections.get(core.panes.activeId)?.clearTileSelection();
+      core.panes.setActiveId(next);
+      nav.renderAll();
+    },
+    focusPaneRight: () => {
+      if (core.panes.leafIds().length < 2) return;
+      const ids = core.panes.leafIds();
+      const idx = ids.indexOf(core.panes.activeId);
+      const next = ids[idx + 1];
+      if (!next) return;
+      gridFoundation.selections.get(core.panes.activeId)?.clearTileSelection();
+      core.panes.setActiveId(next);
+      nav.renderAll();
+    },
+    focusPaneUp: () => {
+      if (core.panes.leafIds().length < 2) return;
+      const ids = core.panes.leafIds();
+      const idx = ids.indexOf(core.panes.activeId);
+      const next = ids[idx - 1];
+      if (!next) return;
+      gridFoundation.selections.get(core.panes.activeId)?.clearTileSelection();
+      core.panes.setActiveId(next);
+      nav.renderAll();
+    },
+    focusPaneDown: () => {
+      if (core.panes.leafIds().length < 2) return;
+      const ids = core.panes.leafIds();
+      const idx = ids.indexOf(core.panes.activeId);
+      const next = ids[idx + 1];
+      if (!next) return;
+      gridFoundation.selections.get(core.panes.activeId)?.clearTileSelection();
+      core.panes.setActiveId(next);
+      nav.renderAll();
+    },
     splitPaneHorizontal: () => {
       core.panes.splitPane(core.panes.activeId, "h");
       nav.renderAll();

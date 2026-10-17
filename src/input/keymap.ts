@@ -173,6 +173,10 @@ export type KeyRouterCtx = {
   splitPaneVertical(): void;
   closePane(): void;
   switchPane(): void;
+  focusPaneLeft(): void;
+  focusPaneRight(): void;
+  focusPaneUp(): void;
+  focusPaneDown(): void;
   copyToOtherPane(): void;
   moveToOtherPane(): void;
   setClipboard(mode: "copy" | "cut", items: Array<{ path: string; isDir: boolean }>): void;
@@ -783,6 +787,10 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "splitPaneVertical", run: () => ctx.splitPaneVertical() },
     { action: "closePane", run: () => ctx.closePane() },
     { action: "switchPane", run: () => ctx.switchPane() },
+    { action: "focusPaneLeft", run: () => ctx.focusPaneLeft() },
+    { action: "focusPaneRight", run: () => ctx.focusPaneRight() },
+    { action: "focusPaneUp", run: () => ctx.focusPaneUp() },
+    { action: "focusPaneDown", run: () => ctx.focusPaneDown() },
     { action: "copyToOtherPane", run: () => ctx.copyToOtherPane() },
     { action: "moveToOtherPane", run: () => ctx.moveToOtherPane() },
     { action: "moveUp", run: doMoveUp },
@@ -921,6 +929,10 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "splitPaneVertical") && ev.repeated !== true && runAction("splitPaneVertical")) return;
     if (hit(ev, "closePane") && ev.repeated !== true && runAction("closePane")) return;
     if (hit(ev, "switchPane") && ev.repeated !== true && runAction("switchPane")) return;
+    if (hit(ev, "focusPaneLeft") && ev.repeated !== true && runAction("focusPaneLeft")) return;
+    if (hit(ev, "focusPaneRight") && ev.repeated !== true && runAction("focusPaneRight")) return;
+    if (hit(ev, "focusPaneUp") && ev.repeated !== true && runAction("focusPaneUp")) return;
+    if (hit(ev, "focusPaneDown") && ev.repeated !== true && runAction("focusPaneDown")) return;
     if (hit(ev, "copyToOtherPane") && ev.repeated !== true && runAction("copyToOtherPane")) return;
     if (hit(ev, "moveToOtherPane") && ev.repeated !== true && runAction("moveToOtherPane")) return;
     if (hit(ev, "startSearch") && runAction("startSearch")) return;

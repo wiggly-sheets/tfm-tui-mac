@@ -390,6 +390,10 @@ export type KeyAction =
   | "splitPaneVertical"
   | "closePane"
   | "switchPane"
+  | "focusPaneLeft"
+  | "focusPaneRight"
+  | "focusPaneUp"
+  | "focusPaneDown"
   | "copyToOtherPane"
   | "moveToOtherPane"
   | "moveUp"
@@ -2067,6 +2071,10 @@ const KEY_ROWS: KeyRow[] = (
     ],
     ["closePane", "close pane", ["ctrl+shift+w"], "split panes", "Close the focused pane"],
     ["switchPane", "switch pane", ["tab"], "split panes", "Hop between the panes"],
+    ["focusPaneLeft", "focus pane left", ["ctrl+alt+h"], "split panes", "Move focus to the pane on the left"],
+    ["focusPaneRight", "focus pane right", ["ctrl+alt+l"], "split panes", "Move focus to the pane on the right"],
+    ["focusPaneUp", "focus pane up", ["ctrl+alt+k"], "split panes", "Move focus to the pane above"],
+    ["focusPaneDown", "focus pane down", ["ctrl+alt+j"], "split panes", "Move focus to the pane below"],
     ["copyToOtherPane", "copy to other pane", ["f5"], "split panes", "Copy the selection across panes"],
     ["moveToOtherPane", "move to other pane", ["f6"], "split panes", "Move the selection across panes"],
     ["openTerminal", "open terminal here", ["ctrl+`", "f4"], "split panes", "Drop to a shell in this folder"],
