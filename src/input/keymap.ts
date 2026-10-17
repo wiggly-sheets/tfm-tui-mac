@@ -109,6 +109,13 @@ export type KeyRouterCtx = {
     handleKey(ev: KeyPressEvent): boolean;
     renderColumns(): void | Promise<void>;
   };
+  // toolbar editor (stage B3): while active it owns esc/arrows/delete exactly
+  // like the columns hook owns its arrows. Optional so older fakes stay
+  // grid-only (absent = edit mode never active).
+  toolbarEdit?: {
+    isActive(): boolean;
+    handleKey(ev: KeyPressEvent): boolean;
+  };
   // --- sidebar kb-focus state (read by makeChrome for the highlight) ---
   placesHost: Array<{ selected: boolean; place: { scheme?: string; path?: string | null; mountDevice?: string } }>;
   normalizePlaces(): void;
@@ -150,6 +157,8 @@ export type KeyRouterCtx = {
   openTerminal(): void;
   // go-to-folder opener (actions table); optional so older fakes keep working
   openGoToFolder?(): void;
+  // toolbar editor toggle (the editToolbar key action + the palette path)
+  toggleToolbarEditor?(): void;
   connectServer(raw?: string): void;
   togglePreview(): void;
   toggleInfoSidebar(): void;
@@ -172,6 +181,11 @@ export type KeyRouterCtx = {
   splitPaneHorizontal(): void;
   splitPaneVertical(): void;
   closePane(): void;
+  presetSingle(): void;
+  presetTwoCol(): void;
+  presetTwoRow(): void;
+  presetThreePane(): void;
+  refreshFolder(): void;
   switchPane(): void;
   focusPaneLeft(): void;
   focusPaneRight(): void;
@@ -778,6 +792,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "openTerminal", run: () => ctx.openTerminal() },
     { action: "connectServer", run: () => ctx.connectServer() },
     { action: "toggleView", run: () => ctx.toggleViewMode() },
+    { action: "refresh", run: () => ctx.refreshFolder() },
     { action: "nextTheme", run: () => ctx.nextTheme() },
     { action: "zoomIn", run: () => ctx.zoomTiles(1) },
     { action: "zoomOut", run: () => ctx.zoomTiles(-1) },
@@ -786,6 +801,10 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "splitPaneHorizontal", run: () => ctx.splitPaneHorizontal() },
     { action: "splitPaneVertical", run: () => ctx.splitPaneVertical() },
     { action: "closePane", run: () => ctx.closePane() },
+    { action: "presetSingle", run: () => ctx.presetSingle() },
+    { action: "presetTwoCol", run: () => ctx.presetTwoCol() },
+    { action: "presetTwoRow", run: () => ctx.presetTwoRow() },
+    { action: "presetThreePane", run: () => ctx.presetThreePane() },
     { action: "switchPane", run: () => ctx.switchPane() },
     { action: "focusPaneLeft", run: () => ctx.focusPaneLeft() },
     { action: "focusPaneRight", run: () => ctx.focusPaneRight() },
@@ -815,6 +834,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
         ctx.notify("type-to-search on · type to filter, esc clears", "search", "info");
       },
     },
+    { action: "editToolbar", run: () => ctx.toggleToolbarEditor?.() },
     { action: "cycleSort", run: () => ctx.cycleSort() },
     { action: "reverseSort", run: () => ctx.reverseSort() },
     { action: "goHome", run: () => ctx.navigate(ctx.home) },
@@ -899,6 +919,12 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     // remapped-action block so a backspace doesn't fire parentDir first
     if (ctx.columns?.isActive() && ctx.columns.handleKey(ev)) return;
 
+    // toolbar editor (stage B3): same claim slot as columns — BEFORE the
+    // remapped-action block, because alt+left/right are histBack/histForward
+    // binds and backspace is parentDir. Returns false when inactive, so a
+    // non-editing router is byte-identical.
+    if (ctx.toolbarEdit?.isActive() && ctx.toolbarEdit.handleKey(ev)) return;
+
     // --- remappable action keys that grid nav would otherwise swallow:
     // handleGridNavKeys consumes bare arrows/return regardless of modifiers,
     // so alt+arrows and alt+enter must dispatch BEFORE it (plain arrows and
@@ -919,6 +945,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "openTerminal") && runAction("openTerminal")) return;
     if (hit(ev, "connectServer") && runAction("connectServer")) return;
     if (hit(ev, "toggleView") && runAction("toggleView")) return;
+    if (hit(ev, "refresh") && ev.repeated !== true && runAction("refresh")) return;
     if (hit(ev, "cycleSort") && ev.repeated !== true && runAction("cycleSort")) return;
     if (hit(ev, "reverseSort") && ev.repeated !== true && runAction("reverseSort")) return;
     if (hit(ev, "zoomIn") && runAction("zoomIn")) return;
@@ -928,6 +955,10 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "splitPaneHorizontal") && ev.repeated !== true && runAction("splitPaneHorizontal")) return;
     if (hit(ev, "splitPaneVertical") && ev.repeated !== true && runAction("splitPaneVertical")) return;
     if (hit(ev, "closePane") && ev.repeated !== true && runAction("closePane")) return;
+    if (hit(ev, "presetSingle") && ev.repeated !== true && runAction("presetSingle")) return;
+    if (hit(ev, "presetTwoCol") && ev.repeated !== true && runAction("presetTwoCol")) return;
+    if (hit(ev, "presetTwoRow") && ev.repeated !== true && runAction("presetTwoRow")) return;
+    if (hit(ev, "presetThreePane") && ev.repeated !== true && runAction("presetThreePane")) return;
     if (hit(ev, "switchPane") && ev.repeated !== true && runAction("switchPane")) return;
     if (hit(ev, "focusPaneLeft") && ev.repeated !== true && runAction("focusPaneLeft")) return;
     if (hit(ev, "focusPaneRight") && ev.repeated !== true && runAction("focusPaneRight")) return;
@@ -936,6 +967,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (hit(ev, "copyToOtherPane") && ev.repeated !== true && runAction("copyToOtherPane")) return;
     if (hit(ev, "moveToOtherPane") && ev.repeated !== true && runAction("moveToOtherPane")) return;
     if (hit(ev, "startSearch") && runAction("startSearch")) return;
+    if (hit(ev, "editToolbar") && ev.repeated !== true && runAction("editToolbar")) return;
 
     // --- keyboard navigation: sidebar <-> grid ---
     // sidebar focus swallows ALL keys — it must precede shift-extend or

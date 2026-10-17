@@ -285,6 +285,8 @@ export type UiConfig = {
   tabBar: boolean;
   pathbarPosition: PathbarPosition;
   viewMode: ViewMode;
+  // global toolbar item ids, left to right (parsed by app/toolbar-items.ts)
+  toolbar: string[];
   // bottom-bar icon-size slider visibility (grid view with live image graphics
   // only). The slider drives the EXISTING grid zoom (tileW/H + iconCells).
   iconSizeSlider: boolean;
@@ -382,6 +384,7 @@ export type KeyAction =
   | "openTerminal"
   | "connectServer"
   | "toggleView"
+  | "refresh"
   | "zoomIn"
   | "zoomOut"
   | "nextTheme"
@@ -390,6 +393,10 @@ export type KeyAction =
   | "splitPaneHorizontal"
   | "splitPaneVertical"
   | "closePane"
+  | "presetSingle"
+  | "presetTwoCol"
+  | "presetTwoRow"
+  | "presetThreePane"
   | "switchPane"
   | "focusPaneLeft"
   | "focusPaneRight"
@@ -417,7 +424,8 @@ export type KeyAction =
   | "reverseSort"
   | "goHome"
   | "goToFolder"
-  | "toggleQuicklook";
+  | "toggleQuicklook"
+  | "editToolbar";
 
 type KeysConfig = Record<KeyAction, string[]>;
 
@@ -467,6 +475,7 @@ type SchemaRow =
     })
   | (RowCommon & { kind: "bool"; section: "ui"; def: boolean; blurb: string })
   | (RowCommon & { kind: "enum"; section: "ui"; values: readonly string[]; def: string; blurb: string })
+  | (RowCommon & { kind: "strarray"; section: "ui"; def: string[]; blurb: string })
   | (RowCommon & { kind: "key"; section: "keys"; action: KeyAction; def: string[]; blurb: string })
   | (RowCommon & { kind: "hex"; section: "theme"; def: string; group?: undefined });
 
@@ -526,6 +535,30 @@ const UI_ROWS: SchemaRow[] = [
     group: "layout",
     subsection: "view",
     restart: true,
+  },
+  {
+    kind: "strarray",
+    section: "ui",
+    tomlKey: "toolbar",
+    prop: "toolbar",
+    def: [
+      "back",
+      "forward",
+      "up",
+      "refresh",
+      "view-cycle",
+      "info-toggle",
+      "preview-toggle",
+      "sort",
+      "sync-toggle",
+      "hidden-toggle",
+      "terminal-toggle",
+    ],
+    doc: "toolbar item ids, left to right",
+    label: "toolbar",
+    blurb: "Toolbar items, left to right",
+    group: "layout",
+    subsection: "view",
   },
   {
     kind: "bool",
@@ -2056,6 +2089,9 @@ const KEY_ROWS: KeyRow[] = (
     ["toggleInfoSidebar", "toggle info sidebar", ["f7"], "view", "Show or hide the file info sidebar"],
     ["toggleQuicklook", "toggle quicklook", ["f8"], "view", "Preview the selection in a float"],
     ["toggleView", "toggle view", ["ctrl+g"], "view", "Cycle grid, list and columns"],
+    ["refresh", "refresh folder", [], "view", "Re-read the current folder from disk"],
+    // unbound by default: the trailing pencil on the strip is the in-place entry
+    ["editToolbar", "edit toolbar", [], "view", "Customize the toolbar"],
     ["nextTheme", "next theme", ["alt+t"], "view", "Step through the color themes"],
     ["cycleSort", "cycle sort", ["alt+s"], "view", "Name, size, date, then type"],
     ["reverseSort", "reverse sort", ["alt+shift+s"], "view", "Flip the sort direction"],
@@ -2084,6 +2120,10 @@ const KEY_ROWS: KeyRow[] = (
       "Split the focused pane top and bottom",
     ],
     ["closePane", "close pane", ["ctrl+shift+w"], "split panes", "Close the focused pane"],
+    ["presetSingle", "layout: single pane", [], "split panes", "Collapse to one pane"],
+    ["presetTwoCol", "layout: two columns", [], "split panes", "Two panes side by side"],
+    ["presetTwoRow", "layout: two rows", [], "split panes", "Two panes stacked"],
+    ["presetThreePane", "layout: three panes", [], "split panes", "One pane beside two stacked"],
     ["switchPane", "switch pane", ["tab"], "split panes", "Hop between the panes"],
     ["focusPaneLeft", "focus pane left", ["ctrl+alt+h"], "split panes", "Move focus to the pane on the left"],
     ["focusPaneRight", "focus pane right", ["ctrl+alt+l"], "split panes", "Move focus to the pane on the right"],
@@ -2113,7 +2153,7 @@ export const UI_SCHEMA = UI_ROWS;
 export const KEY_SCHEMA = KEY_ROWS;
 
 export const defaultConfig: Config = {
-  ui: Object.fromEntries(UI_ROWS.map((r) => [r.prop, r.def])),
+  ui: Object.fromEntries(UI_ROWS.map((r) => [r.prop, Array.isArray(r.def) ? [...r.def] : r.def])),
   theme: Object.fromEntries(THEME_ROWS.map((r) => [r.prop, r.def])),
   keys: Object.fromEntries(KEY_ROWS.map((r) => [r.prop, [...r.def]])),
 } as Config;
@@ -2191,6 +2231,14 @@ const coerceRow = (row: SchemaRow, raw: unknown): { ok: boolean; value: unknown 
       return typeof raw === "string" && (row.values as readonly string[]).includes(raw)
         ? { ok: true, value: raw }
         : { ok: false, value: row.def };
+    case "strarray": {
+      // only a real array is accepted; keep string entries and dedupe (first
+      // wins). An explicit empty array is a legal "no items", like the [keys]
+      // empty-unbind case.
+      if (!Array.isArray(raw)) return { ok: false, value: row.def };
+      const items = raw.filter((s): s is string => typeof s === "string");
+      return { ok: true, value: items.filter((s, i, a) => a.indexOf(s) === i) };
+    }
     case "hex":
       return typeof raw === "string" && HEX_RE.test(raw) ? { ok: true, value: raw } : { ok: false, value: row.def };
     case "key": {
@@ -2263,7 +2311,7 @@ const tomlValue = (v: string | number | boolean | string[]): string => {
 const valueFor = (cfg: Config, row: SchemaRow): string | number | boolean | string[] => {
   if (row.section === "theme") return (cfg.theme as Record<string, unknown>)[row.prop] as string;
   if (row.section === "keys") return ((cfg.keys as Record<string, unknown>)[row.prop] as string[]) ?? row.def;
-  return (cfg.ui as Record<string, unknown>)[row.prop] as string | number | boolean;
+  return (cfg.ui as Record<string, unknown>)[row.prop] as string | number | boolean | string[];
 };
 
 // hand-built TOML (all values are scalars) so each key's doc comment is

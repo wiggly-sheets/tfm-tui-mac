@@ -108,6 +108,20 @@ const glyphChains: Record<string, GlyphChain> = {
   "content-duplicate": ["\u{F0191}", "\u{E913}", "\u{F0C5}"],
   "select-all": ["\u{F0478}", "\u{E914}", "\u{F0C5}"],
   sort: ["\u{F04BA}", "\u{E915}", "\u{F0DC}"],
+  // toolbar items (filled-only MDI codepoints, MesloLGLDZ-verified). The
+  // layout glyphs render the same in every font that carries nf-md, so no
+  // alternative chain is added.
+  "view-grid": "\u{F0570}",
+  "view-list": "\u{F0572}",
+  "view-columns": "\u{F056D}",
+  "view-split-vertical": "\u{F0BCC}",
+  "view-split-horizontal": "\u{F0BCB}",
+  // upstream has no view-dashboard-vertical; the dashboard-variant glyph is
+  // the closest three-pane layout mark
+  "view-dashboard-vertical": "\u{F0843}",
+  refresh: "\u{F0450}",
+  "file-hidden": "\u{F0613}",
+  sync: "\u{F04E6}",
   // File type icons (Material Design Icons)
   "file-code": ["\u{F06D6}", "\u{E916}", "\u{F121}"],
   "file-code-outline": ["\u{F102B}", "\u{E917}", "\u{F121}"],

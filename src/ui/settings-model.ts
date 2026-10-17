@@ -155,6 +155,14 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
               : row.values.indexOf(String(ui[row.prop] ?? row.def)),
           setIdx: (i) => commitUi({ [row.prop]: row.values[i] } as Partial<UiConfig>),
         };
+      // [ui] toolbar is a list of item ids, parse-only for now: its editing
+      // surface ships with the toolbar UI stage and the row is skipped from
+      // the generic builder via SPECIAL_UI_PROPS, so this branch exists only
+      // to keep the switch exhaustive.
+      // shortcut: no toolbar-item editor in the GUI yet; edit [ui] toolbar by
+      // hand or via config.example.toml until the toolbar UI stage lands.
+      case "strarray":
+        return { kind: "header", label: row.label };
     }
   };
 
@@ -202,7 +210,7 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
   // (+ the System terminal-following entry), adaptive/on tab bar, live
   // show-hidden state sync) are built by hand and spliced into their category;
   // the schema row still exists for parsing
-  const SPECIAL_UI_PROPS = new Set(["showHidden", "tabBar", "followTerminal"]);
+  const SPECIAL_UI_PROPS = new Set(["showHidden", "tabBar", "followTerminal", "toolbar"]);
 
   const themeRow = (): SettingRow => {
     // "System" leads: it owns the [ui] follow-terminal knob (the schema row

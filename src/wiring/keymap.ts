@@ -20,6 +20,9 @@ import { presetKeys } from "../config/keymap-presets";
 import { cycleSortMode } from "../lib/sort";
 import { currentViewSlot, nextViewSlot, setPluginViewId, viewCycle, viewModeFor } from "../app/panes";
 import { activeFacade } from "../app/panes";
+import { leafIds } from "../app/layout";
+import { layoutPreset, type LayoutPresetId } from "../app/layout-presets";
+import { clearListingsCache } from "../fs/listing";
 import { destroyChildren, errMessage } from "../lib/uiutil";
 import { flattenPluginCommands, getPluginCommandBinds, isPluginEnabled } from "../plugins/plugin-api";
 import { isVirtualUri } from "../fs/uri";
@@ -217,6 +220,29 @@ export const wireKeymap = (deps: {
   // keypress (no applyConfig — config is loaded, not committed)
   applyVimBinds();
 
+  // --- Layout preset items (toolbar): replace the whole pane tree. A pane that
+  // would be DROPPED while holding more than one tab would lose those tabs, so
+  // ask first (single-tab and empty panes drop silently, matching closePane).
+  // shortcut: the guard treats only a multi-tab pane as at-risk user data; a
+  // dropped pane's cwd/history is intentionally discarded, which is the point
+  // of a preset. Revisit if per-pane state gains weight worth preserving.
+  const applyLayoutPreset = (id: LayoutPresetId): void => {
+    const tree = layoutPreset(id);
+    const current = core.panes.leafIds();
+    const next = leafIds(tree);
+    const apply = (): void => {
+      core.panes.setTree(tree);
+      nav.renderAll();
+    };
+    const risky = current.filter((p) => !next.includes(p) && (nav.tabModels.get(p)?.list.length ?? 0) > 1);
+    if (risky.length === 0) {
+      apply();
+      return;
+    }
+    const what = risky.length === 1 ? "1 pane" : `${risky.length} panes`;
+    fileops.yesNo.confirm(`Close ${what} with open tabs?`, "Close panes", apply, true);
+  };
+
   const keyRouter = makeKeyRouter({
     byId,
     state,
@@ -272,6 +298,12 @@ export const wireKeymap = (deps: {
       handleKey: (ev: KeyEventLike) => grid.columnsRenderer(core.panes.activeId).handleKey(ev),
       renderColumns: () => grid.columnsRenderer(core.panes.activeId).renderColumns(),
     }),
+    // toolbar editor (stage B3): edit mode + the palette drawer own esc/arrows.
+    // chrome builds the editor with the strip; the router only delegates.
+    toolbarEdit: {
+      isActive: () => chrome.toolbarEditor.isActive(),
+      handleKey: (ev: KeyEventLike) => chrome.toolbarEditor.handleKey(ev),
+    },
     placesHost: chrome.chrome.placesHost,
     normalizePlaces: chrome.chrome.normalizePlaces,
     mountDevice: chrome.chrome.mountDevice,
@@ -371,9 +403,10 @@ export const wireKeymap = (deps: {
         setPluginViewId(s, next.pluginView);
       }
       void grid.renderGrid();
-      // view mode decides the slider's visibility — renderGrid (not renderAll)
-      // is this path's only repaint
+      // view mode decides the slider's visibility AND the view-cycle button's
+      // icon — renderGrid (not renderAll) is this path's only repaint
       chrome.iconSlider.refresh();
+      chrome.toolbarStrip.refresh();
     },
     // single-key sort cycle on the ACTIVE pane's state (same nautilus
     // semantics + renderGrid tail as the sort menu's pick)
@@ -462,6 +495,16 @@ export const wireKeymap = (deps: {
       core.panes.closePane(core.panes.activeId);
       nav.renderAll();
     },
+    presetSingle: () => applyLayoutPreset("preset-single"),
+    presetTwoCol: () => applyLayoutPreset("preset-2col"),
+    presetTwoRow: () => applyLayoutPreset("preset-2row"),
+    presetThreePane: () => applyLayoutPreset("preset-3pane"),
+    // reload the active folder from disk (bust the listing cache first, else
+    // the TTL serves the same scan) then repaint
+    refreshFolder: () => {
+      clearListingsCache(core.state.cwd);
+      nav.renderAll();
+    },
     copyToOtherPane: () => transferToOtherPane("copy"),
     moveToOtherPane: () => transferToOtherPane("move"),
     setClipboard: fileops.fileops.setClipboard,
@@ -484,6 +527,7 @@ export const wireKeymap = (deps: {
       handleKey: prompt.handleKey,
     },
     openGoToFolder: () => goToFolder.open(),
+    toggleToolbarEditor: () => chrome.toolbarEditor.toggle(),
     goToFolder: {
       isOpen: () => goToFolder.isOpen(),
       handleKey: goToFolder.handleKey,

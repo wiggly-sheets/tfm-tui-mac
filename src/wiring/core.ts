@@ -244,6 +244,21 @@ export const wireCore = (deps: {
       if (activeId === id) setActiveId(leafIds(layout.current)[0] ?? activeId);
       fireTreeChange();
     },
+    // replace the whole tree (layout presets). States/scroller refs are
+    // reconciled to the new leaf set; existing leaves keep their state, new
+    // leaves get a fresh one. Fires the same tree-change fan-out as split/close.
+    setTree: (tree: LayoutTree): void => {
+      layout.current = tree;
+      const ids = leafIds(tree);
+      for (const id of ids) {
+        if (!stateMap.has(id)) stateMap.set(id, initialAppState(config, process.cwd()));
+        if (!scrollerRefs.has(id)) scrollerRefs.set(id, { current: null });
+      }
+      for (const id of [...stateMap.keys()]) if (!ids.includes(id)) stateMap.delete(id);
+      for (const id of [...scrollerRefs.keys()]) if (!ids.includes(id)) scrollerRefs.delete(id);
+      if (!findLeaf(layout.current, activeId)) setActiveId(ids[0] ?? activeId);
+      fireTreeChange();
+    },
     cyclePane: (delta: 1 | -1 = 1): void => {
       const next = cyclePane(layout.current, activeId, delta);
       setActiveId(next);

@@ -145,12 +145,12 @@ describe("settingGroups shape", () => {
     // header supplies context: duration/travel/direction/spread/easing read
     // under ##files, ##sidebar intro, ##top bar, ##directory bar), so the
     // invariant keys on props: a row whose group doesn't match the table
-    // would otherwise silently never render. "follow terminal" is the one
-    // exception: it has no row of its own — the theme cycle's System entry
-    // owns the knob (pinned below).
+    // would otherwise silently never render. Two props have no generic row of
+    // their own: followTerminal (the theme cycle's System entry owns it, pinned
+    // below) and toolbar (owned by the toolbar UI stage — no editor yet).
     const labels = h.groups().flatMap((g) => g.rows.map((r) => r.label));
     for (const row of UI_SCHEMA) {
-      if (row.prop === "followTerminal") {
+      if (row.prop === "followTerminal" || row.prop === "toolbar") {
         expect(labels).not.toContain(row.label);
         continue;
       }
@@ -409,6 +409,10 @@ describe("settingGroups shape", () => {
       "split pane left/right",
       "split pane top/bottom",
       "close pane",
+      "layout: single pane",
+      "layout: two columns",
+      "layout: two rows",
+      "layout: three panes",
       "switch pane",
       "focus pane left",
       "focus pane right",

@@ -124,6 +124,13 @@ const LISTINGS_CAP = 64;
 const LISTINGS_TTL_MS = 2000;
 const listings = new Map<string, CachedDir>();
 
+// Drop the reusable listing cache so the next listDir re-reads from disk (one
+// dir, or all when omitted). Without this the TTL serves a stale scan.
+export const clearListingsCache = (dir?: string): void => {
+  if (dir === undefined) listings.clear();
+  else listings.delete(path.resolve(dir));
+};
+
 const scanDir = async (dir: string): Promise<Entry[]> => {
   const dirents = await readdir(dir, { withFileTypes: true });
   const out: Entry[] = [];
