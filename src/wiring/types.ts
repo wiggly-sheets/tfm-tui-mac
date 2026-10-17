@@ -20,6 +20,8 @@ import type { makeMenu } from "../ui/ui-menu";
 import type { makeChrome } from "../ui/ui-chrome";
 import type { makeToolbar } from "../ui/ui-toolbar";
 import type { makeIconSlider } from "../ui/icon-slider";
+import type { makeToolbarStrip } from "../ui/ui-toolbar-strip";
+import type { makeToolbarEditor } from "../ui/ui-toolbar-editor";
 import type { makeNotify } from "../ui/notify";
 import type { makeRecentOpen } from "../fs/recent-open";
 import type { makeDialogs } from "../ui/ui-dialogs";
@@ -68,6 +70,12 @@ export type ChromeWiring = {
   // bottom-bar icon-size slider (drives the grid zoom); refresh() resyncs its
   // value + visibility from live config/state
   iconSlider: ReturnType<typeof makeIconSlider>;
+  // global toolbar strip (customizable button row): refresh() rebuilds it from
+  // the live [ui] toolbar + the active pane's resolved view mode
+  toolbarStrip: ReturnType<typeof makeToolbarStrip>;
+  // toolbar editor (stage B3): edit-mode flag + palette drawer + keyboard
+  // cursor; the strip forwards its drag surface here
+  toolbarEditor: ReturnType<typeof makeToolbarEditor>;
   notify: ReturnType<typeof makeNotify>["notify"];
   notifySticky: ReturnType<typeof makeNotify>["notifySticky"];
   ensureSudo: ReturnType<typeof makeEnsureSudo>;

@@ -97,6 +97,11 @@ export const wireNav = (deps: {
       // mode + image protocol) on every repaint — covers resize, pane switch
       // and boot, where no config apply runs
       iconSlider: () => getChrome().iconSlider.refresh(),
+      // global toolbar strip: rebuild from the live [ui] toolbar and repaint
+      // the view-cycle icon from the active pane's resolved view mode. Covers
+      // every config change ([ui] toolbar is not RENDER_EXEMPT), pane
+      // switches and boot.
+      toolbarStrip: () => getChrome().toolbarStrip.refresh(),
     },
   });
 

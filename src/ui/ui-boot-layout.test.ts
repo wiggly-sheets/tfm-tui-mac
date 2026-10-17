@@ -178,6 +178,40 @@ describe("grid scrollbar theming", () => {
   });
 });
 
+describe("global toolbar row", () => {
+  const theme = defaultConfig.theme;
+  // the pre-mount skeleton IS a vnode tree, so the child order is asserted
+  // before anything mounts (no ids to collide with — see the tests above)
+  const mainKids = (toolbarHeight?: number): any[] => {
+    const container: any = buildAppContainer({
+      sw: 26,
+      sideInnerW: 24,
+      colors: theme,
+      uiStyle: "solid",
+      previewWidth: 40,
+      previewEnabled: false,
+      ...(toolbarHeight === undefined ? {} : { toolbarHeight }),
+      title: buildTitle({ width: 24, colors: theme }),
+    });
+    const main = container.children.find((c: any) => c.props?.id === "tfm-main");
+    return main.children;
+  };
+
+  test("tfm-toolbar is the FIRST child of tfm-main, above the panes", () => {
+    expect(mainKids().map((c: any) => c.props?.id)).toEqual([
+      "tfm-toolbar",
+      "tfm-panes",
+      "tfm-status",
+      "tfm-term-host",
+    ]);
+  });
+
+  test("an empty [ui] toolbar requests a zero-height row", () => {
+    expect(mainKids(1)[0].props.height).toBe(1);
+    expect(mainKids(0)[0].props.height).toBe(0);
+  });
+});
+
 // A mixed tree is the case a flat pair never exercised: the h-split and the
 // v-split must lay out as a row and a column, and each pair of siblings gets
 // its own divider (the second no longer collides with the first).

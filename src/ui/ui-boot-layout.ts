@@ -80,6 +80,10 @@ type AppContainerOpts = {
   // right-region: preview and the info sidebar SHARE one column (info wins
   // when both are on), so only one of the two panes is ever visible
   infoEnabled?: boolean;
+  // [ui] toolbar: the global strip row's boot height. 0 = the configured list
+  // is empty — no row is occupied (the strip re-applies this after runtime
+  // edits). Default 1.
+  toolbarHeight?: number;
   title: SlotElement;
 };
 
@@ -107,6 +111,17 @@ export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
         ...chromeSurface(o.uiStyle, o.colors, o.colors.bg, o.transparentForce ? "force" : undefined),
         flexDirection: "column",
       },
+      // global customizable toolbar row (app/toolbar-items): the strip widget
+      // mounts itself here in wireChrome (`tfm-toolbar-strip`). Height 0 = an
+      // empty [ui] toolbar, so no row is occupied. Fixed 3-cell items clip
+      // here — boxes do not clip by default.
+      Box({
+        id: "tfm-toolbar",
+        width: "100%",
+        height: o.toolbarHeight ?? 1,
+        flexDirection: "row",
+        overflow: "hidden",
+      }),
       // pane columns mount here at runtime (wiring/panes -> buildPaneTree):
       // the layout tree can split/close after boot, so the skeleton only
       // provides the host box. Status + terminal stay global below it.

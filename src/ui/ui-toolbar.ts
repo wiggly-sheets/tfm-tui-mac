@@ -18,7 +18,7 @@ import type { NotifyLevel } from "../lib/notify-level";
 import type { MaybeNode } from "../lib/node-like";
 import type { PointerStyle } from "../lib/pointer";
 
-type MakeIconSlotFn = (
+export type MakeIconSlotFn = (
   name: string,
   states: IconState[],
   heightCells?: number,
@@ -117,6 +117,63 @@ export const toolbarItemIds = (byId: (id: string) => MaybeNode, prefix: string, 
     `${prefix}sort-btn`,
     `${prefix}search-btn`,
   ].filter(live);
+};
+
+// --- generic hover button: two baked rasters (normal/hover bg), wrapper box
+// bg matches so the padding cells track the raster. A standalone factory (not
+// a closure over one toolbar's ctx) because the global toolbar strip reuses
+// the EXACT same plumbing — one visual language for both rows. `focusPane` is
+// optional: the per-pane toolbar focuses its pane on press, the global strip
+// has no pane to focus.
+export type HoverBtnCtx = {
+  byId(id: string): MaybeNode;
+  colors(): Theme;
+  uiStyle(): UiStyle;
+  makeIconSlot: MakeIconSlotFn;
+  setIconState(spec: IconSpec, index: number): void;
+  transparentForce?(): boolean;
+  setPointer?(style: PointerStyle): void;
+  focusPane?(): void;
+};
+
+export const makeHoverBtn = (
+  btnCtx: HoverBtnCtx,
+  id: string,
+  iconName: string,
+  onMouseDown: (ev: MouseEvent) => void,
+  // hover side effect (the global strip writes the item label to the status
+  // bar); absent = paint only
+  onHover?: (hover: boolean) => void,
+): SlotElement => {
+  const tForce = () => (btnCtx.transparentForce?.() ? "force" : undefined);
+  const states = (): IconState[] => [
+    { fg: btnCtx.colors().sidebarFg, bg: btnCtx.colors().bg },
+    { fg: btnCtx.colors().sidebarFg, bg: btnCtx.colors().hoverBg },
+  ];
+  const slot = btnCtx.makeIconSlot(iconName, states(), 1, 0, undefined, states);
+  const paint = (on: boolean) => {
+    btnCtx.setIconState(slot.spec, toggleIconState(on, false));
+    try {
+      const n = btnCtx.byId(id);
+      if (n) applySurface(n, btnSurface(btnCtx.uiStyle(), btnCtx.colors(), on, undefined, tForce()));
+    } catch {}
+    onHover?.(on);
+  };
+  return Box(
+    {
+      id,
+      height: 1,
+      width: 3,
+      justifyContent: "center",
+      ...btnSurface(btnCtx.uiStyle(), btnCtx.colors(), false, undefined, tForce()),
+      onMouseDown: (ev: MouseEvent) => {
+        btnCtx.focusPane?.();
+        onMouseDown(ev);
+      },
+      ...hoverEvents(paint, btnCtx.setPointer),
+    },
+    slot.el,
+  );
 };
 
 export const makeToolbar = (ctx: ToolbarCtx) => {
@@ -380,35 +437,8 @@ export const makeToolbar = (ctx: ToolbarCtx) => {
 
   // --- generic hover button: two baked rasters (normal/hover bg), wrapper box
   // bg matches so the padding cells track the raster ---
-  const hoverBtn = (id: string, iconName: string, onMouseDown: (ev: MouseEvent) => void): SlotElement => {
-    const states = (): IconState[] => [
-      { fg: ctx.colors().sidebarFg, bg: ctx.colors().bg },
-      { fg: ctx.colors().sidebarFg, bg: ctx.colors().hoverBg },
-    ];
-    const slot = makeIconSlot(iconName, states(), 1, 0, undefined, states);
-    const paint = (on: boolean) => {
-      setIconState(slot.spec, toggleIconState(on, false));
-      try {
-        const n = ctx.byId(id);
-        if (n) applySurface(n, btnSurface(ctx.uiStyle(), ctx.colors(), on, undefined, tForce()));
-      } catch {}
-    };
-    return Box(
-      {
-        id,
-        height: 1,
-        width: 3,
-        justifyContent: "center",
-        ...btnSurface(ctx.uiStyle(), ctx.colors(), false, undefined, tForce()),
-        onMouseDown: (ev: MouseEvent) => {
-          ctx.focusPane?.();
-          onMouseDown(ev);
-        },
-        ...hoverEvents(paint, ctx.setPointer),
-      },
-      slot.el,
-    );
-  };
+  const hoverBtn = (id: string, iconName: string, onMouseDown: (ev: MouseEvent) => void): SlotElement =>
+    makeHoverBtn(ctx, id, iconName, onMouseDown);
 
   const makeSearch = () => {
     const wrap = Box({ id: id("search-wrap"), height: 1, flexDirection: "row" });

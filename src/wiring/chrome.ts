@@ -19,6 +19,10 @@ import { makeNetworkActions, type GioResult } from "../fs/netmount";
 import { makeMenu, MENU_W } from "../ui/ui-menu";
 import { makeChrome } from "../ui/ui-chrome";
 import { makeToolbar, toolbarItemIds, crumbItemIds } from "../ui/ui-toolbar";
+import { makeToolbarStrip, TOOLBAR_STRIP_ID } from "../ui/ui-toolbar-strip";
+import { makeToolbarEditor } from "../ui/ui-toolbar-editor";
+import { sanitizeToolbar } from "../app/toolbar-items";
+import type { Command } from "../lib/command";
 import { getMap, makeLeafRegistry, type PaneId, viewModeFor } from "../app/panes";
 import { leafRectsOf } from "../app/layout";
 import { buildAppContainer, buildTitle, setPathbarPosition } from "../ui/ui-boot-layout";
@@ -50,7 +54,7 @@ export const wireChrome = async (deps: {
   // late clusters — only read at runtime, post-boot
   getGrid: () => GridWiring;
   getFileops: () => FileopsWiring;
-  getKeyRouter: () => { sidebarActive(): boolean; placeIdx(): number };
+  getKeyRouter: () => { sidebarActive(): boolean; placeIdx(): number; commands(): Command[] };
   // network "Connect to Server…" prompt — prompt overlaps keymap, wired LAST
   getPrompt: () => {
     open(o: {
@@ -269,6 +273,9 @@ export const wireChrome = async (deps: {
     previewWidth: core.config.ui.previewWidth,
     previewEnabled: core.config.ui.previewEnabled,
     infoEnabled: core.config.ui.infoSidebar,
+    // an empty [ui] toolbar occupies no row (the strip re-applies this height
+    // on every refresh, so a runtime edit lands too)
+    toolbarHeight: sanitizeToolbar(core.config.ui.toolbar).length ? 1 : 0,
     title: buildTitle({ width: core.sideInnerW(), colors: core.colors, mode: core.config.ui.sidebarTitle }),
   });
 
@@ -322,6 +329,55 @@ export const wireChrome = async (deps: {
     },
     commit: () => deps.getRetheme().scheduleSaveConfig(),
   });
+
+  // --- Global toolbar strip: the customizable button row above the panes.
+  // Built post-renderer because it mounts ITSELF into the boot row (same seam
+  // as the icon slider above). Commands come from the keymap's table, which
+  // wires LAST — the getter only runs at click time (settled TDZ). ---
+  // The editor (stage B3) owns edit mode + the palette drawer; the strip
+  // renders its buttons and forwards the drag surface. Its repaint seam is
+  // filled in once the strip exists (focus-only changes rebuild the row).
+  let editorRepaint: () => void = () => {};
+  const toolbarEditor = makeToolbarEditor({
+    ui: () => core.config.ui,
+    applyToolbar: (next) => {
+      deps.getRetheme().applyConfig({ ...core.config, ui: { ...core.config.ui, toolbar: next } });
+      deps.getRetheme().scheduleSaveConfig();
+    },
+    byId,
+    rootAdd: (node) => renderer.root.add(node),
+    destroyChildren,
+    stripSelectable,
+    colors: themeGet,
+    uiStyle: () => core.config.ui.uiStyle,
+    makeIconSlot,
+    floats: core.floats,
+    stripLeft: () => {
+      const n = byId(TOOLBAR_STRIP_ID);
+      return typeof n?.screenX === "number" ? n.screenX : 0;
+    },
+    panelLeft: () => core.geometry.sw + 2,
+    transparentForce: () => core.config.ui.transparentBg === "force",
+    setPointer,
+    repaint: () => editorRepaint(),
+  });
+
+  const toolbarStrip = makeToolbarStrip({
+    byId,
+    colors: themeGet,
+    uiStyle,
+    makeIconSlot,
+    setIconState,
+    transparentForce: () => core.config.ui.transparentBg === "force",
+    ui: () => core.config.ui,
+    viewMode: () => viewModeFor(core.panes.stateOf(core.panes.activeId), core.config.ui.viewMode, core.isTtyMode),
+    commands: () => deps.getKeyRouter().commands(),
+    setStatus: nav.setStatusMsg,
+    stripSelectable: core.lookup.stripSelectable,
+    setPointer,
+    editor: toolbarEditor,
+  });
+  editorRepaint = () => toolbarStrip.refresh();
 
   // --- Sidebar startup intro (cold-boot-only): one reused timeline over the
   // places sidebar, played by the playSidebarIntro boot step after the first
@@ -684,6 +740,8 @@ export const wireChrome = async (deps: {
     toolbars,
     activeToolbar: () => getMap(toolbars, core.panes.activeId),
     iconSlider,
+    toolbarStrip,
+    toolbarEditor,
     notify,
     notifySticky,
     ensureSudo: ensureSudoChrome,
