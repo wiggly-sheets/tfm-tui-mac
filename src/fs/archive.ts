@@ -267,7 +267,31 @@ export const canExtract = (file: string, which: WhichFn = Bun.which, platform: s
 
 export type ArchiveLane = "spawn" | "js" | "unavailable";
 
-const JS_FORMATS: ReadonlySet<ArchiveFormat> = new Set(["tar", "tar.gz", "zip"]);
+// per-format capability of the js fallback lane. Bun.Archive handles raw tar and
+// gzip; fflate handles zip. Everything else (xz/bz2/zst/lzma/lz4/brotli/lzip/
+// lzop/compress) has no pure-JS decoder — routing it through jsTarExtract would
+// surface as an opaque Bun/fflate error instead of a named "install xz"
+// refusal. `hint` is the single binary the user needs.
+const JS_CAPS: Record<ArchiveFormat, { ok: boolean; hint?: string }> = {
+  tar: { ok: true },
+  "tar.gz": { ok: true },
+  zip: { ok: true },
+  "tar.xz": { ok: false, hint: "xz" },
+  "tar.bz2": { ok: false, hint: "bzip2" },
+  "tar.zst": { ok: false, hint: "zstd" },
+  "tar.lzma": { ok: false, hint: "lzma" },
+  "tar.lz4": { ok: false, hint: "lz4" },
+  "tar.br": { ok: false, hint: "brotli" },
+  "tar.lz": { ok: false, hint: "lzip" },
+  "tar.lzo": { ok: false, hint: "lzop" },
+  "tar.Z": { ok: false, hint: "compress" },
+  "7z": { ok: false, hint: "7z" },
+};
+const jsCanHandle = (fmt: ArchiveFormat): boolean => JS_CAPS[fmt]?.ok === true;
+// legacy set: the three formats the js lane actually implements
+const JS_FORMATS: ReadonlySet<ArchiveFormat> = new Set(
+  (Object.entries(JS_CAPS) as [ArchiveFormat, { ok: boolean }][]).filter(([, c]) => c.ok).map(([f]) => f),
+);
 
 export const selectArchiveLane = (
   fmt: ArchiveFormat,
@@ -277,7 +301,7 @@ export const selectArchiveLane = (
 ): ArchiveLane => {
   const def = defOf(fmt);
   if (mode === "create" ? canCreate(def, which) : canExtractFmt(def, which, platform)) return "spawn";
-  return JS_FORMATS.has(fmt) ? "js" : "unavailable";
+  return jsCanHandle(fmt) ? "js" : "unavailable";
 };
 
 // entry count for the js lanes (no tool to ask): walk the container headers
@@ -1029,9 +1053,25 @@ export const runArchiveTask: ArchiveTaskRun = async (task, opts = {}) => {
     return res;
   }
   if (lane === "js") return runJsArchive(task, opts);
+  // no native tool AND no js fallback: name the missing binary. For tar-family
+  // formats the js lane is the only other option and it has a per-format
+  // capability map (JS_CAPS) — a .tar.xz on a box without xz used to route
+  // through jsTarExtract and die with an opaque Bun error; here it says
+  // "install xz" instead.
+  const cap = JS_CAPS[task.fmt];
   const need =
-    task.fmt === "7z" ? "7z" : defOf(task.fmt).need.length ? defOf(task.fmt).need.join(", ") : "zip/unzip/7z";
-  return { code: 127, stdout: "", stderr: `cannot handle .${task.fmt} archives (missing ${need})` };
+    task.fmt === "7z"
+      ? "7z"
+      : cap && !cap.ok && cap.hint
+        ? cap.hint
+        : defOf(task.fmt).need.length
+          ? defOf(task.fmt).need.join(", ")
+          : "zip/unzip/7z";
+  return {
+    code: 127,
+    stdout: "",
+    stderr: `cannot handle .${task.fmt} archives (missing ${need}; no js fallback for this format)`,
+  };
 };
 
 // --- Archive browsing: list a container's members and read ONE member's bytes

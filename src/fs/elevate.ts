@@ -113,11 +113,30 @@ export const sudoExecError = (stderr: string): Error => {
 // The sudo-tool runner + default exec, shared by fileops (copy/move/remove)
 // and trashops (rm): run the argv through the injected exec, throw the tool's
 // first stderr line on failure.
-export type SudoExecFn = (argv: string[]) => Promise<{ status: number | null; stderr: string; stdout?: string }>;
-export const defaultSudoExec: SudoExecFn = async (argv) =>
-  runSudo(argv).then((r) => ({ status: r.status, stderr: r.stderr, stdout: r.stdout }));
-export const runSudoTool = async (sudoExec: SudoExecFn, argv: string[]): Promise<void> => {
-  const r = await sudoExec(argv);
+export type SudoExecFn = (
+  argv: string[],
+  opts?: { onCancel?: (cancel: () => void) => void },
+) => Promise<{ status: number | null; stderr: string; stdout?: string }>;
+export const makeDefaultSudoExec =
+  (deps: { onCancel?: (cancel: () => void) => void } = {}): SudoExecFn =>
+  async (argv, opts) => {
+    const cancel = (c: () => void) => {
+      deps.onCancel?.(c);
+      opts?.onCancel?.(c);
+    };
+    const r = await runSudo(argv, { ...(opts ? {} : {}), onCancel: cancel });
+    return { status: r.status, stderr: r.stderr, stdout: r.stdout };
+  };
+// backwards-compat default: no cancel wiring (headless callers). The wiring
+// factories pass their own via makeDefaultSudoExec so the toast's ✕ can kill
+// a hung `sudo -S` instead of waiting the full 30s bound.
+export const defaultSudoExec: SudoExecFn = makeDefaultSudoExec();
+export const runSudoTool = async (
+  sudoExec: SudoExecFn,
+  argv: string[],
+  opts?: { onCancel?: (cancel: () => void) => void },
+): Promise<void> => {
+  const r = await sudoExec(argv, opts);
   if (r.status !== 0) throw sudoExecError(r.stderr);
 };
 export type PromptOpen = (opts: {
@@ -154,19 +173,41 @@ export const makeEnsureSudo = (deps: {
       opLabel,
     );
 };
+// bound for a sudo child: 120s let a wedged `sudo -S` hold the serial op
+// queue with no cancel path (quit/restart refuse while busy). 30s is generous
+// for a password validate; the cancel hook below closes the stdin pipe so the
+// toast's ✕ kills the prompt mid-flight instead of waiting the full bound.
+export const SUDO_TIMEOUT_MS = 30_000;
+
 export const runSudo = async (
   argv: string[],
-  opts?: { stdin?: string; timeoutMs?: number },
+  opts?: {
+    stdin?: string;
+    timeoutMs?: number;
+    // when set, runSudo hands the caller a cancel function: closing the stdin
+    // pipe mid-prompt makes sudo -S abort, and SIGKILL is the backstop for a
+    // child that ignores EOF. The toast's ✕ calls this through prog.processCancel.
+    onCancel?: (cancel: () => void) => void;
+  },
 ): Promise<{ status: number | null; stdout: string; stderr: string }> => {
+  let stdinWriter: { end(): void } | null = null;
+  opts?.onCancel?.(() => {
+    // close stdin first: `sudo -S` reads the password from it, and EOF makes
+    // it exit with a non-zero status instead of hanging on a wedged child
+    try {
+      stdinWriter?.end();
+    } catch {}
+  });
   try {
     const proc = Bun.spawn(argv, {
       stdin: opts?.stdin !== undefined ? "pipe" : "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: opts?.timeoutMs ?? 120_000,
+      timeout: opts?.timeoutMs ?? SUDO_TIMEOUT_MS,
     });
     if (opts?.stdin !== undefined && proc.stdin && typeof proc.stdin !== "number") {
       const w = proc.stdin as unknown as { write(s: string): void; end(): void };
+      stdinWriter = w;
       w.write(opts.stdin.endsWith("\n") ? opts.stdin : `${opts.stdin}\n`);
       w.end();
     }

@@ -11,6 +11,10 @@ import type { Tab } from "../app/tabs";
 // shared-tabs dual format ({tabs:[{panes:[left,right]}]}), the pre-dual-pane
 // per-tab {history,histIdx}, and the old single {cwd} — all still read. ---
 
+// $XDG_STATE_HOME is a user-set env var (like $HOME, $TMPDIR, $XDG_CONFIG_HOME):
+// the process runs under the user's own account, so an attacker-controlled
+// value is a user-controlled write target — trusted by design, not a
+// privilege boundary. The same applies to TFM_DEBUG_LOG / TFM_CWD_FILE below.
 export const sessionFile = (): string =>
   path.join(process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local/state"), "tfm", "session.json");
 

@@ -73,6 +73,16 @@ type NavHooks = {
 
 export const makeNav = (state: AppState, hooks: NavHooks) => {
   // a regular FILE (an archive) — a dangling/unreadable one never enters
+  // TRADEOFF (accepted as-is): this is a synchronous statSync, so a network /
+  // SMB mount can stall the UI for hundreds of ms per navigation. Making it
+  // async (fs/promises) would require `navigate` to become async, which
+  // ripples through the whole wiring surface — every caller (keymap, grid-input,
+  // chrome, toolbar, menu-entries, goto, plugins) declares `navigate(dir):
+  // void`, and several rely on the history push + renderAll happening in the
+  // same synchronous turn (sync-browsing's driven pane navigates into a folder
+  // the driver just recorded). A microtask-deferred push would reorder those.
+  // The single sync fs call per nav is acceptable on local disks; the SMB
+  // stall is a known limitation until the contract is async end-to-end.
   const isFile = (p: string): boolean => {
     try {
       return statSync(p).isFile();

@@ -6,16 +6,16 @@ import {
   failSuffix,
   countTrashItems,
   fileIdOf,
+  fileIdMatches,
   fsErrText,
   rmTrashInfoForPath,
   trashDir,
   trashFilesDir,
-  trashIfSameFile,
   trashInfoPathForTrashFile,
   xdgTrashMove,
   safeRestoreMove,
 } from "./fsutil";
-import { defaultSudoExec, isPrivilegeError, runSudoTool, sudoRmArgv } from "./elevate";
+import { defaultSudoExec, isPrivilegeError, runSudoTool, sudoRmArgv, type SudoExecFn } from "./elevate";
 import { rmTreeProgress, scanTree, type TransferSink } from "./transfer";
 import { sharedOpQueue } from "../lib/op-queue";
 import { checkPluginVeto, sharedPluginHooks } from "../lib/plugin-hooks";
@@ -73,7 +73,7 @@ export type TrashOpsSink = {
   // by design (a sudo-trashed file is root-owned in the user's trash, and the
   // undo closures have no privilege — the restore would fail with no undo).
   ensureSudo?: (opLabel: string) => Promise<boolean>;
-  sudoExec?: (argv: string[]) => Promise<{ status: number | null; stderr: string }>;
+  sudoExec?: SudoExecFn;
   // trash FILES dirs to empty (tests inject fakes; default enumerates home +
   // every mounted per-volume trash — $topdir/.Trash-$uid via /proc/mounts on
   // Linux, /Volumes/.Trashes via `mount` on darwin). Wiring passes nothing.
@@ -230,14 +230,24 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
           // and returns the final dest for the journal + cleanup below
           const restoredDest = await safeRestoreMove(src, orig);
           await rmTrashInfoForPath(src, sink.log?.bind(sink));
-          // undo = send it back to trash (same-file only: a stranger
-          // reoccupying the restored path is skipped, never trashed);
-          // redo = restore again (trashinfo still resolves via Path= after
-          // the undo re-trash)
           const rid = fileIdOf(restoredDest);
+          // undo = re-trash the restored file. The actual trash landing path is
+          // generated at undo time (xdgTrashMove picks a name on collision),
+          // and redo must restore from THAT path: re-resolving it after the
+          // undo already re-trashed returns null on the common
+          // collision-rename case, so redo would restore to the original path
+          // or no-op. Capture the landing in the shared closure; the journal
+          // ships without redos (same precedent as replace-stash), so this is
+          // live-only — a restart leaves the file trashed with no redo.
+          let loc: string | null = null;
           units.push(async () => {
             try {
-              await trashIfSameFile(restoredDest, rid, sink.log?.bind(sink));
+              if (!existsSync(restoredDest)) return;
+              if (rid && !fileIdMatches(rid, restoredDest)) {
+                sink.log?.(`undo restore ${restoredDest}: file replaced since op, skipped`);
+                return;
+              }
+              loc = await xdgTrashMove(restoredDest, platform);
             } catch (err) {
               sink.log?.(`undo restore ${restoredDest}: ${fsErrText(err)}`);
               throw err;
@@ -246,12 +256,13 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
           dUnits.push({ op: "trash", path: restoredDest, ...(rid ?? {}) });
           redos.push(async () => {
             try {
-              const loc = await xdgTrashMove(restoredDest, platform).catch(() => null);
-              if (loc) {
-                const back = await trashOrigPathForFile(loc);
-                await safeRestoreMove(loc, back ?? restoredDest);
-                await rmTrashInfoForPath(loc, sink.log?.bind(sink));
+              if (!loc) {
+                sink.log?.(`redo restore ${restoredDest}: nothing to redo (undo skipped)`);
+                return;
               }
+              const back = await trashOrigPathForFile(loc);
+              await safeRestoreMove(loc, back ?? restoredDest);
+              await rmTrashInfoForPath(loc, sink.log?.bind(sink));
             } catch (err) {
               sink.log?.(`redo restore ${restoredDest}: ${fsErrText(err)}`);
             }

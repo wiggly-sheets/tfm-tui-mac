@@ -28,6 +28,9 @@ const debugFlagIn = (argv: string[]): boolean => {
 export const isDebug = debugFlagIn(process.argv);
 // env overrides exist so tests (and sandboxes) can redirect the logs off the
 // real tmp files; defaults are the documented tester-paste paths
+// $TFM_DEBUG_LOG is user-set (see session.ts): inherited at exec from the
+// user's own shell/launcher, so it is a user-controlled write target, not a
+// privilege boundary — trusted by design, no path validation needed.
 export const DEBUG_LOG = process.env.TFM_DEBUG_LOG ?? path.join(tmpDir(), "tfm-debug.log");
 
 export const appendLog = (msg: string): void => {

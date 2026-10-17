@@ -5,7 +5,7 @@ import { lstat, readdir, stat } from "node:fs/promises";
 import { lstatSync, statSync } from "node:fs";
 import path from "node:path";
 import { RECENT_URI, STARRED_URI } from "./uri";
-import { readRecentXbel, readStarredList } from "./recent";
+import { readRecentXbelAsync, readStarredList } from "./recent";
 import type { SortMode } from "../lib/sort";
 import { extOf } from "./filetype";
 
@@ -56,17 +56,6 @@ export const compareEntries = (sortBy: SortMode, sortAsc: boolean) => {
     Number(b.isDir) - Number(a.isDir) || (sortAsc ? cmp(a, b) : -cmp(a, b));
 };
 
-const statEntry = (abs: string): { size?: number; mtimeMs?: number } => {
-  try {
-    // link-own bytes/mtime (on-disk cost, ls -l semantics); routing stays in
-    // scanDir's target-following isDir
-    const st = lstatSync(abs);
-    return { size: st.size, mtimeMs: st.mtimeMs ?? 0 };
-  } catch {
-    return {};
-  }
-};
-
 // shared stat-and-build for the virtual places: vanished files are dropped,
 // an explicit mtime (XBEL Modified) wins over the fs mtime
 const statEntries = (items: Array<{ path: string; mtimeMs?: number }>): Entry[] => {
@@ -98,7 +87,7 @@ const statEntries = (items: Array<{ path: string; mtimeMs?: number }>): Entry[] 
 };
 
 const recentEntries = async (): Promise<Entry[]> =>
-  statEntries(readRecentXbel().map((it) => ({ path: it.path, mtimeMs: it.modified })));
+  statEntries((await readRecentXbelAsync()).map((it) => ({ path: it.path, mtimeMs: it.modified })));
 
 const starredEntries = async (): Promise<Entry[]> => statEntries(readStarredList().map((p) => ({ path: p })));
 
@@ -246,11 +235,10 @@ export const listDir = async (
     out = showHidden ? all : all.filter((e) => !e.name.startsWith("."));
   }
   if ((sortBy === "size" || sortBy === "mtime") && !fillAtLoad) {
-    for (const e of out) {
-      const got = statEntry(e.abs ?? path.join(dir, e.name));
-      e.size = got.size;
-      e.mtimeMs = got.mtimeMs;
-    }
+    // async + bounded concurrency (was a sync statSync loop that froze the UI
+    // on a 10k-folder with cacheStats off); fillStatsInto skips rows that
+    // already carry size/mtimeMs (virtual places filled above).
+    await fillStatsInto(out, dir);
   }
   return out.sort(compareEntries(sortBy, sortAsc));
 };

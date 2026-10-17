@@ -741,6 +741,9 @@ export const trashIfSameFile = async (
 ): Promise<void> => {
   if (!existsSync(p)) return;
   if (id && !fileIdMatches(id, p)) {
+    // skip, never trash: a stranger reoccupying the path since the op is not
+    // ours (dev+ino+born mismatch). Explicit so the skip is diagnosable in
+    // the debug log instead of reading as a silent no-op.
     log?.(`undo trash ${p}: file replaced since op, skipped`);
     return;
   }

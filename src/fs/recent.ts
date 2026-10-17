@@ -16,11 +16,49 @@ type XbelItem = { path: string; modified: number };
 
 const xbelPath = (): string => path.join(xdgDataHome(), "recently-used.xbel");
 
+// mdfind line parser: shared by the sync test seam and the async boot path.
+// Undated (modified 0 sorts after dated), capped, existence-checked.
+const parseMdfindLines = (raw: string, exists: (p: string) => boolean, limit: number): XbelItem[] => {
+  const out: XbelItem[] = [];
+  const seen = new Set<string>();
+  for (const line of raw.split("\n")) {
+    const p = line.trim();
+    if (!p || !path.isAbsolute(p) || seen.has(p)) continue;
+    try {
+      if (!exists(p)) continue;
+    } catch {
+      continue;
+    }
+    seen.add(p);
+    out.push({ path: p, modified: 0 });
+    if (out.length >= limit) break;
+  }
+  return out;
+};
+
+// async mdfind runner: execFileSync runs on the main thread and a hung
+// Spotlight daemon froze the Recent pane's first paint for up to 10s. Bun.spawn
+// with the same timeout lets the event loop stay live; failure → [] silently.
+const mdfindRecentAsync = async (limit: number): Promise<XbelItem[]> => {
+  try {
+    const proc = Bun.spawn(["mdfind", "-onlyin", os.homedir(), "kMDItemLastUsedDate >= $time.today(-30)"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 10_000,
+    });
+    const raw = await new Response(proc.stdout).text();
+    await proc.exited;
+    return parseMdfindLines(raw, existsSync, limit);
+  } catch {
+    return [];
+  }
+};
+
 // darwin best-effort supplement: files OTHER apps opened recently
 // (kMDItemLastUsedDate). tfm's own opens still land in xbel via
 // upsertRecentXbel, so Recent works with zero Spotlight dependence —
-// this only widens it. Undated (modified 0 sorts after dated), capped,
-// existence-checked; mdfind failure (disabled Spotlight) → [] silently.
+// this only widens it. Sync signature stays for tests (the injected run
+// is a plain string producer); the boot path goes through mdfindRecentAsync.
 export const readDarwinRecent = (
   run: () => string = () =>
     execFileSync("mdfind", ["-onlyin", os.homedir(), "kMDItemLastUsedDate >= $time.today(-30)"], {
@@ -30,21 +68,7 @@ export const readDarwinRecent = (
   limit = 200,
 ): XbelItem[] => {
   try {
-    const out: XbelItem[] = [];
-    const seen = new Set<string>();
-    for (const line of run().split("\n")) {
-      const p = line.trim();
-      if (!p || !path.isAbsolute(p) || seen.has(p)) continue;
-      try {
-        if (!exists(p)) continue;
-      } catch {
-        continue;
-      }
-      seen.add(p);
-      out.push({ path: p, modified: 0 });
-      if (out.length >= limit) break;
-    }
-    return out;
+    return parseMdfindLines(run(), exists, limit);
   } catch {
     return [];
   }
@@ -61,7 +85,12 @@ const mergeRecent = (dated: XbelItem[], undated: XbelItem[]): XbelItem[] => {
   return uniq;
 };
 
-export const readRecentXbel = (platform: string = process.platform): XbelItem[] => {
+// sync variant: tests + linux (no mdfind). The darwin Spotlight supplement is
+// injected via `run` (a sync string producer) so tests stay hermetic; the boot
+// path uses readRecentXbelAsync instead (mdfind on Bun.spawn, never blocking
+// the main thread — a hung Spotlight daemon used to freeze the Recent pane's
+// first paint for up to 10s).
+export const readRecentXbel = (platform: string = process.platform, run: () => string = () => ""): XbelItem[] => {
   // sandboxed tree (XDG_DATA_HOME set: tests, secondary profiles): the xbel
   // is that context's whole truth — merging the host's global Spotlight
   // recents would leak another profile's files into this one
@@ -70,7 +99,7 @@ export const readRecentXbel = (platform: string = process.platform): XbelItem[] 
   try {
     xml = readFileSync(xbelPath(), "utf8");
   } catch {
-    return darwin ? mergeRecent([], readDarwinRecent()) : [];
+    return darwin ? mergeRecent([], readDarwinRecent(run)) : [];
   }
   const out: XbelItem[] = [];
   const bmRe = /<bookmark\b[^>]*href="([^"]+)"[^>]*>/g;
@@ -87,7 +116,33 @@ export const readRecentXbel = (platform: string = process.platform): XbelItem[] 
     out.push({ path: p, modified: mod ? parseIso(mod) : 0 });
   }
   // newest first, one row per file (+ darwin Spotlight supplement, deduped)
-  return darwin ? mergeRecent(out, readDarwinRecent()) : mergeRecent(out, []);
+  return darwin ? mergeRecent(out, readDarwinRecent(run)) : mergeRecent(out, []);
+};
+
+// production boot path: async mdfind so a hung Spotlight daemon can't block the
+// event loop. Degrades to [] on any failure (same as the sync variant).
+export const readRecentXbelAsync = async (platform: string = process.platform): Promise<XbelItem[]> => {
+  const darwin = isDarwin(platform) && !process.env.XDG_DATA_HOME;
+  let xml = "";
+  try {
+    xml = readFileSync(xbelPath(), "utf8");
+  } catch {
+    return darwin ? mergeRecent([], await mdfindRecentAsync(200)) : [];
+  }
+  const out: XbelItem[] = [];
+  const bmRe = /<bookmark\b[^>]*href="([^"]+)"[^>]*>/g;
+  let m: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: classic exec-loop idiom
+  while ((m = bmRe.exec(xml))) {
+    const href = m[1];
+    if (href === undefined) continue;
+    const p = uriToPath(href);
+    if (!p) continue;
+    const tag = m[0];
+    const mod = tag.match(/modified="([^"]+)"/)?.[1];
+    out.push({ path: p, modified: mod ? parseIso(mod) : 0 });
+  }
+  return darwin ? mergeRecent(out, await mdfindRecentAsync(200)) : mergeRecent(out, []);
 };
 
 export const upsertRecentXbel = async (paths: string[]): Promise<void> => {

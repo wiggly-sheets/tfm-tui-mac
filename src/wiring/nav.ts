@@ -137,6 +137,9 @@ export const wireNav = (deps: {
     // [ui] exit-cwd: a menu-style child can't chdir its parent shell, so the
     // directory travels through $TFM_CWD_FILE for the wrapper to read. Never
     // written when the variable is unset (plain `tfm` exits write nothing).
+    // $TFM_CWD_FILE is set by the user's own shell wrapper (like $HOME and
+    // $XDG_STATE_HOME above) — a user-controlled write target, not a privilege
+    // boundary, so no path validation is applied.
     writeCwdFile: () => {
       const file = process.env.TFM_CWD_FILE;
       if (!file) return;
@@ -187,6 +190,7 @@ export const wireNav = (deps: {
   // selection's, created further down the wiring — arrow defers it. ---
   const { setStatusMsg } = makeStatus({
     setText: core.lookup.setTextOnId,
+    node: core.lookup.byId,
     refresh: () => getGridFoundation().selection.updateSelectionStatusReal(),
   });
 
