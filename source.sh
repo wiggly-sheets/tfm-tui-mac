@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tfm dev kit — build a branch from source and install it exactly like a release.
 #
-#   curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/dev/source.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/dev/source.sh | bash
 #
 # The build itself lives in install.sh (TFM_SOURCE=<ref>), so there is one
 # installer, one output style, and one place where PATH/replace/checksum policy
@@ -17,7 +17,7 @@ set -euo pipefail
 
 BRANCH="${TFM_BRANCH:-dev}"
 REF="${TFM_SOURCE:-$BRANCH}"
-URL="${TFM_INSTALLER_URL:-https://raw.githubusercontent.com/clarkarch/tfm-tui/${TFM_INSTALLER_REF:-$BRANCH}/install.sh}"
+URL="${TFM_INSTALLER_URL:-https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/${TFM_INSTALLER_REF:-$BRANCH}/install.sh}"
 
 TMP="${TMPDIR:-/tmp}/tfm-installer.$$.sh"
 trap 'rm -f "$TMP"' EXIT

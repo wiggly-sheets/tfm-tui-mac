@@ -1283,7 +1283,7 @@ describe("help view", () => {
     expect(t.captureCharFrame()).toContain("Credits");
     // link rows reach the opener seam with their exact URL
     fire("tfm-about-row-website", "down");
-    expect(openedUrls).toEqual(["https://clarkarch.github.io/tfm-tui"]);
+    expect(openedUrls).toEqual(["https://wiggly-sheets.github.io/tfm-tui-mac"]);
     // the overloaded credits row drills instead of opening
     fire("tfm-about-row-credits", "down");
     await t.renderOnce();
@@ -1308,7 +1308,7 @@ describe("help view", () => {
     fire("tfm-about-row-d-opentui", "down");
     fire("tfm-about-row-d-mdi", "down");
     expect(openedUrls).toEqual([
-      "https://clarkarch.github.io/tfm-tui",
+      "https://wiggly-sheets.github.io/tfm-tui-mac",
       "https://opentui.com",
       "https://pictogrammers.com/library/mdi/",
     ]);

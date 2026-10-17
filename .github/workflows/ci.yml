@@ -5,6 +5,14 @@ on:
     branches: [main, dev]
   pull_request:
 
+# One run per ref: a new push to the same branch/PR cancels the stale run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   ci:
     strategy:
@@ -32,3 +40,17 @@ jobs:
 
       - name: Compile smoke test
         run: bun run compile
+
+      # --version must answer without loading the app graph (see the lazy
+      # imports in src/index.ts), print exactly "tfm <package.json version>"
+      # and exit 0. A hang would block the step, so the 20s spawn timeout
+      # fails it instead. The interactive TUI is not smoke-tested here: a
+      # runner has no tty. Steps get the generous job default (360 min), so
+      # no per-step timeout is needed.
+      - name: Compiled binary reports the package version
+        run: |
+          expected="tfm $(bun -e 'console.log(require("./package.json").version)')"
+          actual=$(bun -e 'const p = Bun.spawnSync(["./dist/tfm", "--version"], { timeout: 20000 }); process.stdout.write(p.stdout.toString()); process.exit(p.exitCode)')
+          echo "expected: $expected"
+          echo "actual:   $actual"
+          test "$actual" = "$expected"

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+Self-update for install.sh installs:
+
+- `tfm --update` downloads the latest release for this platform, verifies its
+  `sha256`, smoke-tests the staged build and atomically replaces the installed
+  binary. It also refreshes the `terminal-file-manager` name and the bundled
+  `tfm-ffmpeg` sidecar when those already exist.
+- A background check runs at most once a day and toasts when a newer release
+  exists. Turn it off with `[update] check = false`.
+- Copies not installed by install.sh — dev builds, package-manager installs,
+  moved binaries — are refused with a short message.
+- `install.sh` now records an install marker (`$XDG_DATA_HOME/tfm/install.json`)
+  so the running binary can tell it was installed by this script.
+
+Build, CI and docs:
+
+- CI runs the compiled binary and checks its `--version` output; both workflows
+  add concurrency groups and least-privilege permissions; releases generate
+  notes and keep artifacts for seven days.
+- Dependabot for bun and GitHub Actions; issue and PR templates; `SECURITY.md`
+  and `CONTRIBUTING.md`.
+
 macOS is now supported with full port parity. Releases ship
 `aarch64-macos`; trash, servers, Finder tags and file opens go through the
 built-in macOS tools (`trash`, `diskutil`, `open`). macOS is added to CI.

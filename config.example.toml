@@ -225,3 +225,6 @@ focus-pane-down       = ["ctrl+alt+j"]              # default: ctrl+alt+j
 copy-to-other-pane    = ["f5"]                      # default: f5
 move-to-other-pane    = ["f6"]                      # default: f6
 open-terminal         = ["ctrl+`", "f4"]            # default: ctrl+` or f4
+
+[update]
+check = true  # true = check GitHub once a day and toast when a newer release exists (run tfm --update to install it); false = never check

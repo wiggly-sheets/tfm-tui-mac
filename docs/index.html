@@ -81,6 +81,7 @@
     font-family: inherit; font-size: 12px; border-radius: 5px; padding: 3px 9px; cursor: pointer;
   }
   .copy:hover { color: var(--fg); }
+  .install-note { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
 
   /* terminal frame */
   .term {
@@ -185,7 +186,8 @@
       <a href="#themes">themes</a>
       <a href="#keys">keys</a>
       <a href="#config">config</a>
-      <a href="https://github.com/clarkarch/tfm-tui">github</a>
+      <a href="https://wiggly-sheets.github.io/tfm-tui-mac">website</a>
+      <a href="https://github.com/wiggly-sheets/tfm-tui-mac">github</a>
     </div>
   </div>
 </nav>
@@ -196,13 +198,14 @@
     <p class="subtitle">(terminal file manager)</p>
     <p class="tagline">A modern, <b>mouse-first</b> file manager with places sidebar, grid view, drag &amp; drop, image thumbnails <b>right inside your terminal</b>.<br>Built on <a href="https://opentui.com">OpenTUI</a> + <a href="https://bun.sh">Bun</a>.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/clarkarch/tfm-tui/releases">Download</a>
-      <a class="btn" href="https://github.com/clarkarch/tfm-tui">GitHub</a>
+      <a class="btn primary" href="https://github.com/wiggly-sheets/tfm-tui-mac/releases">Download</a>
+      <a class="btn" href="https://github.com/wiggly-sheets/tfm-tui-mac">GitHub</a>
     </div>
     <div class="install">
-      <code><span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/main/install.sh | bash</code>
+      <code><span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/main/install.sh | bash</code>
       <button class="copy" id="copyBtn" type="button">copy</button>
     </div>
+    <p class="install-note">Installed via the script? Update in place: <code>tfm --update</code></p>
   </div>
 
   <div class="term">
@@ -387,7 +390,7 @@ quit <span class="c">=</span> [<span class="s">"ctrl+q"</span>]    <span class="
       </ul>
     </div>
   </div>
-  <p class="license">MIT licensed · <a href="https://github.com/clarkarch/tfm-tui">github.com/clarkarch/tfm-tui</a> · <a href="https://github.com/clarkarch/tfm-tui/releases">releases</a></p>
+  <p class="license">MIT licensed · <a href="https://github.com/wiggly-sheets/tfm-tui-mac">github.com/wiggly-sheets/tfm-tui-mac</a> · <a href="https://github.com/wiggly-sheets/tfm-tui-mac/releases">releases</a></p>
 </footer>
 
 <script>
@@ -455,7 +458,7 @@ document.querySelectorAll('nav a[href^="#"]').forEach(a => {
 });
 
 document.getElementById("copyBtn").addEventListener("click", async e => {
-  await navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/main/install.sh | bash");
+  await navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/main/install.sh | bash");
   e.target.textContent = "copied!";
   setTimeout(() => e.target.textContent = "copy", 1500);
 });

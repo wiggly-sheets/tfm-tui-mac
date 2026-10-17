@@ -34,14 +34,14 @@ plugin system.
 Install the released build:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/main/install.sh | bash
 ```
 
 Build from source (needs git and Bun 1.4 or newer):
 
 ```bash
-git clone https://github.com/clarkarch/tfm-tui.git
-cd tfm-tui
+git clone https://github.com/wiggly-sheets/tfm-tui-mac.git
+cd tfm-tui-mac
 bun install --frozen-lockfile
 bun run check && bun test
 bun run compile && cp dist/tfm ~/.local/bin/
@@ -74,6 +74,7 @@ Options:
   --preview          start with preview pane open
   --info             start with info sidebar open
   --terminal         start with terminal open
+  --update           update tfm from the latest release (install.sh installs only)
   --                 treat the rest as PATH (names that start with '-')
 
 Commands:
@@ -92,6 +93,31 @@ Everything here is optional. tfm degrades gracefully without them.
 - `magick` (extra photo thumbnails), `tag` (macOS Finder tags), `fd` (fast
   recursive search), `ffmpeg` (macOS video thumbnails), and `tar` / `unzip` /
   `zip` / `7z` (archives).
+
+### Updating
+
+Install.sh installs can update themselves:
+
+```bash
+tfm --update
+```
+
+`tfm --update` checks the latest release on `wiggly-sheets/tfm-tui-mac`, downloads the
+binary for your platform, verifies its `sha256` against the published checksum,
+smoke-tests the staged build, and atomically replaces the installed `tfm`. It
+also refreshes the `terminal-file-manager` second name and the bundled
+`tfm-ffmpeg` sidecar when those already exist. Restart tfm to use the new
+build.
+
+It only updates copies install.sh installed, and refuses with a short message
+otherwise: a `bun run` dev checkout (not a compiled binary), a copy not
+installed by install.sh, a copy not from `wiggly-sheets/tfm-tui-mac`, a package-manager
+copy (update it with that package manager), a copy not in the install.sh
+install directory, or a platform with no prebuilt binary (re-run install.sh to
+build from source).
+
+A background check runs at most once a day and toasts when a newer release
+exists. Turn it off with `[update] check = false` in `config.toml`.
 
 ## Navigating
 
@@ -476,6 +502,9 @@ for the full key list. It has three sections:
   (for example `toggle-preview = ["f3"]`). Each action can carry several binds.
 - `[theme]` — the individual theme colors (`bg`, `accent`, syntax colors, the
   16 ANSI terminal colors).
+- `[update]` — self-update knobs. `check = false` disables the daily
+  background release check (and the `tfm --update` toast); the app has no
+  other network switch.
 
 Some keys only take effect on the next start; the settings GUI badges those
 rows with **needs restart**. The **edit config.toml…** Settings row opens the

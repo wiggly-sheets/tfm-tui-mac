@@ -265,3 +265,28 @@ describe("index.ts bad PATH", () => {
     15000,
   );
 });
+
+describe("index.ts --update", () => {
+  // A bare `bun src/index.ts --update` is a dev run: no compiled binary, so the
+  // updater refuses before any network call. timeout-gated so a regression that
+  // boots the TUI cannot hang the suite.
+  bootTest(
+    "--update on a dev run refuses with a non-zero exit",
+    () => {
+      const proc = Bun.spawnSync({
+        cmd: ["timeout", "-k", "2", "8", "bun", "src/index.ts", "--update"],
+        cwd: path.resolve(import.meta.dir, ".."),
+        env: { ...process.env, TFM_CONFIG: path.join(TMP, "config.toml") },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const err = new TextDecoder().decode(proc.stderr);
+      const out = new TextDecoder().decode(proc.stdout);
+      expect(proc.exitCode).toBe(1);
+      expect(err).toContain("compiled");
+      // no TUI: the update branch answers before the renderer boots
+      expect(out).not.toContain("\x1b[?1049");
+    },
+    15000,
+  );
+});

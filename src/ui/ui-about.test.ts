@@ -154,7 +154,7 @@ describe("about panel rendering", () => {
     const frame = t.captureCharFrame();
     expect(frame).toContain("tfm");
     expect(frame).toContain("terminal file manager");
-    expect(frame).toContain("github.com/clarkarch/tf…");
+    expect(frame).toContain("github.com/wiggly-sheet…");
     expect(frame).toContain("MIT");
     expect(frame).toContain(`v${pkg.version}`);
     // the cut copy must stay out: no help-style footer
@@ -212,7 +212,10 @@ describe("about panel rendering", () => {
     reset();
     fire("tfm-about-row-website", "down");
     fire("tfm-about-row-github", "down");
-    expect(opened).toEqual(["https://clarkarch.github.io/tfm-tui", "https://github.com/clarkarch/tfm-tui"]);
+    expect(opened).toEqual([
+      "https://wiggly-sheets.github.io/tfm-tui-mac",
+      "https://github.com/wiggly-sheets/tfm-tui-mac",
+    ]);
     expect(details).toEqual([]);
     await closePanel(id);
   });

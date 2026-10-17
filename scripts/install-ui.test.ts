@@ -15,7 +15,16 @@
 //   5. install_binary tests the staged build BEFORE the swap, installs it under
 //      both command names, and leaves no tfm.bak behind.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -374,6 +383,58 @@ printf 'bak=%s' "$BAK_REMOVED"`).out,
     expect(run(`smoke_version "$WORK/good"\nprintf '%s' "$SMOKE_VER"`).out).toBe("9.9.9");
     // exit 0 is not enough: the output has to be a tfm version line
     expect(run(`smoke_version "$WORK/weird" || printf 'rejected'`).out).toBe("rejected");
+  });
+});
+
+// The marker is a contract with another program (`tfm --update` reads exactly
+// this path and these field names), so the path, the key order and the version
+// fallback are pinned here, not left to the reader's good will.
+describe("installer install marker", () => {
+  test("records version, physical install dir, repo and method under $XDG_DATA_HOME", () => {
+    const { dest, work, run } = sandbox();
+    const data = join(work, "data");
+
+    expect(run(`SMOKE_VER=1.0.0\nwrite_install_marker`, { env: { XDG_DATA_HOME: data } }).code).toBe(0);
+    expect(readFileSync(join(data, "tfm", "install.json"), "utf8")).toMatch(
+      /^\{"version":"1\.0\.0","installDir":"[^"]+","repo":"wiggly-sheets\/tfm-tui-mac","method":"script","installedAt":"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"\}\n$/,
+    );
+    // the reader resolves symlinks on its side, so a symlinked DEST must not
+    // land in the file as-is
+    expect(JSON.parse(readFileSync(join(data, "tfm", "install.json"), "utf8")).installDir).toBe(realpathSync(dest));
+  });
+
+  test("falls back to $HOME/.local/share when XDG_DATA_HOME is unset", () => {
+    const { work, run } = sandbox();
+    const home = join(work, "home");
+
+    expect(run(`SMOKE_VER=1.0.0\nwrite_install_marker`, { env: { HOME: home, XDG_DATA_HOME: "" } }).code).toBe(0);
+    expect(existsSync(join(home, ".local", "share", "tfm", "install.json"))).toBe(true);
+  });
+
+  // TFM_NO_SMOKE=1 means nobody ever asked the binary its version.
+  test("a skipped smoke test records version unknown", () => {
+    const { work, run } = sandbox();
+    const data = join(work, "data");
+
+    run(`write_install_marker`, { env: { XDG_DATA_HOME: data } });
+    expect(JSON.parse(readFileSync(join(data, "tfm", "install.json"), "utf8")).version).toBe("unknown");
+  });
+
+  // The binary is already swapped in at this point, so a marker that cannot be
+  // written must warn and leave the install standing.
+  test("an unwritable marker warns instead of failing the install", () => {
+    const { dest, work, run } = sandbox();
+    stage(join(work, "new"), RUNS);
+    writeFileSync(join(work, "blocker"), "");
+
+    const { code, out } = run(`MODE=local\nLOCAL="$WORK/new"\nstep_install`, {
+      fancy: false,
+      env: { XDG_DATA_HOME: join(work, "blocker", "data") },
+    });
+    expect(code).toBe(0);
+    expect(out).toContain("warning: install, installed, but couldn't write");
+    expect(out).toContain("install.json");
+    expect(readFileSync(join(dest, "tfm"), "utf8")).toContain("tfm 9.9.9");
   });
 });
 

@@ -1,7 +1,7 @@
 <h1 align="center">
   <img src="assets/icons/tfm.svg" width="192" alt="tfm logo"><br>
   tfm (terminal file manager)<br>
-  <img src="https://img.shields.io/badge/status-stable-brightgreen?style=flat-square" alt="stable"> <a href="https://clarkarch.github.io/tfm-tui/"><img src="https://img.shields.io/badge/website-tfm--tui-blue?style=flat-square&logo=githubpages&logoColor=white" alt="website"></a>
+  <img src="https://img.shields.io/badge/status-stable-brightgreen?style=flat-square" alt="stable"> <a href="https://wiggly-sheets.github.io/tfm-tui-mac/"><img src="https://img.shields.io/badge/website-tfm--tui-mac-blue?style=flat-square&logo=githubpages&logoColor=white" alt="website"></a>
 </h1>
 
 ![tfm](screenshot.png)
@@ -106,7 +106,7 @@ no addon and falls back to glyphs.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/main/install.sh | bash
 ```
 
 ### dev build
@@ -114,14 +114,14 @@ curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/main/install.sh |
 Latest dev branch, needs git and Bun 1.4 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/dev/source.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/dev/source.sh | bash
 ```
 
 Or manually build from source:
 
 ```bash
-git clone https://github.com/clarkarch/tfm-tui.git
-cd tfm-tui
+git clone https://github.com/wiggly-sheets/tfm-tui-mac.git
+cd tfm-tui-mac
 bun install --frozen-lockfile
 bun run check && bun test
 bun run compile && cp dist/tfm ~/.local/bin/
@@ -138,6 +138,35 @@ Targets: `linux-x64`, `linux-arm64`, `mac-x64`, `mac-arm64`, `mac-universal`
 (`mac-universal` lipos both darwin slices into `dist/tfm-universal-macos` and
 needs a macOS host). The same targets are wired as `bun run build:<target>`
 scripts in `package.json`.
+
+## Updating
+
+Install.sh installs can update themselves; everything else must be updated the
+way it was installed.
+
+```bash
+tfm --update
+```
+
+`tfm --update` checks the latest release on `wiggly-sheets/tfm-tui-mac`, downloads the
+binary for your platform, verifies its `sha256` against the published checksum,
+smoke-tests the staged build, and atomically replaces the installed `tfm`. It
+also refreshes the `terminal-file-manager` second name and the bundled
+`tfm-ffmpeg` sidecar when those already exist. Restart tfm to use the new
+build.
+
+It only updates copies install.sh installed. It refuses with a short message
+otherwise:
+
+- not a compiled binary (a `bun run` dev checkout) — rebuild or re-run install.sh
+- not installed by install.sh — re-run install.sh
+- not from `wiggly-sheets/tfm-tui-mac` — re-run install.sh
+- managed by a package manager — update it with that package manager
+- not the install.sh install directory — re-run install.sh
+- no prebuilt binary for this platform — re-run install.sh to build from source
+
+A background check runs at most once a day and toasts when a newer release
+exists. Turn it off with `[update] check = false` in `config.toml`.
 
 ## Keys
 

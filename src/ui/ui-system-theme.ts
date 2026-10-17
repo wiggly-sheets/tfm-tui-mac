@@ -124,7 +124,7 @@ export const makeSystemTheme = (ctx: SystemThemeCtx) => {
     // the landing is stale, drop it instead of clobbering live state
     if (g !== gen || !ctx.config.ui.followTerminal) return false;
     if (!theme) return false;
-    ctx.applyConfig({ ui: { ...ctx.config.ui }, theme, keys: { ...ctx.config.keys } });
+    ctx.applyConfig({ ui: { ...ctx.config.ui }, theme, keys: { ...ctx.config.keys }, update: ctx.config.update });
     try {
       ctx.scheduleSaveConfig?.();
     } catch {}

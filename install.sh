@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # tfm installer — one self-contained script, four ways in:
 #
-#   curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/main/install.sh | bash
 #       the latest release (any branch works; the branch only chooses this script)
 #
-#   curl -fsSL https://raw.githubusercontent.com/clarkarch/tfm-tui/dev/source.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wiggly-sheets/tfm-tui-mac/dev/source.sh | bash
 #       the dev branch, built from source on your machine (needs git + bun)
 #
 #   TFM_VERSION=v1.0.0 ... | bash   pin a release
@@ -14,6 +14,9 @@
 # One binary, two command names: `tfm` and `terminal-file-manager` (a symlink,
 # or a copy where the filesystem has no symlinks). There is no backup copy of a
 # previous install — the new build is tested BEFORE it replaces anything.
+#
+# A finished install records $XDG_DATA_HOME/tfm/install.json (default
+# ~/.local/share/tfm), so the installed binary can tell this script put it there.
 #
 # env:
 #   TFM_INSTALL_DIR   where tfm goes (default ~/.local/bin)
@@ -29,12 +32,13 @@
 #   TFM_INSTALL_LIB_ONLY=1  define the helpers and stop (testing)
 set -euo pipefail
 
-REPO="clarkarch/tfm-tui"
+REPO="wiggly-sheets/tfm-tui-mac"
 DEST="${TFM_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${TFM_VERSION:-latest}"
 SOURCE="${TFM_SOURCE:-${TFM_REF:-}}"
 LOCAL="${TFM_LOCAL:-}"
-SRC_DIR="${TFM_SRC_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/tfm/src}"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/tfm"
+SRC_DIR="${TFM_SRC_DIR:-$DATA_DIR/src}"
 REMOTE="${TFM_REMOTE:-https://github.com/$REPO.git}"
 VERBOSE="${TFM_VERBOSE:-}"
 NO_SMOKE="${TFM_NO_SMOKE:-}"
@@ -1250,6 +1254,21 @@ install_binary() { # install_binary SRC_FILE
   fi
 }
 
+# The install marker: $DATA_DIR/install.json, written only after the swap, never
+# before (it claims a working binary sits in $DEST). `tfm --update` reads it and
+# refuses to self-update when it is missing. installDir is the PHYSICAL path —
+# the reader compares it against dirname(process.execPath) — and a skipped smoke
+# test means the version is genuinely unknown. A failure here only warns: the
+# binary itself is installed and working.
+write_install_marker() {
+  local ver="$SMOKE_VER" phys
+  [ -n "$ver" ] || ver="unknown"
+  phys=$(cd "$DEST" && pwd -P) || return 1
+  mkdir -p "$DATA_DIR" 2>>"$RUN_LOG" || return 1
+  printf '{"version":"%s","installDir":"%s","repo":"%s","method":"script","installedAt":"%s"}\n' \
+    "$ver" "$phys" "$REPO" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$DATA_DIR/install.json" 2>>"$RUN_LOG"
+}
+
 step_install() {
   step_begin "install"
   local src="$WORK/tfm" from="" detail=""
@@ -1282,6 +1301,11 @@ step_install() {
       "Rebuild it and try again. Nothing was installed."
   fi
   install_binary "$src"
+  if ! write_install_marker; then
+    # installed fine; the marker is what failed — say so on this one step line
+    step_warn "installed, but couldn't write $(pretty_home "$DATA_DIR")/install.json"
+    return 0
+  fi
   if [ -n "$NO_SMOKE" ]; then
     detail="$(pretty_home "$DEST")/tfm · test skipped (TFM_NO_SMOKE=1)"
   else

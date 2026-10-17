@@ -7,7 +7,7 @@
 
 import { parseGitUrl } from "./plugin-install";
 
-export const PLUGIN_INDEX_URL = "https://clarkarch.github.io/tfm-tui/plugins.json";
+export const PLUGIN_INDEX_URL = "https://wiggly-sheets.github.io/tfm-tui-mac/plugins.json";
 
 export type PluginIndexEntry = {
   id: string;

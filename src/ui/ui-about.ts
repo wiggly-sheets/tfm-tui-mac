@@ -56,14 +56,14 @@ export const ABOUT_ROWS: AboutRow[] = [
   {
     key: "website",
     label: "Website",
-    value: "clarkarch.github.io/tfm-tui",
-    url: "https://clarkarch.github.io/tfm-tui",
+    value: "wiggly-sheets.github.io/tfm-tui-mac",
+    url: "https://wiggly-sheets.github.io/tfm-tui-mac",
   },
   {
     key: "github",
     label: "GitHub",
-    value: "github.com/clarkarch/tfm-tui",
-    url: "https://github.com/clarkarch/tfm-tui",
+    value: "github.com/wiggly-sheets/tfm-tui-mac",
+    url: "https://github.com/wiggly-sheets/tfm-tui-mac",
   },
   {
     key: "credits",
