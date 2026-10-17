@@ -84,7 +84,7 @@ type CompressionDef = {
 const COMPRESSIONS: CompressionDef[] = [
   { fmt: "tar.gz", ext: ".tar.gz", hint: "gzip", kind: "tar", filter: ["-z"], need: ["tar", "gzip"] },
   { fmt: "zip", ext: ".zip", hint: "zip", kind: "zip", filter: [], need: [] },
-  { fmt: "7z", ext: ".7z", hint: "7z", kind: "7z", filter: [], need: ["7z"] },
+  { fmt: "7z", ext: ".7z", hint: "7z", kind: "7z", filter: [], need: ["7z", "7za", "7zr", "7zz"] },
   { fmt: "tar", ext: ".tar", hint: "tar (no compression)", kind: "tar", filter: [], need: ["tar"] },
   { fmt: "tar.xz", ext: ".tar.xz", hint: "xz", kind: "tar", filter: ["-J"], need: ["tar", "xz"] },
   { fmt: "tar.bz2", ext: ".tar.bz2", hint: "bzip2", kind: "tar", filter: ["-j"], need: ["tar", "bzip2"] },
@@ -143,23 +143,35 @@ export const detectArchiveFormat = (file: string): ArchiveFormat | null => {
 // 7z does both as the fallback. Darwin: ditto extracts when neither unzip
 // nor 7z exists (ditto ships macOS; it can't list, so listing still needs
 // unzip/7z — a ditto-only machine extracts with a 0 total, honestly).
-const zipCreateTool = (which: WhichFn): "zip" | "7z" => (which("zip") ? "zip" : "7z");
-const zipExtractTool = (which: WhichFn, platform: string = process.platform): "unzip" | "ditto" | "7z" =>
-  which("unzip") ? "unzip" : isDarwin(platform) && which("ditto") ? "ditto" : "7z";
+// 7-Zip ships under several names: `7z` (Windows/Arch), `7za` (static),
+// `7zr` (embedded), `7zz` (Homebrew sevenzip). The argv is identical for all
+// of them, so pick the first that exists and use it as the tool name.
+// Returns null when none are installed — callers must not treat a default
+// string as "available" (that made every zip check pass on a bare machine).
+const sevenZipBin = (which: WhichFn): string | null => ["7z", "7za", "7zr", "7zz"].find((b) => which(b)) ?? null;
+const zipCreateTool = (which: WhichFn): string | null => (which("zip") ? "zip" : sevenZipBin(which));
+const zipExtractTool = (which: WhichFn, platform: string = process.platform): string | null =>
+  which("unzip") ? "unzip" : isDarwin(platform) && which("ditto") ? "ditto" : sevenZipBin(which);
 
 const canCreate = (def: CompressionDef, which: WhichFn): boolean =>
-  def.kind === "zip" ? !!which("zip") || !!which("7z") : def.need.every((b) => !!which(b));
+  def.kind === "zip"
+    ? !!which("zip") || !!sevenZipBin(which)
+    : def.kind === "7z"
+      ? !!sevenZipBin(which)
+      : def.need.every((b) => !!which(b));
 
 const canExtractFmt = (def: CompressionDef, which: WhichFn, platform: string = process.platform): boolean =>
   def.kind === "zip"
-    ? !!which("unzip") || (isDarwin(platform) && !!which("ditto")) || !!which("7z")
-    : def.need.every((b) => !!which(b));
+    ? !!which("unzip") || (isDarwin(platform) && !!which("ditto")) || !!sevenZipBin(which)
+    : def.kind === "7z"
+      ? !!sevenZipBin(which)
+      : def.need.every((b) => !!which(b));
 
 const listTool = (fmt: ArchiveFormat, which: WhichFn, platform: string = process.platform): string => {
   const def = defOf(fmt);
   if (def.kind === "tar") return "tar";
-  if (def.kind === "7z") return "7z";
-  return zipExtractTool(which, platform);
+  if (def.kind === "7z") return sevenZipBin(which) ?? "7z";
+  return zipExtractTool(which, platform) ?? "7z";
 };
 
 // bsdtar (macOS) rejects GNU `-I prog` filters and needs no filter on read
@@ -190,14 +202,15 @@ export const extractPlan = (
   // -bso2: the entry log goes to stderr (unbuffered) — 7z block-buffers piped
   // stdout, so without it every line arrives at exit and the bar sits at 0/N
   // then jumps to done (probed; tar -v and unzip flush per entry and need nothing)
-  if (def.kind === "7z") return { tool: "7z", args: ["x", "-bb1", "-bso2", "-y", `-o${destDir}`, file] };
+  if (def.kind === "7z")
+    return { tool: sevenZipBin(which) ?? "7z", args: ["x", "-bb1", "-bso2", "-y", `-o${destDir}`, file] };
   const tool = zipExtractTool(which, platform);
   // ditto (darwin fallback): extract-only, no list/progress lines — the op
   // proceeds with a 0 total instead of failing a machine that can do the work
   if (tool === "ditto") return { tool: "ditto", args: ["-x", "-k", file, destDir] };
   return tool === "unzip"
     ? { tool: "unzip", args: ["-o", file, "-d", destDir] }
-    : { tool: "7z", args: ["x", "-bb1", "-bso2", "-y", `-o${destDir}`, file] };
+    : { tool: sevenZipBin(which) ?? "7z", args: ["x", "-bb1", "-bso2", "-y", `-o${destDir}`, file] };
 };
 
 export const listArgs = (
@@ -235,7 +248,8 @@ export const compressPlan = (
   // -bb1: one `+ name` line per added file — `zip -r` is chatty by default
   // but 7z is not, and without it the file-count bar never advances.
   // -bso2: same piped-stdout freeze as extract (entry log to stderr, live).
-  if (def.kind === "7z") return { tool: "7z", args: ["a", "-bb1", "-bso2", "-t7z", "-y", outFile, "--", ...names] };
+  if (def.kind === "7z")
+    return { tool: sevenZipBin(which) ?? "7z", args: ["a", "-bb1", "-bso2", "-t7z", "-y", outFile, "--", ...names] };
   const zipNames = names.map((n) => (n.startsWith("-") ? `./${n}` : n));
   if (zipCreateTool(which) === "zip") {
     const args = ["-r", outFile, ...zipNames];
@@ -245,7 +259,7 @@ export const compressPlan = (
     // behavior). Without stdbuf the plain spec runs: degraded, never failed.
     return which("stdbuf") ? { tool: "stdbuf", args: ["-o0", "-e0", "zip", ...args] } : { tool: "zip", args };
   }
-  return { tool: "7z", args: ["a", "-bb1", "-bso2", "-tzip", "-y", outFile, "--", ...zipNames] };
+  return { tool: sevenZipBin(which) ?? "7z", args: ["a", "-bb1", "-bso2", "-tzip", "-y", outFile, "--", ...zipNames] };
 };
 
 export const availableCompressionFormats = (which: WhichFn = Bun.which): CompressionFormat[] =>
@@ -1183,10 +1197,10 @@ export const entryReadPlan = (
   // `--`: a member named "-v" would otherwise be parsed as an option (probed:
   // both bsdtar and Info-ZIP unzip honor it, and both match the normalized name)
   if (def.kind === "tar") return { tool: "tar", args: ["-x", "-O", "-f", file, "--", name] };
-  if (def.kind === "7z") return { tool: "7z", args: ["x", "-so", "-y", file, "--", name] };
+  if (def.kind === "7z") return { tool: sevenZipBin(which) ?? "7z", args: ["x", "-so", "-y", file, "--", name] };
   return zipExtractTool(which, platform) === "unzip"
     ? { tool: "unzip", args: ["-p", "--", file, name] }
-    : { tool: "7z", args: ["x", "-so", "-y", file, "--", name] };
+    : { tool: sevenZipBin(which) ?? "7z", args: ["x", "-so", "-y", file, "--", name] };
 };
 
 // ONE member's bytes, for the preview pane. null = unreadable (no listing tool
