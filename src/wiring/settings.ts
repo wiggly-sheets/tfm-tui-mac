@@ -370,6 +370,14 @@ export const wireRetheme = (deps: {
     },
     sideInnerW: core.sideInnerW,
     renderAll: nav.renderAll,
+    // effective pane widths the grid reads for column math — applyConfig
+    // republishes them after writing node visibility (see ui-retheme)
+    setPreviewEff: (v) => {
+      core.geometry.previewEff = v;
+    },
+    setSidebarEff: (v) => {
+      core.geometry.sidebarEff = v;
+    },
     clearFailedThumbs,
     resetIconQueue: core.slots.resetIconQueue,
     syncTerminalTheme: fileops.terminal.syncTerminalTheme,

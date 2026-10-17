@@ -32,6 +32,17 @@ type RethemeCtx = {
   setTileH(v: number): void;
   setIconCells(v: number): void;
   sideInnerW(): number;
+  // effective pane widths the grid reads for column math. The hover drawer
+  // rewrites these as panes collapse/expand, but a HARD toggle (f3/f7 for the
+  // right column, ctrl+b for the sidebar) writes the node's visible/width in
+  // applyConfig and leaves these stale until onConfigApplied -> hover.refresh()
+  // republishes them — a gap where the grid columns are computed from the OLD
+  // width. Rewriting them here, right after the node visibility is written,
+  // makes the ordering explicit: node state first, then the geometry the grid
+  // reads. The drawer still owns the value while auto-hide is running (it
+  // writes the collapsed width); these setters are idempotent for that path.
+  setPreviewEff(v: number): void;
+  setSidebarEff(v: number): void;
   renderAll(): void;
   // theme flips retry doomed thumbs (a broken file gets one fresh attempt per
   // palette) but keep every hot raster: icon/thumb keys already carry fg/bg,
@@ -376,6 +387,14 @@ export const makeRetheme = (ctx: RethemeCtx) => {
         infoPane.width = ctx.config.ui.previewWidth;
       } catch {}
     }
+    // publish the effective widths right after the node visibility/width is
+    // written, so the grid's column math never reads a stale value between
+    // this call and hover.refresh() (which runs via onConfigApplied and would
+    // otherwise be the only thing republishing them). The drawer still owns
+    // the value while auto-hide is running and overwrites this synchronously
+    // in refresh() (a 0-ms tween writes its target immediately).
+    ctx.setPreviewEff(ctx.config.ui.previewEnabled || ctx.config.ui.infoSidebar ? ctx.config.ui.previewWidth : 0);
+    ctx.setSidebarEff(ctx.config.ui.sidebarVisible ? ctx.config.ui.sidebarWidth : 0);
     // dual-pane visibility is owned by the layout tree now (a closed pane's
     // column is torn down, a v-split's divider is a column rule) — renderAll
     // below rebuilds every grid through the new pane widths.

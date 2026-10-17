@@ -32,6 +32,7 @@ const mkCtx = () => {
     setOnId: [] as Array<[string, (n: any) => void]>,
     bg: [] as string[],
     geom: { sw: 0, tileW: 0, tileH: 0, iconCells: 0 },
+    eff: { sidebar: 0, preview: 0 },
     renderAll: 0,
     clearIconCaches: 0,
     clearFailedThumbs: 0,
@@ -107,6 +108,12 @@ const mkCtx = () => {
     renderFileMenu: () => {},
     notify: (msg: string, title?: string, level?: string) => {
       calls.notify.push([msg, title, level]);
+    },
+    setPreviewEff: (v: number) => {
+      calls.eff.preview = v;
+    },
+    setSidebarEff: (v: number) => {
+      calls.eff.sidebar = v;
     },
     calls,
   };
@@ -416,6 +423,53 @@ describe("applyConfig", () => {
     fresh.ui.sidebarWidth = 31;
     retheme.applyConfig(fresh);
     expect(ctx.calls.renderAll).toBe(1);
+  });
+
+  test("toggling infoSidebar updates previewEff immediately after applyConfig (no stale gap)", () => {
+    // the right column is shared: preview and info are mutually exclusive and
+    // equally wide, so previewEff must be preview-width when EITHER is on and
+    // 0 when both are off. The hover drawer republishes this via
+    // onConfigApplied -> refresh(), but only AFTER applyConfig returns — the
+    // grid's column math reads it during renderAll, so a stale value here
+    // means the grid lays out with the old width for one frame.
+    const ctx = mkCtx();
+    const retheme = makeRetheme(ctx as any);
+    const on = clone(defaultConfig);
+    on.ui.infoSidebar = true;
+    retheme.applyConfig(on);
+    expect(ctx.calls.eff.preview).toBe(on.ui.previewWidth); // info owns the column
+    expect(ctx.config.ui.infoSidebar).toBe(true);
+
+    // off again: the shared column is gone, previewEff must hit 0
+    const off = clone(ctx.config);
+    off.ui.infoSidebar = false;
+    retheme.applyConfig(off);
+    expect(ctx.calls.eff.preview).toBe(0);
+    expect(ctx.config.ui.infoSidebar).toBe(false);
+
+    // preview alone (info off) also owns the column
+    const preview = clone(ctx.config);
+    preview.ui.previewEnabled = true;
+    retheme.applyConfig(preview);
+    expect(ctx.calls.eff.preview).toBe(preview.ui.previewWidth);
+  });
+
+  test("toggling sidebarVisible updates sidebarEff immediately after applyConfig", () => {
+    // same stale-width gap as the right column: the drawer republishes via
+    // onConfigApplied -> refresh(), but the grid reads sidebarEff during the
+    // renderAll applyConfig triggers. Hiding the sidebar must zero it here.
+    const ctx = mkCtx();
+    const retheme = makeRetheme(ctx as any);
+    const off = clone(defaultConfig);
+    off.ui.sidebarVisible = false;
+    retheme.applyConfig(off);
+    expect(ctx.calls.eff.sidebar).toBe(0);
+    expect(ctx.config.ui.sidebarVisible).toBe(false);
+
+    const back = clone(ctx.config);
+    back.ui.sidebarVisible = true;
+    retheme.applyConfig(back);
+    expect(ctx.calls.eff.sidebar).toBe(back.ui.sidebarWidth);
   });
 
   test("theme flip is diffed against the LAST APPLIED state, not the caller's config (pinned regression)", () => {
