@@ -142,6 +142,11 @@ export const wireGrid = (deps: {
     home,
     focusKey,
     tileRefs: selection.tileRefs,
+    // same visibility gate as the preview pane: the right column is shared, so
+    // the info node is invisible when the preview owns it or when auto-hide
+    // collapsed the column — a zero-width parent has no scissor rect and
+    // fixed-width children would paint through it
+    infoVisible: () => !!core.geometry.previewEff && core.config.ui.infoSidebar,
   });
   // ONE entry for every selection/pane change: the preview and the info
   // sidebar refresh together (kept in lockstep so they can't drift)

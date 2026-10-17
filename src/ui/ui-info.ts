@@ -21,6 +21,11 @@ type InfoCtx = {
   colors(): Theme;
   infoEnabled(): boolean; // config.ui.infoSidebar
   infoWidth(): number; // config.ui.previewWidth (shared right-region width)
+  // Is the info pane ACTUALLY on screen? Same gate as the preview pane: a
+  // hidden/collapsed right column has no scissor rect, so a zero-width
+  // display:none parent lets fixed-width children paint through — skip the
+  // rebuild while the node is invisible. Absent = visible.
+  infoVisible?(): boolean;
   home: string;
   focusKey(): string | null; // focused tile's key, else null
   tileRefs: Map<string, SelTileRef>; // shared by ref; only .forEach read here
@@ -114,6 +119,12 @@ export const makeInfoSidebar = (ctx: InfoCtx) => {
   const renderInfoNow = async (): Promise<void> => {
     if (!ctx.infoEnabled()) return;
     const gen = ++infoGen;
+    // mirror the preview pane: a hidden/collapsed right column has no scissor
+    // rect, so fixed-width children paint through a zero-width parent — skip
+    // the rebuild while the node is invisible. Bumping gen first means any
+    // in-flight async dirWalkStats (renderMulti's gen guard) can't resurrect
+    // the hidden pane when it settles.
+    if (ctx.infoVisible && !ctx.infoVisible()) return;
     const pane = ctx.byId("tfm-info");
     if (!pane) return;
     const colors = ctx.colors();
