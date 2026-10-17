@@ -390,6 +390,42 @@ describe("sidebar follows the terminal panel", () => {
   });
 });
 
+describe("hueless/greyscale terminals: fills must not collapse onto bg", () => {
+  // repro: a terminal with a near-black bg, bright fg, no palette, no cursor,
+  // no highlight — hue == fg so hasTermHue is false and the selection falls
+  // through to the panel/shade ladder. The ladder's tail (shadeHex(bg, -0.35))
+  // passes the ratio gate by moving toward black, landing darker than bg itself
+  // — a hole in the canvas where selected/hovered tiles render as black boxes.
+  const hueless = {
+    palette: new Array(16).fill(null),
+    defaultForeground: "#ffffff",
+    defaultBackground: "#0a0a0a",
+    cursorColor: null,
+    highlightBackground: null,
+  };
+
+  test("accentBg is visibly lighter than bg, never a blacker hole", () => {
+    const t = deriveSystemTheme(hueless, "dark");
+    expect(t.accentBg).not.toBe(t.bg);
+    // must move away from bg in the intended (up) direction, not toward black
+    expect(relLum(t.accentBg)).toBeGreaterThan(relLum(t.bg));
+    // and never land on the absolute black floor
+    expect(relLum(t.accentBg)).toBeGreaterThanOrEqual(0.02);
+  });
+
+  test("hoverBg separates from bg too", () => {
+    const t = deriveSystemTheme(hueless, "dark");
+    expect(t.hoverBg).not.toBe(t.bg);
+    expect(Math.abs(relLum(t.hoverBg) - relLum(t.bg))).toBeGreaterThan(0.005);
+  });
+
+  test("the same terminal on a light canvas keeps fills off the white extreme", () => {
+    const t = deriveSystemTheme({ ...hueless, defaultForeground: "#000000", defaultBackground: "#f5f5f5" }, "light");
+    expect(t.accentBg).not.toBe(t.bg);
+    expect(relLum(t.accentBg)).toBeLessThanOrEqual(1 - 0.02);
+  });
+});
+
 describe("inferModeFromBg", () => {
   test("dark bg infers dark, light bg infers light", () => {
     expect(inferModeFromBg("#1a1b26")).toBe("dark");

@@ -156,6 +156,25 @@ const mostSaturated = (colors: string[]): string | null => {
   return best;
 };
 
+// a fill must visibly separate from bg: the shade ladder's tail
+// (shadeHex(bg, -0.18)) passes the ratio gate by going toward black, which
+// reads as a hole in the canvas, not a selection. Only NEUTRAL candidates
+// (no hue of their own — spread < 24, the same gate the hue anchor uses) need
+// repair: a hue-carrying tint is the intended voice and survives verbatim even
+// when dark (red selection on a black terminal, the terminal's own panel in the
+// Aura case). The clamp keys on separation from bg, not an absolute floor —
+// dark surfaces legitimately sit near black, what fails is collapsing onto bg.
+const clampFill = (bg: string, candidate: string, dir: 1 | -1): string => {
+  if (channelSpread(candidate) >= 24) return candidate;
+  const b = relLum(bg);
+  if (Math.abs(relLum(candidate) - b) >= 0.005) return candidate;
+  for (let m = 0.02; m <= 0.9; m += 0.02) {
+    const s = shadeHex(bg, dir * m);
+    if (Math.abs(relLum(s) - b) >= 0.02) return s;
+  }
+  return dir === 1 ? shadeHex(bg, 0.3) : shadeHex(bg, -0.3);
+};
+
 export const deriveSystemTheme = (input: TerminalPaletteInput, mode: TerminalThemeMode | null): Theme => {
   const at = (i: number): string | null => valid(input.palette[i] ?? null);
   const raw: Array<string | null> = Array.from({ length: 16 }, (_, i) => at(i));
@@ -244,15 +263,18 @@ export const deriveSystemTheme = (input: TerminalPaletteInput, mode: TerminalThe
   // hue family, so a hue tint would invent one — the selection sits on the
   // panel instead, provided primary text reads on it
   const hasTermHue = hue !== fg;
-  const accentBg =
+  const accentBg = clampFill(
+    bg,
     hlBgHue !== null && hlBgHue !== bg && contrastRatio(fg, hlBgHue) >= 3
       ? hlBgHue
       : !hasTermHue && contrastRatio(fg, sidebarBg) >= 3
         ? sidebarBg
-        : tintUntil(bg, hue, fg, up, 3, 0.18);
+        : tintUntil(bg, hue, fg, up, 3, 0.18),
+    up,
+  );
   // hover is a neutral lift toward fg (every hand-built theme builds it as a
   // small neutral step off bg), grown only until primary text reads on it
-  const hoverBg = tintUntil(bg, fg, fg, up, 3, 0.1);
+  const hoverBg = clampFill(bg, tintUntil(bg, fg, fg, up, 3, 0.1), up);
   // accent must read on bg (titles, links), on accentBg (selected tile text,
   // selected sidebar icons/labels) AND on sidebarBg (the sidebar title paints
   // accent-on-panel): palette blue first, then bright blue, then cursor, then
