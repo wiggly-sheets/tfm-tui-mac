@@ -107,9 +107,12 @@ type SurfaceState = {
   } | null;
 };
 
-// a GIF whose frame table we will read for the "(animated GIF, N frames)"
-// label; past this the label is skipped rather than buffering the file
-const GIF_COUNT_MAX = 32 * 1024 * 1024;
+// A GIF's frame table is read for the "(animated GIF, N frames)" label only
+// while the file is small enough that buffering it is cheap. Past this the
+// label is dropped entirely (the first frame still renders) — the old
+// 32 MiB cap loaded the whole file synchronously on every GIF preview render
+// for a one-line label.
+const GIF_COUNT_READ_MAX = 1024 * 1024;
 
 // one archive listing row: the name clipped so the size column stays
 // right-aligned (the tail is kept — the file name lives there)
@@ -357,9 +360,11 @@ export const makePreview = (ctx: PreviewCtx) => {
       // shortcut: a GIF shows its FIRST frame only (a slot mounts one raster,
       // there is no frame sequencing in this pipeline), upgrade to real
       // animation when a slot can carry kitty frame control data.
-      if (fileIsGif(key) && st.size <= GIF_COUNT_MAX) {
+      if (fileIsGif(key) && st.size <= GIF_COUNT_READ_MAX) {
         let frames = 0;
         try {
+          // header-only walk: gifFrameCount bails on the first malformed byte,
+          // so a corrupt tail never costs more than the walk itself
           frames = gifFrameCount(new Uint8Array(await readFile(key)));
         } catch {}
         if (gen !== s.gen) return;

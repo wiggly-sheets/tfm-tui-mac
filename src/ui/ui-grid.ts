@@ -403,7 +403,14 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // BOTH panes on any navigation, so without this a move in one pane visibly
     // rebuilds the other (and churns native buffers). Empty/error states sign
     // separately; theme/geometry/search changes move the signature too.
-    const baseSigParts = (): unknown[] => [
+    // ctx.colors() returns a 26-property Theme object and hoverLiftOpts?.() does
+    // an internal JSON.stringify — both are cheap per call, but serializing
+    // the whole ~25-element array 4× per render (ctxKey + sigOf + structOf +
+    // contentSigOf) was pure waste: the base parts never change mid-render, so
+    // compute them once and reuse the array reference. The Theme object is
+    // captured too: a theme flip between renders would otherwise re-read it.
+    const baseColors = ctx.colors();
+    const baseParts: unknown[] = [
       state.cwd,
       state.showHidden,
       state.sortBy,
@@ -431,18 +438,22 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       // win cache/anim window math must not lag it)
       ctx.windowedGrid?.() ?? false,
       ctx.listRowH(),
-      ctx.colors(),
+      baseColors,
       ctx.rasterSig?.() ?? "",
     ];
     // listing CONTEXT of this render, no entry list: the placeholder is armed
     // exactly when the screen stops describing this request (cwd/query/sort/
     // geometry/raster mode — anything that makes the painted tiles wrong)
-    const ctxKey = JSON.stringify(baseSigParts());
-    const sigOf = (list: Entry[] | string): string =>
-      JSON.stringify([
-        ...baseSigParts(),
-        typeof list === "string" ? list : list.map((e) => `${e.name}\u0000${e.size ?? ""}\u0000${e.mtimeMs ?? ""}`),
-      ]);
+    const ctxKey = JSON.stringify(baseParts);
+    // the entry list is mapped to a string 3× per render (sigOf, structOf,
+    // contentSigOf) — 10k folder = 30k string builds. sigOf and contentSigOf
+    // want the SAME per-entry string (name+size+mtime), so build it once and
+    // share; structOf wants name+isDir and keeps its own map.
+    const entryParts = (list: Entry[] | string): string[] =>
+      typeof list === "string" ? [list] : list.map((e) => `${e.name}\u0000${e.size ?? ""}\u0000${e.mtimeMs ?? ""}`);
+    const structParts = (list: Entry[] | string): string[] =>
+      typeof list === "string" ? [list] : list.map((e) => `${e.name}\u0000${e.isDir ? 1 : 0}`);
+    const sigOf = (list: Entry[] | string): string => JSON.stringify([...baseParts, ...entryParts(list)]);
     // The pane is showing THIS listing now — claim it. NEVER call before the
     // paint (see dropPaintClaim) and never from the placeholder: a claim for a
     // screen the pane isn't showing strands it until the cwd moves. NOTE: the
@@ -465,11 +476,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // signature never carried (a symlink retarget dir↔file with identical
     // stats wrongly skipped the rebuild before). A tick that moves this
     // rebuilds; one that moves only stats takes the in-place fast path.
-    const structOf = (list: Entry[] | string): string =>
-      JSON.stringify([
-        ...baseSigParts(),
-        typeof list === "string" ? list : list.map((e) => `${e.name}\u0000${e.isDir ? 1 : 0}`),
-      ]);
+    const structOf = (list: Entry[] | string): string => JSON.stringify([...baseParts, ...structParts(list)]);
     // content-only signature: what the animation keys off (the listed files +
     // how they're shown), WITHOUT geometry/theme — layout-only rebuilds keep it
     const contentSigOf = (list: Entry[] | string): string =>
@@ -482,7 +489,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         ctx.wrapMode(),
         q,
         recursive,
-        typeof list === "string" ? list : list.map((e) => `${e.name}\u0000${e.size ?? ""}\u0000${e.mtimeMs ?? ""}`),
+        ...entryParts(list),
       ]);
     // [ui] loading-delay-ms: the screen no longer matches this request. Give
     // the listing the delay to arrive, then swap the stale tiles for the
@@ -575,7 +582,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         dropPaintClaim();
         ctx.log?.(`grid: rebuild failed: ${buildErr instanceof Error ? buildErr.message : buildErr}`);
       }
-      void ctx.drainIconQueue();
+      void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
       return;
     }
     const entries = q && !recursive ? allEntries.filter((e) => e.name.toLowerCase().includes(q)) : allEntries;
@@ -614,7 +621,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         dropPaintClaim();
         ctx.log?.(`grid: rebuild failed: ${buildErr instanceof Error ? buildErr.message : buildErr}`);
       }
-      void ctx.drainIconQueue();
+      void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
       return;
     }
 
@@ -690,7 +697,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     let painted = false;
     try {
       const TILE_H = ctx.tileH();
-      const cols = isList ? 1 : Math.max(1, Math.floor((availW() - 3) / ctx.tileW()));
+      const cols = isList ? 1 : Math.max(1, Math.floor((availW() - 3) / Math.max(1, ctx.tileW())));
       const rowHgt = isList ? rowH() : TILE_H;
       const totalRows = isList ? entries.length : Math.ceil(entries.length / cols);
 
@@ -709,6 +716,15 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       const visFirst = isList ? firstRow : firstRow * cols;
       // register EVERY entry first — the full tileRefs/focusKeys list is the
       // selection's contract; built rows overwrite their minimal ref in place.
+      // TRADEOFF (accepted as-is): this loop is O(n) per rebuild even in
+      // windowed mode (a 20k folder = 20k map sets), and the setFocusKeys call
+      // below spreads the whole map into a new array. Lazy-registering off-screen
+      // refs would cut that, but it would also make the selection's contract
+      // depend on the window position: selectAll/band/rubber-band would have to
+      // resolve ids on demand and a scroll-into-view of a selected-but-unbuilt
+      // tile would need a rebuild. The windowed build already costs O(screen)
+      // nodes; this is O(n) cheap JS, so the win is marginal and the
+      // correctness risk is not. Kept window-blind on purpose.
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
         if (e) registerRef(e, i);
@@ -750,8 +766,8 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       // fresh Text nodes default selectable=true; strip AFTER the async rebuild or
       // the renderer's text-selection drag hijacks file-drag events
       ctx.stripSelectable();
-      void ctx.drainIconQueue();
-      void ctx.drainThumbs();
+      void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
+      void Promise.resolve(ctx.drainThumbs()).catch(() => {});
       selection.setFocusKeys([...selection.tileRefs.keys()]);
       // restore the pre-rebuild selection/focus by path (stale gen = newer
       // render owns the refs — never restore into it; unreachable while the block
@@ -884,6 +900,11 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         if (!e) continue;
         const key = entryKey(e);
         const ref = selection.tileRefs.get(key);
+        // the refs these rows were built with carry their resolved nodes, so
+        // setTileVisual reads tileNode/labelNode/slotNode directly — no ctx.byId
+        // walk per tile here (a 40-tile/row 2-row slide used to do 240 DOM
+        // traversals per scroll notch). Test fakes that build refs by hand
+        // leave them undefined and setTileVisual falls back to byId.
         if (ref?.selected) selection.setTileVisual(key, TileVisual.Selected);
         else if (ctx.isCutKey(key)) selection.setTileVisual(key, TileVisual.Rest);
       }
@@ -1042,8 +1063,8 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     }
     win = { ...win, r0, r1, vis: { top: visTop, bottom: visBottom } };
     ctx.stripSelectable();
-    void ctx.drainIconQueue();
-    void ctx.drainThumbs();
+    void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
+    void Promise.resolve(ctx.drainThumbs()).catch(() => {});
     // pads keep the content height exact, so the offset survives untouched —
     // restore only after a slide moved the window (matches the io
     // drawer-settle pattern; the nested hook call range-checks equal and

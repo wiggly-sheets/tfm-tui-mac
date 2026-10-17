@@ -120,15 +120,36 @@ describe("toolbar item ids (animation targets)", () => {
     expect(toolbarItemIds(mapById(ids), "tfm-p0-")).toEqual(ids);
   });
 
-  test("absent fixed buttons are skipped, crumb probe stops at the first miss", () => {
+  test("absent fixed buttons are skipped, crumb probe stops at two consecutive misses", () => {
     const byId = mapById(["tfm-p0-nav-back", "tfm-p0-crumb-0", "tfm-p0-crumb-2", "tfm-p0-sort-btn"]);
-    // crumb-1 missing: the probe never reaches crumb-2 (crumb ids are dense)
-    expect(crumbItemIds(byId, "tfm-p0-")).toEqual(["tfm-p0-crumb-0"]);
-    expect(toolbarItemIds(byId, "tfm-p0-")).toEqual(["tfm-p0-nav-back", "tfm-p0-crumb-0", "tfm-p0-sort-btn"]);
+    // crumb-1 missing but crumb-2 present: the probe tolerates one gap (deep
+    // macOS/FUSE paths can skip an id) and stops at two in a row
+    expect(crumbItemIds(byId, "tfm-p0-")).toEqual(["tfm-p0-crumb-0", "tfm-p0-crumb-2"]);
+    expect(toolbarItemIds(byId, "tfm-p0-")).toEqual([
+      "tfm-p0-nav-back",
+      "tfm-p0-crumb-0",
+      "tfm-p0-crumb-2",
+      "tfm-p0-sort-btn",
+    ]);
+  });
+
+  test("two consecutive misses stop the probe", () => {
+    // crumb-0 present, crumb-1 and crumb-2 both missing -> stops after the gap
+    const byId = mapById(["tfm-p0-crumb-0"]);
+    expect(crumbItemIds(byId, "tfm-p0-", 5)).toEqual(["tfm-p0-crumb-0"]);
   });
 
   test("the crumb probe is capped (a registry that never misses can't loop forever)", () => {
-    expect(crumbItemIds(() => ({}) as unknown as MaybeNode, "tfm-p0-", 5)).toHaveLength(5);
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) ids.push(`tfm-p0-crumb-${i}`);
+    expect(crumbItemIds(mapById(ids), "tfm-p0-", 5)).toHaveLength(5);
+  });
+
+  test("a path with more than 128 segments is not silently truncated", () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 200; i++) ids.push(`tfm-p0-crumb-${i}`);
+    const byId = mapById(ids);
+    expect(crumbItemIds(byId, "tfm-p0-", 256)).toHaveLength(200);
   });
 });
 

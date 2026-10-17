@@ -85,9 +85,12 @@ export const isNavigableTarget = (target: string): boolean => {
 // Crumb ids are dense (`crumb-0..N`), so the probe stops at the first miss;
 // the cap keeps a never-missing registry from looping forever. Only existing
 // nodes are returned — the animator skips the rest anyway, but callers
-// (startup cascade order asserts) want the resolved list.
+// (startup cascade order asserts) want the resolved list. The cap grows past
+// the first miss on consecutive misses (deep macOS/FUSE paths) so a >128-segment
+// breadcrumb isn't silently truncated.
 export const crumbItemIds = (byId: (id: string) => MaybeNode, prefix: string, cap = 128): string[] => {
   const ids: string[] = [];
+  let consecutive = 0;
   for (let i = 0; i < cap; i++) {
     let n: MaybeNode = null;
     try {
@@ -95,7 +98,12 @@ export const crumbItemIds = (byId: (id: string) => MaybeNode, prefix: string, ca
     } catch {
       n = null;
     }
-    if (!n) break;
+    if (!n) {
+      consecutive++;
+      if (consecutive >= 2) break;
+      continue;
+    }
+    consecutive = 0;
     ids.push(`${prefix}crumb-${i}`);
   }
   return ids;
@@ -257,6 +265,9 @@ export const makeToolbar = (ctx: ToolbarCtx) => {
 
   let pathEditMode = false;
   let crumbClickAt = 0;
+  // double-click-to-edit is PER CRUMB: two fast clicks on DIFFERENT crumbs
+  // (breadcrumb hopping) must each navigate, not open the path editor
+  let lastClickCrumb = -1;
   // per-navigate animation guard: the crumb TARGETS last built for. Null
   // until the first build (which only records — the startup intro covers
   // boot). On rebuild the shared target prefix stays put and only the suffix
@@ -403,7 +414,19 @@ export const makeToolbar = (ctx: ToolbarCtx) => {
             : {
                 onMouseDown: () => {
                   ctx.focusPane?.();
-                  ctx.navigate(c.target);
+                  ctx.closeFileMenu();
+                  // double-click-to-edit is per crumb: two fast clicks on
+                  // DIFFERENT crumbs (breadcrumb hopping) must each navigate
+                  const now = Date.now();
+                  if (now - crumbClickAt < 350 && lastClickCrumb === i) {
+                    crumbClickAt = 0;
+                    lastClickCrumb = -1;
+                    enterPathEdit();
+                  } else {
+                    crumbClickAt = now;
+                    lastClickCrumb = i;
+                    ctx.navigate(c.target);
+                  }
                 },
                 ...hoverEvents(paintHover, ctx.setPointer),
               }),
@@ -505,6 +528,9 @@ export const makeToolbar = (ctx: ToolbarCtx) => {
             if (pathEditMode) return;
             ctx.focusPane?.();
             ctx.closeFileMenu();
+            // empty area of the breadcrumb row: repeat within 350ms opens the
+            // editor (no crumb id to track — every empty-area click is the
+            // same "edit the whole path" target)
             if (now - crumbClickAt < 350) {
               crumbClickAt = 0;
               enterPathEdit();

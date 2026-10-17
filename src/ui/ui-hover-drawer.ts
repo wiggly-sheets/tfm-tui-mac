@@ -52,7 +52,10 @@ export const collapsedSize = (style: string): number => {
 // pure: collapsed height for the terminal pane ("header" keeps the title row)
 export const collapsedHeight = (style: string): number => (style === "header" ? 1 : 0);
 
-type Tween = { run(target: number, ms: number, onDone?: () => void): void };
+type Tween = {
+  run(target: number, ms: number, onDone?: () => void): void;
+  destroy(): void;
+};
 
 const makeTween = (getNode: () => MaybeNode, axis: "width" | "height"): Tween => {
   let tl: ReturnType<typeof createTimeline> | null = null;
@@ -118,6 +121,19 @@ const makeTween = (getNode: () => MaybeNode, axis: "width" | "height"): Tween =>
       write(cur);
       ensure(ms);
       tl?.restart();
+    },
+    // unregister the live timeline from the engine's Set. Repeated
+    // makeHoverDrawer calls used to leak one Timeline per call: makeTween's
+    // ensure() only swaps the timeline when the duration changes, so a panel
+    // whose slide never changed duration left its first timeline registered
+    // forever.
+    destroy() {
+      if (tl) {
+        try {
+          engine.unregister(tl);
+        } catch {}
+        tl = null;
+      }
     },
   };
 };
@@ -460,10 +476,26 @@ export const makeHoverDrawer = (ctx: HoverDrawerCtx) => {
   // same attach guard as the sidebar/grid animators: a renderer without a
   // frame loop must never reach engine.attach (it overwrites the singleton
   // before calling setFrameCallback, wedging every later attach process-wide)
-  try {
-    if (typeof ctx.renderer?.setFrameCallback === "function") engine.attach(ctx.renderer);
-  } catch {}
+  let attached = false;
+  const attach = (): void => {
+    if (attached) return;
+    attached = true;
+    try {
+      if (typeof ctx.renderer?.setFrameCallback === "function") engine.attach(ctx.renderer);
+    } catch {}
+  };
+  attach();
   ctx.renderer.root.onMouseMove = onMove;
 
-  return { refresh, onMouseMove: onMove, panels };
+  // unregister every panel's timeline from the engine's Set. Repeated
+  // makeHoverDrawer calls used to leak one Timeline per call: makeTween's
+  // ensure() only swaps the timeline when the duration changes, so a panel
+  // whose slide never changed duration left its first timeline registered
+  // forever. Guard against double-attach: a second attach() is a no-op.
+  const destroy = (): void => {
+    for (const p of panels) p.tween.destroy();
+    ctx.renderer.root.onMouseMove = undefined;
+  };
+
+  return { refresh, onMouseMove: onMove, panels, destroy };
 };

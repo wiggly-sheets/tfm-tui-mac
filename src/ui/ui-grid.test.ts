@@ -2617,7 +2617,15 @@ describe("renderGrid (loading placeholder)", () => {
       await t.renderOnce();
       const job = thumbJobs.find((j: any) => j.path === link);
       expect(job).toBeTruthy();
-      expect(job.size).toBe(100);
+      // the stat probe moved to the async drain: a link's entry stats are
+      // link-own, so the build pushes a probe job (size 0) and the drain
+      // stat-probes the target before rasterizing (the raster key then keys on
+      // the target's stats — an edited target photo re-rasters)
+      expect(job.probe).toBe(link);
+      expect(job.size).toBe(0);
+      const { probeThumbStat } = await import("../ui/ui-slots");
+      const st = await probeThumbStat(link);
+      expect(st?.size).toBe(100);
     } finally {
       viewMode = "grid";
       rmSync(dir, { recursive: true, force: true });

@@ -87,7 +87,13 @@ export const makePick = (ctx: PickCtx) => {
   let idx = -1;
   let results: PickItem[] = [];
 
+  let focusTimer: ReturnType<typeof setTimeout> | null = null;
+
   const rawClose = (): void => {
+    if (focusTimer) {
+      clearTimeout(focusTimer);
+      focusTimer = null;
+    }
     opened = false;
     query = "";
     idx = -1;
@@ -199,9 +205,9 @@ export const makePick = (ctx: PickCtx) => {
     );
     ctx.rootAdd(scrim);
     ctx.stripSelectable();
-    void ctx.drainIconQueue();
+    void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
     const input = ctx.byId("tfm-pick-input");
-    if (input?.on) {
+    if (typeof input?.on === "function") {
       input.on("input", () => {
         try {
           query = String(input.value ?? "");
@@ -212,7 +218,7 @@ export const makePick = (ctx: PickCtx) => {
     }
     // focus after mount (same deferred pattern as type-to-search: focusing a
     // pre-mount node is a silent no-op); best-effort, never throws
-    setTimeout(() => {
+    focusTimer = setTimeout(() => {
       try {
         ctx.byId("tfm-pick-input")?.focus?.();
       } catch {}

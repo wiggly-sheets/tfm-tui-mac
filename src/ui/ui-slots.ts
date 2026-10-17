@@ -17,7 +17,8 @@ import {
   type TerminalCapabilities,
   Text,
 } from "@opentui/core";
-import { iconPng, brandPng, svgAspect, thumbPng } from "./icons";
+import { stat } from "node:fs/promises";
+import { iconPng, brandPng, svgAspect, thumbPng, THUMB_MAX_BYTES } from "./icons";
 import { swallow } from "../app/log";
 import type { IconMode, IconStyle, Theme } from "../config/config";
 import { intToHex } from "../config/color";
@@ -187,6 +188,11 @@ export type ThumbJob = {
   // inside the viewport at build time — non-visible jobs drain LAST (nautilus
   // moves visible files to the head of its IO queues for the same reason)
   visible?: boolean;
+  // when set, size/mtime are unknown at build time (the entry's stats were
+  // link-own or missing). The drain stat-probes the path before rasterizing;
+  // a 0-byte or oversize file keeps its icon (no job). The probe result is
+  // also used as the raster key, so a target edit re-rasters.
+  probe?: string;
 };
 
 // drain order: priority > visible > off-screen backlog. Stable sort keeps push
@@ -200,6 +206,26 @@ export const thumbJobRank = (j: ThumbJob): number => (j.priority ? 0 : j.visible
 // the old generation bail, which dropped live jobs on the floor.
 export const thumbJobKey = (j: ThumbJob): string =>
   [j.path, j.mtimeMs, j.size, j.wCells, j.hCells ?? "", j.vector ? 1 : 0, j.video ? 1 : 0].join("|");
+
+// stat-probe a thumbnail-eligible path whose size/mtime were unknown at build
+// time (links, or rows whose stats weren't filled). Returns null when the file
+// is 0-byte, oversize, or unreadable — those keep their icon and push no job.
+// Runs in the drain's worker pool (bounded concurrency), never on the build
+// path: a synchronous statSync per tile froze the paint on image folders.
+export const probeThumbStat = async (p: string): Promise<{ size: number; mtimeMs: number } | null> => {
+  try {
+    // stat (follows links): the raster reads TARGET pixels, so the job key must
+    // be the target's stats — an edited target photo must re-raster. lstat
+    // here would report the link's own bytes (usually 0) and key on the wrong
+    // file, so the edited-target re-raster guard silently never fired.
+    const st = await stat(p);
+    if (!st.isFile()) return null;
+    if (st.size <= 0 || st.size > THUMB_MAX_BYTES) return null;
+    return { size: st.size, mtimeMs: st.mtimeMs ?? 0 };
+  } catch {
+    return null;
+  }
+};
 
 // How the mounted raster is fitted into its cell box. Raster/video rasters are
 // either aspect-preserving (Bun.Image `fit:"inside"`) or exact-box (ffmpeg
@@ -279,7 +305,7 @@ export type SlotsCtx = {
   byId(id: string): MaybeNode;
   // live theme — always read through the getter, never captured
   colors(): Theme;
-  uiStyle(): string;
+  uiStyle(): UiStyle;
   // [ui] icons — read live like uiStyle (mode flip re-rasters)
   iconsMode(): IconMode;
   // [ui] icon-style — read live (toggle re-rasters via resetIconQueue).
@@ -462,6 +488,15 @@ export const makeSlots = (ctx: SlotsCtx) => {
       while (idx < jobs.length) {
         const j = jobs[idx++];
         if (!j) continue;
+        // probe size/mtime for links and rows whose stats weren't filled at
+        // build time (the synchronous statSync per tile used to block the
+        // build phase). A 0-byte / oversize / unreadable file keeps its icon.
+        if (j.probe) {
+          const st = await probeThumbStat(j.probe);
+          if (!st) continue;
+          j.mtimeMs = st.mtimeMs;
+          j.size = st.size;
+        }
         let slot = ctx.byId(j.slotId);
         if (!slot) continue;
         // "do not raster" sentinel: kitty is absent and sixel has no pixel
@@ -673,8 +708,14 @@ export const makeSlots = (ctx: SlotsCtx) => {
     // tile refs that kept them alive are gone too. Everything still
     // mounted stays in the registry — the scrim and retheme re-rasters
     // need it (see allSpecs above).
-    for (const [id, spec] of allSpecs) {
-      if (spec.done && !ctx.byId(id)) allSpecs.delete(id);
+    //
+    // Prune on node-liveness REGARDLESS of `done`: on terminals where the
+    // protocol never resolves (tmux, sixel without pixel metrics) the
+    // `imageProtocol() === null` bail above leaves every spec `done = false`
+    // forever, so the old `spec.done &&` guard kept every destroyed slot's
+    // spec in the registry for the life of the process.
+    for (const [id] of allSpecs) {
+      if (!ctx.byId(id)) allSpecs.delete(id);
     }
     // re-rasters made fresh images visible; while a modal scrim is up the icons
     // must fall back to dimmed glyphs or they float over the menu
@@ -689,6 +730,12 @@ export const makeSlots = (ctx: SlotsCtx) => {
     // NO pixel-resolution gate (see drainThumbs): a null `resolution` means the
     // terminal never answered the pixel query, not that there are no pixels to
     // raster into — cellMetrics falls back to 10x20 for exactly this case.
+    // Bail when NO placement here can paint (tmux, sixel without pixel
+    // metrics): the slots already carry their glyph nodes from makeIconSlot,
+    // so there is nothing to do here. Gating on the protocol ONCE here (instead
+    // of per-spec inside runIconDrain) stops every renderAll step from
+    // re-walking the whole registry on these terminals.
+    if (imageProtocol() === null) return Promise.resolve();
     iconDrainAgain = true;
     if (!iconDrain) {
       iconDrain = (async () => {
@@ -778,12 +825,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
     const states = (): IconState[] => [
       {
         fg: ctx.colors().sidebarFgMuted,
-        bg: slotBg(
-          ctx.uiStyle() as UiStyle,
-          ctx.colors() as Theme,
-          ctx.colors().sidebarBg,
-          opts?.chrome ? "chrome" : "float",
-        ),
+        bg: slotBg(ctx.uiStyle(), ctx.colors(), ctx.colors().sidebarBg, opts?.chrome ? "chrome" : "float"),
       },
       { fg: ctx.colors().white, bg: ctx.colors().hoverBg },
     ];
@@ -792,11 +834,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
       setIconState(slot.spec, toggleIconState(on, false));
       try {
         const n = ctx.byId(id);
-        if (n)
-          applySurface(
-            n,
-            btnSurface(ctx.uiStyle() as UiStyle, ctx.colors() as Theme, on, ctx.colors().sidebarBg, tForce),
-          );
+        if (n) applySurface(n, btnSurface(ctx.uiStyle(), ctx.colors(), on, ctx.colors().sidebarBg, tForce));
       } catch {}
     };
     return Box(
@@ -806,7 +844,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
         width: 3,
         height: 1,
         justifyContent: "center",
-        ...btnSurface(ctx.uiStyle() as UiStyle, ctx.colors() as Theme, false, ctx.colors().sidebarBg, tForce),
+        ...btnSurface(ctx.uiStyle(), ctx.colors(), false, ctx.colors().sidebarBg, tForce),
         onMouseDown: () => onClose(),
         ...hoverEvents(paint, ctx.setPointer),
       },

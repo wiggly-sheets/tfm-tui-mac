@@ -322,38 +322,46 @@ export const buildPaneScroller = (ctx: PaneScrollerCtx): ScrollBoxRenderable =>
 // ONCE, post-mount, and live for the whole app lifetime. Ids must stay
 // byte-identical (BAND_ID, DRAG_GHOST_ID + its `-label`). ---
 export const buildBootOverlays = (ctx: { renderer: CliRenderer; colors: Theme; isTtyMode?(): boolean }): void => {
-  ctx.renderer.root.add(
-    Box({
-      id: BAND_ID,
-      visible: false,
-      position: "absolute",
-      zIndex: 2500,
-      border: true,
-      borderStyle: "rounded",
-      borderColor: ctx.isTtyMode?.() ? ctx.colors.hoverBg : ctx.colors.accent,
-    }),
-  );
-
-  ctx.renderer.root.add(
-    Box(
-      {
-        id: DRAG_GHOST_ID,
+  try {
+    ctx.renderer.root.add(
+      Box({
+        id: BAND_ID,
         visible: false,
         position: "absolute",
-        left: 0,
-        top: 0,
-        width: 12,
-        height: 1,
-        zIndex: 4000,
-        backgroundColor: ctx.isTtyMode?.() ? ctx.colors.accentBg : ctx.colors.accent,
-        flexDirection: "row",
-        paddingLeft: 1,
-      },
-      Text({
-        id: `${DRAG_GHOST_ID}-label`,
-        content: "moving 0 items",
-        fg: ctx.isTtyMode?.() ? ctx.colors.white : ctx.colors.bg,
+        zIndex: 2500,
+        border: true,
+        borderStyle: "rounded",
+        borderColor: ctx.isTtyMode?.() ? ctx.colors.hoverBg : ctx.colors.accent,
       }),
-    ),
-  );
+    );
+  } catch (err) {
+    console.error("buildBootOverlays: band add failed", err);
+  }
+
+  try {
+    ctx.renderer.root.add(
+      Box(
+        {
+          id: DRAG_GHOST_ID,
+          visible: false,
+          position: "absolute",
+          left: 0,
+          top: 0,
+          width: 12,
+          height: 1,
+          zIndex: 4000,
+          backgroundColor: ctx.isTtyMode?.() ? ctx.colors.accentBg : ctx.colors.accent,
+          flexDirection: "row",
+          paddingLeft: 1,
+        },
+        Text({
+          id: `${DRAG_GHOST_ID}-label`,
+          content: "moving 0 items",
+          fg: ctx.isTtyMode?.() ? ctx.colors.white : ctx.colors.bg,
+        }),
+      ),
+    );
+  } catch (err) {
+    console.error("buildBootOverlays: drag ghost add failed", err);
+  }
 };

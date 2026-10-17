@@ -16,6 +16,11 @@ import type { PointerStyle } from "../lib/pointer";
 type RenameEdit = { key: string; inputId: string; createKind?: "file" | "folder"; labelIdx?: number };
 
 export type RenameCtx = {
+  // per-pane id prefix ("tfm-p0-"/"tfm-p1-") — the inline rename input is
+  // namespaced so a path-edit on one pane can't collide with a rename on the
+  // other (both used the global id tfm-rename-input). A getter: the rename
+  // instance is shared across panes and acts on the active one.
+  prefix: () => string;
   renderer(): CliRenderer;
   byId(id: string): MaybeNode;
   colors(): Theme;
@@ -111,12 +116,14 @@ export const makeRename = (ctx: RenameCtx) => {
     ctx.stripSelectable();
     if (!commit || !value) {
       if (edit.createKind) {
-        void rm(edit.key, { recursive: true })
+        void rm(edit.key, { recursive: true, force: true })
           .then(() => ctx.renderAll())
           .catch(() => {
             // surface it: a silent rejection left the half-created entry on
-            // disk AND on screen with no error and no repaint
-            ctx.notify("Delete failed", "create failed", "error");
+            // disk AND on screen with no error and no repaint. force is safe
+            // here — this key is the entry THIS session created (createKind is
+            // set), not a user file the user might be editing elsewhere.
+            ctx.notify("Entry not removed", "create cancelled", "error");
             void ctx.renderAll();
           });
       }
@@ -143,12 +150,13 @@ export const makeRename = (ctx: RenameCtx) => {
             try {
               if (createKind === "folder") {
                 await mkdir(target);
-                try {
-                  await rmdir(k); // placeholder is empty and ours
-                } catch (err) {
-                  await rmdir(target).catch(() => {}); // ours, just made, empty
-                  throw err;
-                }
+                // rmdir(k) is allowed to fail on its own: if it throws, the
+                // just-created target stays in place (orphaned but recoverable)
+                // instead of being rolled back here — the EEXIST retry below
+                // would then fail again too, and deleting the target as well
+                // would lose the user's new entry with only a toast. Net loss
+                // of both entries is worse than one leftover empty folder.
+                await rmdir(k); // placeholder is empty and ours
               } else {
                 await link(k, target); // same inode, placeholder consumed
                 await rm(k);
@@ -209,7 +217,7 @@ export const makeRename = (ctx: RenameCtx) => {
     } catch {}
     if (labelIdx === -1) labelIdx = undefined;
     // real class instance — mounts into the already-mounted tile
-    const inputId = `tfm-rename-input`;
+    const inputId = `${ctx.prefix()}rename-input`;
     const stale = ctx.byId(inputId);
     if (stale) {
       try {

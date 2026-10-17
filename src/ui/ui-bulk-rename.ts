@@ -264,7 +264,7 @@ export const makeBulkRename = (ctx: BulkRenameCtx) => {
     );
     ctx.rootAdd(scrim);
     const input = ctx.byId("tfm-bulkrename-input");
-    if (input?.on) {
+    if (typeof input?.on === "function") {
       input.on("input", () => {
         try {
           value = String(input.value ?? "");
@@ -273,7 +273,7 @@ export const makeBulkRename = (ctx: BulkRenameCtx) => {
       });
     }
     ctx.stripSelectable();
-    void ctx.drainIconQueue();
+    void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
     setError("");
     repaintStyles();
     renderPreview();

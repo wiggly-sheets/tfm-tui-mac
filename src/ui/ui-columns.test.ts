@@ -112,7 +112,9 @@ describe("columns model (path resolution)", () => {
     const handled = await m.backspace();
     expect(handled).toBe(true);
     expect(navigatedTo).toEqual("/");
-    expect(m.getColumns()[0]!.dir).toBe("/");
+    // backspace delegates to the caller's nav; the model keeps its column
+    // until the rebuild lands the parent dir
+    expect(m.getColumns()[0]!.dir).toBe("/root");
   });
 
   test("left/right move the active column", async () => {

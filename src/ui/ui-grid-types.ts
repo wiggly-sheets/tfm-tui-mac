@@ -156,6 +156,10 @@ export type GridRendererCtx = {
   // open a file by path (columns view's Enter on a file). Absent = files
   // can't be launched from the columns renderer (older fakes keep working).
   openFileDefault?(p: string): void;
+  // navigate a directory through the app nav (history push, tab-sync,
+  // sync-browsing follow, plugin navigate event). Absent = onNavigate is a no-op
+  // (older fakes keep working).
+  navigate?(dir: string): void;
   // misc hooks
   waitForResolution(): Promise<void>;
   clearRenameEdit(): void;

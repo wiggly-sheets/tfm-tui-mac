@@ -172,12 +172,11 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
       previewText = null;
       return true;
     }
-    // Only 1 column: navigate to parent directory
+    // Only 1 column: navigate to parent directory through the app nav
     const current = columns[0]?.dir ?? opts.cwd;
     const parent = path.dirname(current);
     if (parent !== current) {
       opts.onNavigate?.(parent);
-      await init(parent);
       return true;
     }
     return false;
@@ -214,7 +213,7 @@ export const makeColumnsRenderer = (ctx: GridRendererCtx): ColumnsRenderer => {
     sortAsc: ctx.state.sortAsc,
     openFile: ctx.openFileDefault,
     onNavigate: (dir) => {
-      ctx.state.cwd = dir;
+      ctx.navigate?.(dir);
     },
   });
 

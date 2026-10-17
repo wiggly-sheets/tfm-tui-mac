@@ -215,7 +215,7 @@ export const makeMenu = (ctx: MenuCtx) => {
         ),
       );
     });
-    void ctx.drainIconQueue();
+    void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
     ctx.stripSelectable();
   };
 
@@ -257,7 +257,7 @@ export const makeMenu = (ctx: MenuCtx) => {
       );
     });
     renderSubMenu();
-    void ctx.drainIconQueue();
+    void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
     ctx.stripSelectable();
   };
 

@@ -153,7 +153,9 @@ export const makeChrome = (ctx: ChromeCtx) => {
     clearReloadTimer();
     reloadTimer = setTimeout(() => {
       reloadTimer = null;
-      void loadSystemPlaces().then(() => ctx.renderAll());
+      void loadSystemPlaces()
+        .then(() => ctx.renderAll())
+        .catch((err) => ctx.dlog(`places reload: ${err instanceof Error ? err.message : String(err)}`));
     }, ms);
   };
 
@@ -336,6 +338,7 @@ export const makeChrome = (ctx: ChromeCtx) => {
     lastPlacesSig = sig;
     destroyChildren(hostBox);
     placesHost.length = 0;
+    mousePlaceIdx = -1;
 
     groups.forEach((group, gi) => {
       // titles mode replaces the divider: the blank row inside the title box

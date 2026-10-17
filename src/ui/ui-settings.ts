@@ -572,6 +572,13 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
   // (see the OOM note in AGENTS.md) infinite retries just amplify it.
   let retryArmed = true;
   let warnedThisBurst = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearRetryTimer = (): void => {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
   const renderMenuContent = () => {
     const c = ctx.colors();
     const panel = ctx.byId("tfm-menu-panel");
@@ -585,7 +592,8 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
       logRenderFailure(err);
       if (retryArmed) {
         retryArmed = false;
-        setTimeout(() => renderMenuContent(), 120);
+        clearRetryTimer();
+        retryTimer = setTimeout(() => renderMenuContent(), 120);
       } else if (!warnedThisBurst) {
         // retry exhausted: the panel sits empty — say so once instead of a
         // silent blank menu (neutral wording: only the debug log names OOM)
@@ -802,7 +810,7 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
     // view, whose two-pane container counts as ONE child while spanning many
     // rows (that mismatch pushed the panel off the bottom edge)
     ctx.stripSelectable();
-    void ctx.drainIconQueue();
+    void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
   };
 
   // best-effort native allocator stats (renderer.lib is private — this is
@@ -828,6 +836,8 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
     st.capturing = null;
     st.swapOffer = null;
     aboutDetail = null;
+    // a pending renderMenuContent retry would fire on the destroyed panel
+    clearRetryTimer();
     ctx.log?.("esc-menu close");
     // hovered rows have no out (their nodes are gone) — restore here or the
     // pointer sticks (same stale-until-move rule as the highlight paint)
@@ -882,9 +892,12 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
     // rescan the plugins dir on every open (the scan itself never rejects —
     // the loader isolates per plugin): added/removed plugins render once it
     // settles if the menu is still up; edited code still needs a restart
-    void ctx.reloadPlugins().then(() => {
-      if (menuOpen) renderMenuContent();
-    });
+    void ctx
+      .reloadPlugins()
+      .then(() => {
+        if (menuOpen) renderMenuContent();
+      })
+      .catch((err) => ctx.log?.(`reloadPlugins rejected: ${err}`));
     renderMenuContent();
   };
 

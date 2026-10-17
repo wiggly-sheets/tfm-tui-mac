@@ -98,6 +98,7 @@ describe("makeRename (renderer)", () => {
     pointers = [];
 
     ctx = {
+      prefix: () => "tfm-",
       renderer: () => t.renderer,
       byId: (id) => t.renderer.root.findDescendantById(id),
       colors: () => defaultTheme,

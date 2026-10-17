@@ -26,6 +26,12 @@ export type QuicklookRenderer = (target: MaybeNode, geo: QuicklookGeometry) => v
 // here at boot instead of the keymap wiring passing it down.
 let renderer: QuicklookRenderer | null = null;
 export const setQuicklookRenderer = (fn: QuicklookRenderer | null): void => {
+  // A second preview instance (test harness, hot reload) overwrites the
+  // module-level slot with no say from the first. Reject rather than silently
+  // orphan: the first instance's float would keep its overlay open while
+  // refreshQuicklook() started driving the new one, so the old overlay stops
+  // following selection changes forever.
+  if (fn && renderer) return;
   renderer = fn;
 };
 
@@ -72,6 +78,11 @@ const REFRESH_MS = 60;
 const ROW_OVERHEAD = 6;
 
 export const makeQuicklook = (ctx: QuicklookCtx): Quicklook => {
+  // Re-creation (test harness, hot reload) silently overwrites the module-
+  // level `live` slot: the second instance's refreshQuicklook() then drives the
+  // new float while any still-open overlay from the first stops following
+  // selection changes. Reject rather than orphan the previous instance.
+  if (live) return live;
   let opened = false;
 
   const panelWidth = (): number => Math.max(24, Math.min(ctx.previewWidth() + 2, ctx.termW() - 4));
@@ -142,12 +153,23 @@ export const makeQuicklook = (ctx: QuicklookCtx): Quicklook => {
   };
 
   // the scrollbox the shared render mounted inside the body (code/markdown
-  // bodies carry one; plain cards do not, and then scrolling is a no-op)
+  // bodies carry one; plain cards do not, and then scrolling is a no-op).
+  // Iterative BFS, not recursion: a plugin view could nest renderables
+  // arbitrarily deep, and the old recursive walk risked a stack overflow.
+  const SCROLLER_DEPTH_CAP = 64;
   const scroller = (node: MaybeNode): ScrollBoxRenderable | null => {
-    for (const k of (node as { getChildren?: () => unknown[] })?.getChildren?.() ?? []) {
-      if (k instanceof ScrollBoxRenderable) return k;
-      const deep = scroller(k as MaybeNode);
-      if (deep) return deep;
+    let queue: MaybeNode[] = [node];
+    let depth = 0;
+    while (queue.length && depth < SCROLLER_DEPTH_CAP) {
+      const next: MaybeNode[] = [];
+      for (const k of queue) {
+        for (const c of (k as { getChildren?: () => unknown[] })?.getChildren?.() ?? []) {
+          if (c instanceof ScrollBoxRenderable) return c;
+          next.push(c as MaybeNode);
+        }
+      }
+      queue = next;
+      depth++;
     }
     return null;
   };
