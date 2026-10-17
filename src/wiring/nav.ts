@@ -302,6 +302,10 @@ export const wireNav = (deps: {
   return {
     renderAll,
     quitApp,
+    // the raw teardown steps, for the signal path (index.ts): SIGHUP/SIGTERM/
+    // SIGINT must run the SAME sequence the interactive quit does, with the
+    // signal's own exit code instead of quit's 0/1 health code
+    quitSteps,
     restartApp,
     setStatusMsg,
     canBack,

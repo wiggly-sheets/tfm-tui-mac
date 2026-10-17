@@ -87,8 +87,9 @@ describe("index.ts smoke boot", () => {
       };
       // wait for the alternate-screen enter frame: the observable "booted"
       await poll(() => out.includes(ENTER), 30000);
-      // TERM asks OpenTUI to run destroy() (which writes `?1049l`) — bun
-      // itself ignores it, so escalate to KILL like `timeout -k` does
+      // TERM asks OpenTUI to run destroy() (which writes `?1049l`) and now also
+      // our own handler (full teardown, exit 143) — bun itself ignores the
+      // default, so escalate to KILL like `timeout -k` does
       try {
         proc.kill("SIGTERM");
       } catch {}
@@ -109,6 +110,72 @@ describe("index.ts smoke boot", () => {
       expect(err).not.toContain("[tfm] crash");
       expect(err).not.toContain("[tfm] unhandled rejection");
       expect(err).not.toContain("Failed to create");
+    },
+    BOOT_BUDGET_MS,
+  );
+
+  // Regression guard for the reported orphan: closing the terminal window sends
+  // SIGHUP, and OpenTUI's own SIGHUP listener only destroys the renderer — it
+  // never exits. Without our handler the process stayed alive here (exitCode
+  // stayed null until SIGKILL). The PTY-pane kill itself rides the shared
+  // quit teardown (closeTerminal), covered by app/quit.test.ts; this test
+  // proves the process actually leaves.
+  test(
+    "SIGHUP runs the full teardown and exits 129",
+    async () => {
+      const configPath = path.join(TMP, "config-hup.toml");
+      writeFileSync(configPath, "# smoke: defaults\n");
+      const proc = Bun.spawn(["bun", "src/index.ts", TMP], {
+        cwd: path.resolve(import.meta.dir, ".."),
+        env: {
+          ...process.env,
+          TFM_CONFIG: configPath,
+          XDG_DATA_HOME: path.join(TMP, "data"),
+          XDG_CACHE_HOME: path.join(TMP, "cache"),
+          TFM_DEBUG_LOG: path.join(TMP, "debug-hup.log"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      let out = "";
+      const decoder = new TextDecoder();
+      const drain = (async () => {
+        const reader = proc.stdout as ReadableStream<Uint8Array> | null;
+        if (!reader) return;
+        const r = reader.getReader();
+        try {
+          for (;;) {
+            const { done, value } = await r.read();
+            if (done) break;
+            out += decoder.decode(value, { stream: true });
+          }
+        } catch {
+          // teardown races the exit; a read throw just ends the drain
+        }
+      })();
+
+      const deadline = (ms: number) => Date.now() + ms;
+      const ENT = deadline(30000);
+      while (!out.includes("\x1b[?1049h") && proc.exitCode === null && Date.now() < ENT) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(out).toContain("\x1b[?1049h");
+
+      try {
+        proc.kill("SIGHUP");
+      } catch {}
+      const HUP = deadline(15000);
+      while (proc.exitCode === null && Date.now() < HUP) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // null = the orphan: the process ignored SIGHUP and is still running
+      expect(proc.exitCode).toBe(129);
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
+      await proc.exited;
+      await drain;
+      expect(out).toContain("\x1b[?1049l");
     },
     BOOT_BUDGET_MS,
   );

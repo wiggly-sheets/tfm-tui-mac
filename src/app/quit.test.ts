@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { makeQuit, resolveExitCwd, type QuitCtx } from "./quit";
+import { makeQuit, makeSignalShutdown, resolveExitCwd, type QuitCtx } from "./quit";
 
 const mkCtx = (
   calls: string[],
@@ -57,6 +57,73 @@ describe("resolveExitCwd", () => {
 
   test("a virtual place (recent://) is not cd-able — falls back to the launch dir", () => {
     expect(resolveExitCwd("active-pane", "recent://", "/launched", true)).toBe("/launched");
+  });
+});
+
+describe("makeSignalShutdown", () => {
+  // the handler finishes on a later microtask (beforeExit is awaited), so wait
+  // for the exit call itself instead of sleeping a fixed time
+  const settle = async (calls: string[], budgetMs = 1000): Promise<void> => {
+    const start = Date.now();
+    while (!calls.some((c) => c.startsWith("exit:")) && Date.now() - start < budgetMs) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+  };
+  const QUIT_SEQUENCE = ["drops", "release", "session", "terminal", "gpm", "chrome", "onQuit", "destroy"];
+
+  test("runs the SAME teardown as quit (incl. closeTerminal + renderer destroy), then exits 129 for SIGHUP", async () => {
+    const calls: string[] = [];
+    const ctx = mkCtx(calls);
+    makeSignalShutdown(ctx)("SIGHUP");
+    await settle(calls);
+    expect(calls).toEqual([...QUIT_SEQUENCE, "exit:129"]);
+  });
+
+  test("exit code is 128+signal: SIGHUP 129, SIGINT 130, SIGTERM 143", async () => {
+    for (const [signal, code] of [
+      ["SIGHUP", 129],
+      ["SIGINT", 130],
+      ["SIGTERM", 143],
+    ] as const) {
+      const calls: string[] = [];
+      const ctx = mkCtx(calls);
+      makeSignalShutdown(ctx)(signal);
+      await settle(calls);
+      expect(ctx.codes).toEqual([code]);
+    }
+  });
+
+  test("a signal storm (SIGHUP+SIGTERM+SIGINT, OpenTUI's own handler too) tears down exactly once", async () => {
+    const calls: string[] = [];
+    const ctx = mkCtx(calls);
+    const onSignal = makeSignalShutdown(ctx);
+    onSignal("SIGHUP");
+    onSignal("SIGTERM");
+    onSignal("SIGINT");
+    await settle(calls);
+    expect(calls).toEqual([...QUIT_SEQUENCE, "exit:129"]);
+    expect(ctx.codes).toEqual([129]);
+  });
+
+  test("beforeExit (config save, xattr drain) is awaited after teardown and before destroy", async () => {
+    const calls: string[] = [];
+    const ctx = mkCtx(calls);
+    makeSignalShutdown(ctx, async () => {
+      await new Promise((r) => setTimeout(r, 1));
+      calls.push("beforeExit");
+    })("SIGTERM");
+    await settle(calls);
+    expect(calls.indexOf("beforeExit")).toBeGreaterThan(calls.indexOf("terminal"));
+    expect(calls.indexOf("beforeExit")).toBeLessThan(calls.indexOf("destroy"));
+    expect(ctx.codes).toEqual([143]);
+  });
+
+  test("a busy file op does not veto the signal path (unlike quit)", async () => {
+    const calls: string[] = [];
+    const ctx = mkCtx(calls);
+    makeSignalShutdown({ ...ctx, isBusy: () => true, onBusy: () => calls.push("busy") })("SIGINT");
+    await settle(calls);
+    expect(calls).toEqual([...QUIT_SEQUENCE, "exit:130"]);
   });
 });
 

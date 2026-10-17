@@ -110,3 +110,44 @@ export const runTeardownSteps = (ctx: QuitCtx): boolean => {
   }
   return failed;
 };
+
+// --- Signal shutdown (SIGHUP/SIGTERM/SIGINT). Closing the terminal window
+// sends SIGHUP to the foreground process group, and OpenTUI's own exit handler
+// only runs renderer.destroy() — it never exits, and a registered listener
+// suppresses the OS default terminate action, so the tfm process outlived the
+// window while its PTY shell child (killed only by closeTerminal) stayed
+// orphaned. Fix: the signal path runs the SAME runTeardownSteps + destroy
+// sequence as quit — a second, divergent teardown is how the shell survived. ---
+
+// Conventional 128+signal codes: SIGHUP 129, SIGINT 130, SIGTERM 143 — what
+// shells and scripts already expect from a signal-killed process.
+const SIGNAL_EXIT_CODES: Record<string, number> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+
+export const makeSignalShutdown = (ctx: QuitCtx, beforeExit?: () => Promise<void>): ((signal: string) => void) => {
+  // teardown runs ONCE: the signals can arrive in any combination and
+  // OpenTUI's exitHandler fires on the same events (its destroy is
+  // idempotent, ours must be too)
+  let shuttingDown = false;
+  return (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void (async () => {
+      // the PTY dies FIRST: teardown is synchronous, so the async work that
+      // must land before process.exit (config save, xattr drain) waits behind
+      // it and cannot delay closeTerminal past the bounded cap
+      try {
+        runTeardownSteps(ctx);
+      } catch {}
+      try {
+        await beforeExit?.();
+      } catch {}
+      try {
+        ctx.destroy();
+      } catch {}
+      // the signal code wins over quit's 0/1 health code — a signal-killed
+      // process reports the signal. No isBusy refusal either: file ops cannot
+      // veto a window that is already gone.
+      ctx.exit(SIGNAL_EXIT_CODES[signal] ?? 1);
+    })();
+  };
+};

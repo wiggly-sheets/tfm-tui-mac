@@ -168,19 +168,17 @@ const chrome = await wireChrome({
   resizePress: (x) => mouseResize?.edgePress("sidebar", x) ?? false,
 });
 
-// graceful shutdown on SIGTERM/SIGINT (e.g. terminal close, system shutdown)
+// graceful shutdown on SIGHUP/SIGTERM/SIGINT (terminal-window close sends
+// SIGHUP; SIGTERM is system shutdown, SIGINT ctrl+c). Routed through the SAME
+// teardown as the interactive quit: the old signal path exited without
+// closeTerminal, so the embedded PTY shell outlived the window (and OpenTUI's
+// own exit handler never exits at all — see app/quit.makeSignalShutdown).
 const { saveConfig } = await import("./config/config");
 const { awaitXattrQueue } = await import("./fs/fsutil");
-const shutdown = async (signal: string) => {
-  if (isDebug) appendLog(`shutdown: ${signal}`);
+const { makeSignalShutdown } = await import("./app/quit");
+const signalShutdown = makeSignalShutdown(nav.quitSteps, async () => {
   try {
     await saveConfig(core.config);
-  } catch {}
-  try {
-    chrome.stopChromeTimers?.();
-  } catch {}
-  try {
-    chrome.stopGpm?.();
   } catch {}
   try {
     // bounded drain: a copy that just landed still has resource-fork/tag/
@@ -188,10 +186,14 @@ const shutdown = async (signal: string) => {
     // drop them. A stuck xattr spawn must not block quit, so cap the wait.
     await Promise.race([awaitXattrQueue(), new Promise((r) => setTimeout(r, 2000))]);
   } catch {}
-  process.exit(signal === "SIGTERM" ? 143 : 130);
+});
+const shutdown = (signal: string): void => {
+  if (isDebug) appendLog(`shutdown: ${signal}`);
+  signalShutdown(signal);
 };
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
-process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGHUP", () => shutdown("SIGHUP"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // --- grid foundation: selection + inline rename (before fileops — its ctx
 // takes refreshCutVisuals directly) ---
