@@ -54,7 +54,7 @@ export type NavWiring = {
   prevTab: () => void;
   searches: Map<string, ReturnType<typeof makeSearch>>;
   activeSearch: () => ReturnType<typeof makeSearch>;
-} & Pick<ReturnType<typeof makeNav>, "canBack" | "canFwd" | "goBack" | "goFwd" | "navigate"> &
+} & Pick<ReturnType<typeof makeNav>, "canBack" | "canFwd" | "goBack" | "goFwd" | "navigate" | "clearStatCache"> &
   Pick<ReturnType<typeof makeTabs>, "switchTab" | "newTab" | "closeTab"> &
   Pick<ReturnType<typeof makeSessionSync>, "restoreSession"> &
   Pick<ReturnType<typeof makeSearch>, "clearSearch" | "beginTypeToSearch" | "wireSearchInput">;

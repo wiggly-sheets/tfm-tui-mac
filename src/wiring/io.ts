@@ -33,10 +33,11 @@ import type { ChromeWiring, FileopsWiring, GridFoundationWiring, GridWiring, Nav
 // cwd/renaming/renderGrid getters (TDZ seam rule). ---
 export const wireWatcher = (deps: {
   core: CoreWiring;
+  getNav: () => NavWiring;
   getGridFoundation: () => GridFoundationWiring;
   getGrid: () => GridWiring;
 }) => {
-  const { core, getGridFoundation, getGrid } = deps;
+  const { core, getNav, getGridFoundation, getGrid } = deps;
   // one watcher per leaf; a closed pane's watcher is torn down (no inotify
   // handle leaks on splits/closes)
   const makeFor = (id: PaneId) =>
@@ -55,6 +56,9 @@ export const wireWatcher = (deps: {
       // to /tmp/tfm-dnd.log — when that IS the cwd, each click would otherwise
       // full-rebuild the grid 200ms later (visible flash after every select)
       ignorePaths: () => [DND_LOG, DEBUG_LOG],
+      // nav caches statSync by path to avoid SMB stalls; invalidate on every
+      // raw fs event so an external change is never served stale
+      clearStatCache: () => getNav().clearStatCache(),
     });
   const watchers = makeLeafRegistry(core.panes, makeFor, (w) => w.close());
   const syncCwdWatcher = (): void => {

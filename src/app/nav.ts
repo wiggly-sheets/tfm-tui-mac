@@ -18,6 +18,16 @@ import { debounced } from "../lib/uiutil";
 import { readRestoredSession, saveSession, type PaneTabs } from "../fs/session";
 import { debugLog } from "./log";
 
+// Per-path kind cache. navigate() calls isFile() to decide whether an entry
+// is an archive that opens as a folder; on a network/SMB mount that statSync
+// can stall the UI for hundreds of ms. Caching by path turns the common case
+// (same folder navigated repeatedly, back/forth through history) into a map
+// lookup with zero fs calls. The cache is invalidated by the cwd watcher on
+// every fs event (see wiring/io.ts), so it can only ever be stale for the
+// instant between an external change and the watcher's next tick — and only
+// for archive detection, which re-validates on the next nav anyway.
+const statKindCache = new Map<string, boolean>();
+
 export type AppState = {
   cwd: string;
   history: string[];
@@ -72,23 +82,28 @@ type NavHooks = {
 };
 
 export const makeNav = (state: AppState, hooks: NavHooks) => {
-  // a regular FILE (an archive) — a dangling/unreadable one never enters
-  // TRADEOFF (accepted as-is): this is a synchronous statSync, so a network /
-  // SMB mount can stall the UI for hundreds of ms per navigation. Making it
-  // async (fs/promises) would require `navigate` to become async, which
-  // ripples through the whole wiring surface — every caller (keymap, grid-input,
-  // chrome, toolbar, menu-entries, goto, plugins) declares `navigate(dir):
-  // void`, and several rely on the history push + renderAll happening in the
-  // same synchronous turn (sync-browsing's driven pane navigates into a folder
-  // the driver just recorded). A microtask-deferred push would reorder those.
-  // The single sync fs call per nav is acceptable on local disks; the SMB
-  // stall is a known limitation until the contract is async end-to-end.
+  const clearStatCache = () => statKindCache.clear();
+  // a regular FILE (an archive) — a dangling/unreadable one never enters.
+  // Cached by path (see statKindCache above): the common case is a map
+  // lookup with zero fs calls, so a network/SMB mount no longer stalls per
+  // nav. Making this async instead would require `navigate` to become async,
+  // which ripples through the whole wiring surface — every caller (keymap,
+  // grid-input, chrome, toolbar, menu-entries, goto, plugins) declares
+  // `navigate(dir): void`, and several rely on the history push + renderAll
+  // happening in the same synchronous turn (sync-browsing's driven pane
+  // navigates into a folder the driver just recorded). The cache avoids that
+  // tradeoff entirely; the watcher clears it on every fs event.
   const isFile = (p: string): boolean => {
+    const cached = statKindCache.get(p);
+    if (cached !== undefined) return cached;
+    let isFile: boolean;
     try {
-      return statSync(p).isFile();
+      isFile = statSync(p).isFile();
     } catch {
-      return false;
+      isFile = false;
     }
+    statKindCache.set(p, isFile);
+    return isFile;
   };
   const canBack = () => state.histIdx > 0;
   const canFwd = () => state.histIdx < state.history.length - 1;
@@ -154,7 +169,7 @@ export const makeNav = (state: AppState, hooks: NavHooks) => {
     hooks.onSyncFollow?.(target);
   };
 
-  return { canBack, canFwd, goBack, goFwd, navigate };
+  return { canBack, canFwd, goBack, goFwd, navigate, clearStatCache };
 };
 
 // --- Session save/restore scheduling: each pane's tab list is written after

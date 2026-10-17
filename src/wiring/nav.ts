@@ -237,6 +237,9 @@ export const wireNav = (deps: {
   const goBack = () => activeNav().goBack();
   const goFwd = () => activeNav().goFwd();
   const navigate = (dir: string) => activeNav().navigate(dir);
+  // the per-path stat cache lives in makeNav's closure; the watcher invalidates
+  // it through the active pane's nav instance (same live-facade rule as navigate)
+  const clearStatCache = () => activeNav().clearStatCache();
 
   // --- Tabs: ONE model per pane — each pane is a browser-like tab list. The
   // focused pane's model backs the tab keybinds/menu; both get painted. Model
@@ -314,6 +317,7 @@ export const wireNav = (deps: {
 
   return {
     renderAll,
+    clearStatCache,
     quitApp,
     // the raw teardown steps, for the signal path (index.ts): SIGHUP/SIGTERM/
     // SIGINT must run the SAME sequence the interactive quit does, with the

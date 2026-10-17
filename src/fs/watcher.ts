@@ -35,6 +35,10 @@ type CwdWatcherCtx = {
   ) => { on(ev: string, cb: (e: unknown) => void): unknown; close(): void };
   // injectable clock for the coalesce debounce (tests use a virtual one)
   sched?: Scheduler;
+  // called on every raw fs event, before the debounce coalesces. nav.ts caches
+  // statSync results by path to avoid SMB stalls; this invalidates that cache
+  // so an external change is never served from stale data.
+  clearStatCache?: () => void;
   // errors are surfaced (default silent for backwards compat), never swallowed
   log?: (msg: string) => void;
   // platform override (tests pin "linux"); the recursive watch capability
@@ -166,6 +170,7 @@ export const makeCwdWatcher = (ctx: CwdWatcherCtx) => {
 
   const onFsEvent = (filename?: string | null): void => {
     if (isIgnoredEvent(filename)) return;
+    ctx.clearStatCache?.();
     onCwdChanged();
   };
 

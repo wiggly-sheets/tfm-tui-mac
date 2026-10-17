@@ -296,6 +296,7 @@ const settings = wireSettings({
 // and the retheme wiring, exactly like the old flat wiring ---
 const watcher = wireWatcher({
   core,
+  getNav: () => nav,
   getGridFoundation: () => gridFoundation,
   getGrid: () => grid,
 });
