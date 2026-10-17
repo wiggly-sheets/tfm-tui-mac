@@ -170,10 +170,7 @@ export const trashFilesSubdir = (root: string, platform: string = process.platfo
 // prompt. -1 when the trash is unreadable (prompt omits the count then).
 // Async on darwin because the mount probe must never block the TUI (a hung
 // network mount could freeze the event loop for up to 10 seconds with execSync).
-export const countTrashItems = async (
-  mountsText?: string,
-  platform: string = process.platform,
-): Promise<number> => {
+export const countTrashItems = async (mountsText?: string, platform: string = process.platform): Promise<number> => {
   let home: string[];
   try {
     home = readdirSync(trashFilesDir(platform));
