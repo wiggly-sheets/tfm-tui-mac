@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User manual
+    url: https://github.com/wiggly-sheets/tfm-tui-mac/blob/main/docs/user-manual.md
+    about: Keys, config keys, panes, preview and settings.
+  - name: Plugin docs
+    url: https://github.com/wiggly-sheets/tfm-tui-mac/blob/main/docs/plugins.md
+    about: Writing, installing and debugging plugins.

@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a behavior or a config key tfm does not have yet.
+title: "[feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what makes it awkward today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What tfm should do. Mention a new config key or keybinding if you have one in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other approaches you considered, including keybindings or config that already come close, and why they are not enough.
+    validations:
+      required: false

@@ -1,0 +1,42 @@
+name: Pages
+
+# Serves /docs as the project site (README.md says "GitHub Pages serves this
+# /docs folder from the `dev` branch"). Deploys on every push to `dev`, on
+# tag pushes (so a release ships the matching docs/plugins.json), on manual
+# dispatch, and on schedule to keep it from going stale.
+on:
+  push:
+    branches: [dev]
+    tags: ["v*"]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly, Monday 06:00 UTC
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # do not cancel: a half-finished deploy leaves the site broken
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write   # OIDC token for actions/deploy-pages, no PAT needed
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # skip the heavy CI matrix on docs-only or unrelated changes
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v')
+    environment: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+        with:
+          publish_dir: docs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - uses: actions/deploy-pages@v4

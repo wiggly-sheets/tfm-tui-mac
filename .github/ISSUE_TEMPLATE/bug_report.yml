@@ -1,0 +1,82 @@
+name: Bug report
+description: Something in tfm is broken, wrong or crashes.
+title: "[bug] "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: tfm version
+      description: Output of `tfm --version`.
+      placeholder: tfm 1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - install.sh (released binary)
+        - package manager
+        - built from source
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: macOS 15 arm64, or Ubuntu 24.04 x86_64
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: Terminal emulator, and the image protocol when the bug is about icons, images or video thumbnails (kitty graphics / sixel / Nerd Font glyph / ASCII console).
+      placeholder: kitty 0.4x with kitty graphics
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Config
+      description: |
+        Keys you changed in config.toml, relative to config.example.toml
+        (`[ui]` / `[keys]` / `[theme]`). Paste only the changed lines and
+        redact anything sensitive first — paths, host names, server
+        addresses and bookmarks are easy to leak by accident.
+      placeholder: |
+        [ui]
+        preview-width = 60
+      render: toml
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open tfm in ...
+        2. Press ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the shortest decisive line of any error. Terminal output or a screenshot helps.
+    validations:
+      required: true
