@@ -50,6 +50,27 @@ describe("surface builders", () => {
     expect(tileSurface("solid", theme, "rest")).toEqual({ backgroundColor: "#1a1b26" });
   });
 
+  test("tileSurface: inactive is a dim lift of bg, never near-black", () => {
+    // dark bg (#1a1b26, luminance 27): the lift goes UP (toward white), so the
+    // inactive tile visibly separates from the canvas without reading as a hole.
+    expect(tileSurface("solid", theme, "inactive")).toEqual({ backgroundColor: "#2a2b35" });
+    // light bg: the lift goes DOWN (toward black), again strictly between bg
+    // and black, never equal to bg
+    const lightTheme = { ...theme, bg: "#f2f4f8" } as unknown as Theme;
+    expect(tileSurface("solid", lightTheme, "inactive")).toEqual({ backgroundColor: "#e1e3e7" });
+  });
+
+  test("tileSurface: inactive clears under transparent-bg force and outline variants", () => {
+    expect(tileSurface("solid", theme, "inactive", "force")).toEqual({});
+    expect(tileSurface("outline", theme, "inactive")).toEqual({});
+    expect(tileSurface("outline-partial", theme, "inactive")).toEqual({});
+  });
+
+  test("rowSurface: inactive is a dim lift of sidebarBg", () => {
+    expect(rowSurface("solid", theme, "inactive")).toEqual({ backgroundColor: "#26262e" });
+    expect(rowSurface("outline", theme, "inactive")).toEqual({});
+  });
+
   test("rowSurface: outline rest loses the fill only", () => {
     expect(rowSurface("outline", theme, "rest")).toEqual({});
     expect(rowSurface("outline", theme, "selected")).toEqual({ backgroundColor: "#29a37a" });

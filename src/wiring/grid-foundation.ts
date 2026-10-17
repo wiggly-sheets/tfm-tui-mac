@@ -38,6 +38,7 @@ export const wireGridFoundation = (deps: {
       renderInfo: () => getGrid().renderInfo(),
       onSelection: (paths) => sharedPluginEvents().emit("selection", { paths }),
       isActive: () => core.panes.activeId === id,
+      dimInactivePanes: () => core.config.ui.dimInactivePanes,
     });
 
   // one independent selection per leaf; `selection` is a stable facade over the

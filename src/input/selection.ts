@@ -49,6 +49,7 @@ export type SelectionCtx = {
   // bar or emit plugin selection events (the active pane owns those). Absent =
   // always active (single-pane callers / tests).
   isActive?: () => boolean;
+  dimInactivePanes?: () => boolean;
 };
 
 export type Selection = ReturnType<typeof makeSelection>;
@@ -95,8 +96,11 @@ export const makeSelection = (ctx: SelectionCtx) => {
     }
     const tileReal = ctx.byId(refs.tileId);
     if (tileReal) {
-      const state =
+      let state: "selected" | "hover" | "cut" | "rest" | "inactive" =
         mode === TileVisual.Selected ? "selected" : mode === TileVisual.Hover ? "hover" : cut ? "cut" : "rest";
+      if (state === "rest" && ctx.isActive && !ctx.isActive() && ctx.dimInactivePanes?.()) {
+        state = "inactive";
+      }
       applySurface(
         tileReal,
         tileSurface(ctx.uiStyle(), ctx.colors(), state, ctx.transparentForce?.() ? "force" : undefined),

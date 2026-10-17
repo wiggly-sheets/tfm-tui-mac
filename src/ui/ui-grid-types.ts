@@ -159,6 +159,9 @@ export type GridRendererCtx = {
   // misc hooks
   waitForResolution(): Promise<void>;
   clearRenameEdit(): void;
+  // pane active flag for dimming inactive panes
+  isActive?(): boolean;
+  dimInactivePanes?(): boolean;
   // archive browsing (folder view + entering an archive tile). Absent = feature
   // off: a test fake keeps the plain listing, and archives open as files.
   archive?: ArchiveBrowseCtx;

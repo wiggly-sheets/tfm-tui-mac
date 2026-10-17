@@ -251,6 +251,7 @@ export type UiConfig = {
   terminalHeight: number;
   dualPane: boolean;
   vim: boolean;
+  dimInactivePanes: boolean;
   syncBrowsing: boolean;
   sidebarAutoHide: boolean;
   sidebarCollapseStyle: string;
@@ -845,6 +846,19 @@ const UI_ROWS: SchemaRow[] = [
     doc: "true = h/j/k/l move the file cursor between panes instead of the grid cursor (the arrow keys keep their moveUp/Down/Left/Right jobs; the vim binds are separate focusPaneLeft/Right/Up/Down actions)",
     label: "vim navigation",
     blurb: "Use vim-style keys to move between panes",
+    group: "layout",
+    subsection: "panes",
+    showWhen: () => true,
+  },
+  {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "dim-inactive-panes",
+    prop: "dimInactivePanes",
+    def: false,
+    doc: "true = tint tiles in non-focused panes so the active pane stands out",
+    label: "dim inactive panes",
+    blurb: "Tint tiles in non-focused panes",
     group: "layout",
     subsection: "panes",
     showWhen: () => true,

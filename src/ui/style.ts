@@ -15,6 +15,7 @@
 //     TextareaRenderable and has no border support)
 import type { IconMode, Theme, TransparentBgMode, UiStyle } from "../config/config-schema";
 import type { MaybeNode } from "../lib/node-like";
+import { shadeHex } from "../config/color";
 
 export type { UiStyle };
 
@@ -42,7 +43,7 @@ export const sideInnerWidth = (style: UiStyle, sw: number): number => (isOutline
 // cells to the panel border rings, so they get a wider budget
 export const sidePadDelta = (style: UiStyle): number => (isOutlineVariant(style) ? 6 : 3);
 
-type SurfaceState = "rest" | "hover" | "selected" | "cut";
+type SurfaceState = "rest" | "hover" | "selected" | "cut" | "inactive";
 
 type SurfaceOpts = {
   backgroundColor?: string;
@@ -75,20 +76,36 @@ export const floatSurface = (style: UiStyle, c: Theme, bg: string): SurfaceOpts 
 // grid tiles: rest goes bare in outline variants, interaction states keep fills
 // grid tiles: rest (+cut, which paints the same fill) goes bare in outline
 // variants AND under transparent-bg force; interaction states keep fills
+const luminance = (hex: string): number => {
+  const n = Number.parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 0xff;
+  const g = (n >> 8) & 0xff;
+  const b = n & 0xff;
+  return (r * 299 + g * 587 + b * 114) / 1000;
+};
+
 export const tileSurface = (
   style: UiStyle,
   c: Theme,
   state: SurfaceState,
   transparentBg?: TransparentBgMode,
 ): SurfaceOpts => {
-  if (transparentBg === "force" && (state === "rest" || state === "cut")) return {};
-  if (isOutlineVariant(style) && state === "rest") return {};
-  return {
-    rest: { backgroundColor: c.bg },
-    hover: { backgroundColor: c.hoverBg },
-    selected: { backgroundColor: c.accentBg },
-    cut: { backgroundColor: c.bg },
-  }[state];
+  if (transparentBg === "force" && (state === "rest" || state === "cut" || state === "inactive")) return {};
+  if (isOutlineVariant(style) && (state === "rest" || state === "inactive")) return {};
+  const up = luminance(c.bg) > 128 ? -1 : 1;
+  const dimBg = shadeHex(c.bg, up * 0.07);
+  switch (state) {
+    case "rest":
+      return { backgroundColor: c.bg };
+    case "inactive":
+      return { backgroundColor: dimBg };
+    case "hover":
+      return { backgroundColor: c.hoverBg };
+    case "selected":
+      return { backgroundColor: c.accentBg };
+    case "cut":
+      return { backgroundColor: c.bg };
+  }
 };
 
 // one-row list rows (places sidebar): can never carry a border, so only the
@@ -99,14 +116,22 @@ export const rowSurface = (
   state: SurfaceState,
   transparentBg?: TransparentBgMode,
 ): SurfaceOpts => {
-  if (transparentBg === "force" && (state === "rest" || state === "cut")) return {};
-  if (isOutlineVariant(style) && state === "rest") return {};
-  return {
-    rest: { backgroundColor: c.sidebarBg },
-    hover: { backgroundColor: c.hoverBg },
-    selected: { backgroundColor: c.accentBg },
-    cut: { backgroundColor: c.sidebarBg },
-  }[state];
+  if (transparentBg === "force" && (state === "rest" || state === "cut" || state === "inactive")) return {};
+  if (isOutlineVariant(style) && (state === "rest" || state === "inactive")) return {};
+  const up = luminance(c.sidebarBg) > 128 ? -1 : 1;
+  const dimBg = shadeHex(c.sidebarBg, up * 0.07);
+  switch (state) {
+    case "rest":
+      return { backgroundColor: c.sidebarBg };
+    case "inactive":
+      return { backgroundColor: dimBg };
+    case "hover":
+      return { backgroundColor: c.hoverBg };
+    case "selected":
+      return { backgroundColor: c.accentBg };
+    case "cut":
+      return { backgroundColor: c.sidebarBg };
+  }
 };
 
 // 1-row buttons / crumbs. restBg = the fill that matches the surrounding

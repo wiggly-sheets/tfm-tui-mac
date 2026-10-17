@@ -295,6 +295,42 @@ describe("setTileVisual", () => {
     h.sel.setTileVisual("a", TileVisual.Selected);
     expect(h.nodes.get("tile:a").backgroundColor).toBe(COLORS.accentBg);
   });
+
+  test("inactive pane dim: rest paints a dim lift of bg, user states keep their own fills", () => {
+    const h = makeHarness();
+    // a dark bg — the lift goes UP (toward white), never near-black
+    (h.ctx as SelectionCtx).colors = () => ({ ...COLORS, bg: "#1a1b26" });
+    (h.ctx as SelectionCtx).isActive = () => false;
+    (h.ctx as SelectionCtx).dimInactivePanes = () => true;
+    h.addTile("a");
+    h.sel.setTileVisual("a", TileVisual.Rest);
+    expect(h.nodes.get("tile:a").backgroundColor).toBe("#2a2b35");
+    // hover/selected/cut read regardless of pane focus
+    h.sel.setTileVisual("a", TileVisual.Hover);
+    expect(h.nodes.get("tile:a").backgroundColor).toBe(COLORS.hoverBg);
+    h.sel.setTileVisual("a", TileVisual.Selected);
+    expect(h.nodes.get("tile:a").backgroundColor).toBe(COLORS.accentBg);
+    h.sel.setTileVisual("a", TileVisual.Rest);
+    expect(h.nodes.get("tile:a").backgroundColor).toBe("#2a2b35");
+  });
+
+  test("inactive dim is off when the feature is absent or the pane is active", () => {
+    const h = makeHarness();
+    (h.ctx as SelectionCtx).colors = () => ({ ...COLORS, bg: "#1a1b26" });
+    (h.ctx as SelectionCtx).isActive = () => false;
+    h.addTile("a");
+    h.sel.setTileVisual("a", TileVisual.Rest);
+    // dim feature NOT wired: inactive pane still rests on bg
+    expect(h.nodes.get("tile:a").backgroundColor).toBe("#1a1b26");
+    // dim on: inactive pane dims
+    (h.ctx as SelectionCtx).dimInactivePanes = () => true;
+    h.sel.setTileVisual("a", TileVisual.Rest);
+    expect(h.nodes.get("tile:a").backgroundColor).toBe("#2a2b35");
+    // active pane: rest stays bare (the configured bg, not the dim lift)
+    (h.ctx as SelectionCtx).isActive = () => true;
+    h.sel.setTileVisual("a", TileVisual.Rest);
+    expect(h.nodes.get("tile:a").backgroundColor).toBe("#1a1b26");
+  });
 });
 
 describe("refreshCutVisuals", () => {
