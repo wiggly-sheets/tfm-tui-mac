@@ -22,10 +22,22 @@ export const openerBin = (platform: string = process.platform): string => (isDar
 // AppleScript string literal (double-quoted; backslash + quote escaped)
 export const applescriptString = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
-// osascript fallback when `open` itself fails (essentially never — last resort)
+// osascript fallback when `open` itself fails (essentially never — last resort).
+// The path is passed as a script PARAMETER (osascript's `on run {f} … end run`
+// + `--`), never interpolated into the AppleScript source. Interpolation would
+// require escaping every AppleScript metacharacter; a filename containing
+// `"; tell application "System Events" to shut down; "` would break out of
+// POSIX file "…" and inject arbitrary AppleScript. argv-passed strings are
+// AppleScript-safe by construction.
 export const finderOpenArgs = (target: string): string[] => [
   "-e",
-  `tell application "Finder" to open POSIX file ${applescriptString(target)}`,
+  "on run {f}",
+  "-e",
+  'tell application "Finder" to open POSIX file f',
+  "-e",
+  "end run",
+  "--",
+  target,
 ];
 
 // --- trash: /usr/bin/trash first (ships macOS 26+, renames collisions itself
@@ -43,7 +55,13 @@ export const jxaTrashArgs = (p: string): string[] => [
 
 export const finderDeleteArgs = (p: string): string[] => [
   "-e",
-  `tell application "Finder" to delete POSIX file ${applescriptString(p)}`,
+  "on run {f}",
+  "-e",
+  'tell application "Finder" to delete POSIX file f',
+  "-e",
+  "end run",
+  "--",
+  p,
 ];
 
 // trash CLI collision rename is "<base> HH-MM-SS.txt" (probed): find the
@@ -426,7 +444,7 @@ const hfsToPosix = (hfs: string): string => {
 // one pbpaste -Prefer stdout → absolute paths. Splits on any whitespace so
 // space-joined file:// URLs (single-line multi paste) still yield every
 // entry; plain /paths pass through for text publishes.
-export const parseDarwinFileUrls = (out: string, fileUriToPath: (u: string) => string): CopiedFiles | null => {
+export const parseDarwinFileUrls = (out: string, fileUriToPath: (u: string) => string | null): CopiedFiles | null => {
   const paths: string[] = [];
   for (const tok of out.split(/\s+/)) {
     const t = tok.trim().replace(/^"|"$/g, "");
@@ -434,7 +452,7 @@ export const parseDarwinFileUrls = (out: string, fileUriToPath: (u: string) => s
     if (t.startsWith("file://")) {
       try {
         const p = fileUriToPath(t);
-        if (p.startsWith("/")) paths.push(p);
+        if (p?.startsWith("/")) paths.push(p);
       } catch {}
     } else if (t.startsWith("/")) {
       paths.push(t);
@@ -445,6 +463,8 @@ export const parseDarwinFileUrls = (out: string, fileUriToPath: (u: string) => s
 
 // --- Trash restore (darwin): Finder Put Back via osascript for files
 // trashed outside tfm (no .trashinfo sidecar). Returns true when handled.
+// Same argv-passed-path pattern as finderDeleteArgs: the path is a script
+// parameter, never interpolated into the AppleScript source.
 export const darwinTrashPutBack = async (paths: string[]): Promise<boolean> => {
   if (!isDarwin()) return false;
   for (const p of paths) {
@@ -453,7 +473,13 @@ export const darwinTrashPutBack = async (paths: string[]): Promise<boolean> => {
         [
           "/usr/bin/osascript",
           "-e",
-          `tell application "Finder" to move POSIX file ${applescriptString(p)} to original location`,
+          "on run {f}",
+          "-e",
+          'tell application "Finder" to move POSIX file f to original location',
+          "-e",
+          "end run",
+          "--",
+          p,
         ],
         {
           stdout: "ignore",

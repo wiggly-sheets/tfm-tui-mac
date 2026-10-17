@@ -83,7 +83,10 @@ export const parseCopiedFiles = (text: string): CopiedFiles | null => {
   if (!lines.length) return null;
   const op: "copy" | "move" = lines[0] === "cut" ? "move" : "copy";
   const body = lines[0] === "copy" || lines[0] === "cut" ? lines.slice(1) : lines;
-  const paths = body.filter((l) => l.startsWith("file://")).map(fileUriToPath);
+  const paths = body
+    .filter((l) => l.startsWith("file://"))
+    .map((l) => fileUriToPath(l))
+    .filter((p): p is string => p !== null);
   if (!paths.length) return null;
   return { op, paths };
 };

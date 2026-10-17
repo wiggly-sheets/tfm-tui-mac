@@ -472,7 +472,7 @@ describe("remote drops", () => {
     expect(new Set(kids).size).toBe(2);
   });
 
-  test("symlink entry (X=1) stages a symlink with the remote target", async () => {
+  test("symlink entry (X=1) stages a symlink with a relative remote target", async () => {
     const { ctx, feed, tx } = baseCtx();
     let wasLink = false;
     let target = "";
@@ -488,11 +488,41 @@ describe("remote drops", () => {
     feed("t=r:x=1:X=1", b64("file:///remote/link"));
     feed("t=r:x=1");
     await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:x=1:y=1\x1b\\"));
-    feed("t=r:x=1:y=1:X=1", b64("/remote/real-target"));
+    feed("t=r:x=1:y=1:X=1", b64("real-target")); // relative target, inside staging
     feed("t=r:x=1:y=1");
     await settleUntil(() => ctx.runTransfers.length > 0);
     expect(wasLink).toBe(true);
-    expect(target).toBe("/remote/real-target");
+    expect(target).toBe("real-target");
+  });
+
+  test("symlink with an absolute target is rejected (no staged link escapes)", async () => {
+    const { ctx, feed, notes, tx } = baseCtx();
+    makeDnd72(ctx);
+    feed("t=m", "text/uri-list");
+    feed("t=M:x=1", "text/uri-list");
+    feed("t=r:x=1:X=1", b64("file:///remote/link"));
+    feed("t=r:x=1");
+    await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:x=1:y=1\x1b\\"));
+    feed("t=r:x=1:y=1:X=1", b64("/etc/shadow")); // absolute target → escape attempt
+    feed("t=r:x=1:y=1");
+    await settleUntil(() => notes.length > 0);
+    expect(ctx.runTransfers).toEqual([]);
+    expect(tx.some((s) => s === "\x1b]72;t=r:o=0\x1b\\")).toBe(true);
+  });
+
+  test("symlink with a ../ target is rejected", async () => {
+    const { ctx, feed, notes, tx } = baseCtx();
+    makeDnd72(ctx);
+    feed("t=m", "text/uri-list");
+    feed("t=M:x=1", "text/uri-list");
+    feed("t=r:x=1:X=1", b64("file:///remote/link"));
+    feed("t=r:x=1");
+    await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:x=1:y=1\x1b\\"));
+    feed("t=r:x=1:y=1:X=1", b64("../outside")); // traversal target
+    feed("t=r:x=1:y=1");
+    await settleUntil(() => notes.length > 0);
+    expect(ctx.runTransfers).toEqual([]);
+    expect(tx.some((s) => s === "\x1b]72;t=r:o=0\x1b\\")).toBe(true);
   });
 
   test("dir entry recurses children then releases the handle", async () => {
@@ -644,17 +674,43 @@ describe("remote drops", () => {
     gridDrag.keys = null;
   });
 
-  test("dotdot top-level entry aborts before any subidx request", async () => {
-    const { ctx, feed, notes, tx } = baseCtx();
+  test("dotdot top-level entry is skipped, not aborted", async () => {
+    // file:///.. decodes to a traversal — fileUriToPath rejects it, so the
+    // entry is skipped and the drop finishes cleanly instead of aborting
+    const { ctx, feed, tx } = baseCtx();
     makeDnd72(ctx);
     feed("t=m", "text/uri-list");
     feed("t=M:x=1", "text/uri-list");
     feed("t=r:x=1:X=1", b64("file:///.."));
     feed("t=r:x=1");
-    await settleUntil(() => notes.length > 0);
+    await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:o=1\x1b\\"));
     expect(tx.some((s) => s.includes(":y="))).toBe(false); // never fetched
     expect(ctx.runTransfers).toEqual([]);
-    expect(tx.some((s) => s === "\x1b]72;t=r:o=0\x1b\\")).toBe(true);
+    expect(tx.some((s) => s === "\x1b]72;t=r:o=1\x1b\\")).toBe(true); // finish, not cancel
+  });
+
+  test("a bad entry name among good ones is skipped, the rest land", async () => {
+    const { ctx, feed, tx } = baseCtx();
+    let stagedContent = "";
+    ctx.runTransfer = async (_op, _dest, srcs) => {
+      ctx.runTransfers.push([_op, _dest, srcs]);
+      stagedContent = readFileSync(srcs[0]!, "utf8");
+    };
+    makeDnd72(ctx);
+    feed("t=m", "text/uri-list");
+    feed("t=M:x=1", "text/uri-list");
+    // first entry is a traversal (skipped), second is a real file (lands)
+    feed("t=r:x=1:X=1", b64("file:///..\r\nfile:///remote/ok.txt"));
+    feed("t=r:x=1");
+    // we skip entry 1 and request entry 2 — the peer's response for the
+    // skipped subidx arrives as a stray chunk and is logged+ignored
+    await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:x=1:y=2\x1b\\"));
+    feed("t=r:x=1:y=1", b64("skipped bytes")); // stray — must not kill the drop
+    feed("t=r:x=1:y=2", b64("good bytes"));
+    feed("t=r:x=1:y=2");
+    await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:o=1\x1b\\"));
+    expect(stagedContent).toBe("good bytes");
+    expect(ctx.runTransfers.length).toBe(1);
   });
 
   test("slashed dir-child name aborts before any child fetch", async () => {

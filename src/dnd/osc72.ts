@@ -121,9 +121,9 @@ export const uriListToPaths = (data: string): string[] =>
   data
     .split(/\r?\n/)
     .filter((l) => l.startsWith("file://"))
-    .map(fileUriToPath);
+    .map((l) => fileUriToPath(l))
+    .filter((p): p is string => p !== null);
 
-export const dropPayloadToPaths = (text: string): string[] => {
-  const paths = uriListToPaths(text);
-  return paths.length ? paths : text.split(/\r?\n/).filter((l) => l.startsWith("/"));
-};
+// bare absolute paths from text/plain are NOT accepted — a terminal can send
+// /etc/shadow as a plain line and copy it into cwd. Only file:// URIs land.
+export const dropPayloadToPaths = (text: string): string[] => uriListToPaths(text);

@@ -5,7 +5,7 @@
 // try/catch covers Bun-style throwers. No timeout: nothing waits on the
 // child, so a wedged helper holds no queue. `spawn` is injectable for tests.
 import { spawnSafe } from "./spawn-safe";
-import { applescriptString, finderOpenArgs, isDarwin, openerBin } from "./darwin";
+import { finderOpenArgs, isDarwin, openerBin } from "./darwin";
 import path from "node:path";
 import type { NotifyLevel } from "../lib/notify-level";
 
@@ -49,18 +49,27 @@ export const spawnOpenTarget = (
     }
   }
   const args = reveal && darwin ? ["-R", target] : [finalTarget];
-  const targetQ = applescriptString(target);
   const child = spawn(
     openerBin(platform),
     args,
     { stdio: "ignore", ...(opts?.detached ? { detached: true } : {}) },
     (err) => {
       // `open` missing/broken essentially never happens; Finder fallback is
-      // the last resort before the honest failure toast
+      // the last resort before the honest failure toast. Path is passed as a
+      // script parameter (see finderOpenArgs) — never interpolated.
       if (darwin) {
         try {
           const script = reveal
-            ? ["-e", `tell application "Finder" to reveal POSIX file ${targetQ}`]
+            ? [
+                "-e",
+                "on run {f}",
+                "-e",
+                'tell application "Finder" to reveal POSIX file f',
+                "-e",
+                "end run",
+                "--",
+                target,
+              ]
             : finderOpenArgs(target);
           spawn("/usr/bin/osascript", script, { stdio: "ignore" }, onFail).unref?.();
           return;

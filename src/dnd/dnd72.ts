@@ -390,13 +390,26 @@ export const makeDnd72 = (ctx: Dnd72Ctx) => {
     await stageRemoteData(data, X, dest, handle);
   };
 
+  // a symlink's target is attacker-controlled bytes — an absolute target or a
+  // ../ escapes the staging dir and lands in cwd via runTransfer. Reject
+  // anything that isn't a relative path inside stagingDir.
+  const safeSymlinkTarget = (target: string, stagingDir: string): boolean => {
+    if (!target || target.includes("\0")) return false;
+    if (path.isAbsolute(target)) return false;
+    const resolved = path.resolve(stagingDir, target);
+    const rel = path.relative(stagingDir, resolved);
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  };
+
   const stageRemoteData = async (data: Buffer, X: number, dest: string, _handle: number | null): Promise<void> => {
     const st = remoteFetch;
     if (!st) throw new Error("drop ended");
     st.stagedBytes += data.length;
     if (st.stagedBytes > (ctx.remoteMaxBytes?.() ?? REMOTE_DROP_MAX_BYTES)) throw new Error("drop too large");
     if (X === 1) {
-      symlinkSync(data.toString("utf8"), dest);
+      const target = data.toString("utf8");
+      if (!safeSymlinkTarget(target, st.stagingDir)) throw new Error(`bad symlink target ${JSON.stringify(target)}`);
+      symlinkSync(target, dest);
       return;
     }
     if (X !== 0) {
@@ -405,14 +418,10 @@ export const makeDnd72 = (ctx: Dnd72Ctx) => {
       // costs concurrent handles; sequential holds one chain at a time)
       const names = data.toString("utf8").split("\0").filter(Boolean);
       mkdirSync(dest, { recursive: true });
-      const clean: string[] = [];
-      for (const raw of names) {
+      for (let n = 0; n < names.length; n++) {
+        const raw = names[n] ?? "";
         const name = safeEntryName(raw);
         if (!name || raw.includes("/")) throw new Error(`bad entry name ${JSON.stringify(raw)}`);
-        clean.push(name);
-      }
-      for (let n = 0; n < clean.length; n++) {
-        const name = clean[n] ?? "";
         await fetchRemoteChild(X, n + 1, dedupeStagedName(dest, name));
       }
       write(releaseRemoteDirFrame(X), `remote release dir ${X}`);
@@ -445,11 +454,25 @@ export const makeDnd72 = (ctx: Dnd72Ctx) => {
       const staged: string[] = [];
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i] ?? "";
-        const name = safeEntryName(fileUriToPath(line));
-        if (!name) throw new Error(`bad entry name ${JSON.stringify(line)}`);
+        const p = fileUriToPath(line);
+        const name = p ? safeEntryName(p) : null;
+        if (!name) {
+          // a single bad entry name must not abort the whole drop — skip it,
+          // log, and continue with the remaining entries. We do not issue a
+          // fetch request for it: the peer's response for the skipped subidx
+          // arrives as a stray chunk and is logged+ignored (a stray chunk
+          // never kills the drop), so the remaining requests stay aligned.
+          ctx.log(`remote drop: skipping bad entry ${JSON.stringify(line)}`);
+          continue;
+        }
         const dest = dedupeStagedName(stagingDir, name);
         await fetchRemoteEntry(uriIdx, i + 1, dest);
         staged.push(dest);
+      }
+      if (!staged.length) {
+        // every entry was rejected — nothing to land, finish cleanly
+        write(finishDropFrame(), "remote drop finished (no entries)");
+        return;
       }
       // same landing as local drops: real folders copy (conflict/undo free),
       // the trash view trashes the staged files (trashinfo metadata)
@@ -458,6 +481,9 @@ export const makeDnd72 = (ctx: Dnd72Ctx) => {
         await ctx.runTransfer("copy", ctx.cwd(), staged, `drop ${staged.length} item${staged.length === 1 ? "" : "s"}`);
       write(finishDropFrame(), "remote drop finished");
     } catch (err) {
+      // protocol-level failure (bad X, oversized, fetch timeout, symlink
+      // escape): abort the drop and clean up. Per-entry name problems are
+      // skipped above, never raised here.
       const reason = err instanceof Error ? err.message : String(err);
       abortRemoteFetch(shortReason(reason));
     } finally {

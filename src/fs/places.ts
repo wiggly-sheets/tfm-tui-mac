@@ -139,6 +139,7 @@ export const parseBookmarkLine = (line: string): BookmarkEntry | null => {
   const label = sp === -1 ? "" : line.slice(sp + 1).trim();
   if (uri.startsWith("file://")) {
     const p = fileUriToPath(uri);
+    if (!p) return null;
     try {
       if (!statSync(p).isDirectory()) return null;
     } catch {

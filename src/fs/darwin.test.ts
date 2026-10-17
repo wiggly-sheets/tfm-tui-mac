@@ -59,10 +59,16 @@ describe("osascript builders", () => {
   test("AppleScript string escapes backslash and quote", () => {
     expect(applescriptString('/a"b\\c')).toBe('"/a\\"b\\\\c"');
   });
-  test("Finder open targets the POSIX file", () => {
+  test("Finder open targets the POSIX file (path is an argv, not interpolated)", () => {
     expect(finderOpenArgs("/tmp/a b.txt")).toEqual([
       "-e",
-      'tell application "Finder" to open POSIX file "/tmp/a b.txt"',
+      "on run {f}",
+      "-e",
+      'tell application "Finder" to open POSIX file f',
+      "-e",
+      "end run",
+      "--",
+      "/tmp/a b.txt",
     ]);
   });
 });
@@ -77,7 +83,16 @@ describe("trash lanes", () => {
     expect(jxa.slice(0, 2)).toEqual(["-l", "JavaScript"]);
     expect(jxa[3]).toContain("trashItemAtURL");
     expect(jxa[3]).toContain("/a/b.txt");
-    expect(finderDeleteArgs("/a/b.txt")).toEqual(["-e", 'tell application "Finder" to delete POSIX file "/a/b.txt"']);
+    expect(finderDeleteArgs("/a/b.txt")).toEqual([
+      "-e",
+      "on run {f}",
+      "-e",
+      'tell application "Finder" to delete POSIX file f',
+      "-e",
+      "end run",
+      "--",
+      "/a/b.txt",
+    ]);
   });
 });
 

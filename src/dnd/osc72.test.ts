@@ -124,10 +124,14 @@ describe("payload encode/decode round trip", () => {
     // host-strip must KEEP the leading slash — "tmp/z" is cwd-relative and either
     // ENOENTs or copies to the wrong place (was pinned to the buggy output)
     expect(uriListToPaths("file://localhost/tmp/z")).toEqual(["/tmp/z"]);
+    // ../ traversal is rejected — a bare /etc/shadow line never lands
+    expect(uriListToPaths("file:///../../../etc/shadow")).toEqual([]);
   });
 
-  test("dropPayloadToPaths falls back to bare absolute paths", () => {
-    expect(dropPayloadToPaths("/tmp/a\r\n/tmp/b c")).toEqual(["/tmp/a", "/tmp/b c"]);
+  test("dropPayloadToPaths no longer accepts bare absolute paths", () => {
+    // the old bare-path fallback let a terminal send /etc/shadow as a plain
+    // line and copy it into cwd — that path is gone; only file:// URIs land
+    expect(dropPayloadToPaths("/tmp/a\r\n/tmp/b c")).toEqual([]);
     expect(dropPayloadToPaths("")).toEqual([]);
   });
 
