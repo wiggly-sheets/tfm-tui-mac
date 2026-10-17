@@ -289,6 +289,35 @@ export const wireSettings = (deps: {
       nav.renderAll();
     },
     pluginInstall: { addFromUrl, openFolder, update: updateOne, remove: removeOne, reload: refreshPluginsView },
+    // optional dependencies install orchestration: spawn the install command
+    // (sudo on Linux), notify progress, then re-check so the panel updates.
+    depsInstall: {
+      install: (targets) => {
+        void (async () => {
+          try {
+            const { makeInstallPlan } = await import("../app/deps");
+            const plan = makeInstallPlan(targets, Bun.which, process.platform);
+            chrome.notify(`Installing ${plan.pkgsToInstall.join(", ")}…`, "system tools", "info");
+            const { runDepsCli } = await import("../app/deps-cli");
+            const code = await runDepsCli(["install", ...targets], {
+              which: Bun.which,
+              platform: process.platform,
+              out: (s) => chrome.notify(s, "system tools", "info"),
+              err: (s) => chrome.notify(s, "system tools", "error"),
+            });
+            if (code === 0) chrome.notify("Installation complete", "system tools", "success");
+            else chrome.notify(`Installation failed (exit ${code})`, "system tools", "error");
+          } catch (err) {
+            chrome.notify(errMessage(err), "system tools", "error");
+          }
+        })();
+      },
+      showCommand: async (targets) => {
+        const { makeInstallPlan } = await import("../app/deps");
+        const plan = makeInstallPlan(targets, Bun.which, process.platform);
+        return `${plan.sudo ? "sudo " : ""}${plan.bin} ${plan.args.join(" ")}`;
+      },
+    },
     // picking the System theme entry resolves the terminal colors now
     // (fire-and-forget — failures keep the committed flag + current theme)
     resolveSystemTheme: () => {

@@ -430,7 +430,11 @@ export type KeyAction =
 
 type KeysConfig = Record<KeyAction, string[]>;
 
-export type Config = { ui: UiConfig; theme: Theme; keys: KeysConfig };
+// [update] self-update knobs. Config-file only: there is deliberately no
+// settings-GUI row (a self-updater is not something to flip mid-session).
+export type UpdateConfig = { check: boolean };
+
+export type Config = { ui: UiConfig; theme: Theme; keys: KeysConfig; update: UpdateConfig };
 
 // --- schema ---
 
@@ -478,10 +482,12 @@ type SchemaRow =
   | (RowCommon & { kind: "enum"; section: "ui"; values: readonly string[]; def: string; blurb: string })
   | (RowCommon & { kind: "strarray"; section: "ui"; def: string[]; blurb: string })
   | (RowCommon & { kind: "key"; section: "keys"; action: KeyAction; def: string[]; blurb: string })
-  | (RowCommon & { kind: "hex"; section: "theme"; def: string; group?: undefined });
+  | (RowCommon & { kind: "hex"; section: "theme"; def: string; group?: undefined })
+  | (RowCommon & { kind: "bool"; section: "update"; def: boolean });
 
 type KeyRow = Extract<SchemaRow, { kind: "key" }>;
 type ThemeRow = Extract<SchemaRow, { kind: "hex" }>;
+type UpdateRow = Extract<SchemaRow, { section: "update" }>;
 export type UiSchemaRow = Extract<SchemaRow, { section: "ui" }>;
 
 const UI_ROWS: SchemaRow[] = [
@@ -1988,6 +1994,20 @@ const UI_ROWS: SchemaRow[] = [
   },
 ];
 
+// [update] — config-file only (no GUI row). One key today: the daily startup
+// check for a newer release.
+const UPDATE_ROWS: UpdateRow[] = [
+  {
+    kind: "bool",
+    section: "update",
+    tomlKey: "check",
+    prop: "check",
+    def: true,
+    doc: "true = check GitHub once a day and toast when a newer release exists (run tfm --update to install it); false = never check",
+    label: "update check",
+  },
+];
+
 // [theme] keys are camelCase in TOML (matches the Theme type) and are NOT
 // shown as individual GUI rows — the settings panel exposes theme presets.
 const THEME_ROWS: ThemeRow[] = (
@@ -2149,7 +2169,7 @@ const KEY_ROWS: KeyRow[] = (
   blurb,
 }));
 
-export const SCHEMA: SchemaRow[] = [...UI_ROWS, ...THEME_ROWS, ...KEY_ROWS];
+export const SCHEMA: SchemaRow[] = [...UI_ROWS, ...THEME_ROWS, ...KEY_ROWS, ...UPDATE_ROWS];
 
 export const UI_SCHEMA = UI_ROWS;
 export const KEY_SCHEMA = KEY_ROWS;
@@ -2158,6 +2178,7 @@ export const defaultConfig: Config = {
   ui: Object.fromEntries(UI_ROWS.map((r) => [r.prop, Array.isArray(r.def) ? [...r.def] : r.def])),
   theme: Object.fromEntries(THEME_ROWS.map((r) => [r.prop, r.def])),
   keys: Object.fromEntries(KEY_ROWS.map((r) => [r.prop, [...r.def]])),
+  update: Object.fromEntries(UPDATE_ROWS.map((r) => [r.prop, r.def])),
 } as Config;
 
 // first OTHER action that already owns this spec, for conflict checks
@@ -2281,6 +2302,7 @@ export function parseConfigDoc(doc: unknown): Config {
     if (!ok) continue;
     if (row.section === "theme") (cfg.theme as Record<string, unknown>)[row.prop] = value;
     else if (row.section === "keys") (cfg.keys as Record<string, unknown>)[row.prop] = value;
+    else if (row.section === "update") (cfg.update as Record<string, unknown>)[row.prop] = value;
     else (cfg.ui as Record<string, unknown>)[row.prop] = value;
   }
   // renamed key: the old `word-wrap` bool migrates to `wrap-mode`
@@ -2320,6 +2342,7 @@ const tomlValue = (v: string | number | boolean | string[]): string => {
 const valueFor = (cfg: Config, row: SchemaRow): string | number | boolean | string[] => {
   if (row.section === "theme") return (cfg.theme as Record<string, unknown>)[row.prop] as string;
   if (row.section === "keys") return ((cfg.keys as Record<string, unknown>)[row.prop] as string[]) ?? row.def;
+  if (row.section === "update") return (cfg.update as Record<string, unknown>)[row.prop] as boolean;
   return (cfg.ui as Record<string, unknown>)[row.prop] as string | number | boolean | string[];
 };
 
@@ -2331,6 +2354,7 @@ export function serializeBody(cfg: Config): string {
     { name: "ui", rows: UI_ROWS },
     { name: "theme", rows: THEME_ROWS },
     { name: "keys", rows: KEY_ROWS },
+    { name: "update", rows: UPDATE_ROWS },
   ];
   let out = "";
   for (const sec of sections) {

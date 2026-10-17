@@ -5,6 +5,7 @@
 // presentations: theme presets, tab-bar adaptive/on, show-hidden state sync.
 // No renderer imports — ctx carries the sinks. ---
 import { spawnSafe } from "../fs/spawn-safe";
+import { checkAllPkgs } from "../app/deps";
 import { spawnOpenTarget } from "../fs/open-url";
 import { errMessage } from "../lib/uiutil";
 import { THEME_PRESETS, type ThemePreset } from "../config/themes";
@@ -56,6 +57,13 @@ export type SettingsModelCtx = {
   // picks the System theme entry. Optional so row SHAPE stays testable
   // without it; absent = flag commits, derived colors land on next boot.
   resolveSystemTheme?(): void;
+  // optional dependencies orchestration (wired in wiring/settings — spawn the
+  // install or open a terminal / notify progress). Optional so row SHAPE stays
+  // testable without it; rows no-op when absent. Never throws (fire-and-forget).
+  depsInstall?: {
+    install(targets: string[]): void;
+    showCommand(targets: string[]): Promise<string>;
+  };
   // console-mode read: when active the theme row is display-only (one static
   // console palette paints regardless of presets). Optional so tests stay light.
   isTtyMode?(): boolean;
@@ -88,8 +96,10 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
 
   // fresh-object commit: applyConfig diffs vs its LAST-APPLIED state, but
   // building a fresh Config keeps renderer-flipping rows correct regardless
-  const commit = (fresh: Config): void => {
-    ctx.applyConfig(fresh);
+  const commit = (fresh: Omit<Config, "update">): void => {
+    // the settings panel never edits [update]; carry the live section through
+    // so the committed config always has it
+    ctx.applyConfig({ ...fresh, update: ctx.config.update });
     ctx.scheduleSaveConfig();
   };
 
@@ -431,7 +441,73 @@ export const makeSettingModel = (ctx: SettingsModelCtx) => {
         spawnOpenTarget(spawnSafe, configPath(), (err) => ctx.warn(err.message, "config"));
       },
     },
+    ...systemToolsRows(),
   ];
+
+  const systemToolsRows = (): SettingRow[] => {
+    // read statuses fresh on every build so the panel reflects installs
+    const { statuses } = checkAllPkgs();
+    const rows: SettingRow[] = [
+      {
+        kind: "header",
+        label: "system tools",
+      },
+    ];
+    for (const st of statuses) {
+      const label = st.installed ? `${st.spec.name} · installed` : `${st.spec.name} · missing`;
+      const blurb = st.installed ? `${st.spec.blurb}` : `${st.spec.blurb} — not installed`;
+      rows.push({
+        kind: "action",
+        label,
+        blurb,
+        keepOpen: true,
+        run: () => {
+          if (st.installed) return;
+          if (ctx.depsInstall) {
+            ctx.depsInstall.install([st.spec.id]);
+          } else {
+            ctx.warn(`Install manually: ${st.spec.name}`, "system tools");
+          }
+        },
+      });
+    }
+    rows.push({
+      kind: "action",
+      label: "install all missing…",
+      blurb: "Install every uninstalled optional tool",
+      keepOpen: true,
+      run: () => {
+        const missing = statuses.filter((s) => !s.installed).map((s) => s.spec.id);
+        if (missing.length === 0) {
+          ctx.warn("All optional tools are already installed", "system tools");
+          return;
+        }
+        if (ctx.depsInstall) {
+          ctx.depsInstall.install(missing);
+        } else {
+          ctx.warn(`Install manually: ${missing.join(", ")}`, "system tools");
+        }
+      },
+    });
+    rows.push({
+      kind: "action",
+      label: "show install command…",
+      blurb: "Print the install command without running it",
+      keepOpen: true,
+      run: () => {
+        const missing = statuses.filter((s) => !s.installed).map((s) => s.spec.id);
+        if (ctx.depsInstall) {
+          ctx.depsInstall
+            .showCommand(missing)
+            .then((cmd) => ctx.warn(cmd, "install command"))
+            .catch((err) => ctx.warn(errMessage(err), "install command"));
+        } else {
+          ctx.warn("No package manager detected", "system tools");
+        }
+      },
+    });
+    return rows;
+  };
 
   const settingGroups = (): SettingGroup[] =>
     CATEGORIES.map((cat) => {

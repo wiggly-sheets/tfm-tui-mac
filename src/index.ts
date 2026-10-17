@@ -41,10 +41,22 @@ if (cli.error) {
 }
 if (cli.config) process.env.TFM_CONFIG = path.resolve(cli.config);
 
-// headless subcommand (`tfm plugins …`) — answers before the TUI graph loads
+// headless subcommand (`tfm plugins …`, `tfm deps …`) — answers before the TUI
+// graph loads
 if (cli.command?.name === "plugins") {
   const { runPluginsCli } = await import("./app/plugins-cli");
   process.exit(await runPluginsCli(cli.command.args));
+}
+if (cli.command?.name === "deps") {
+  const { runDepsCli } = await import("./app/deps-cli");
+  process.exit(await runDepsCli(cli.command.args));
+}
+
+// headless self-update (`tfm --update`) — answers before PATH handling and
+// before any wiring
+if (cli.update) {
+  const { runUpdateCli } = await import("./app/update-cli");
+  process.exit(await runUpdateCli());
 }
 
 // launch PATH (`tfm ~/some/path`): chdir before anything resolves the cwd, so
@@ -398,3 +410,8 @@ const keymap = wireKeymap({
 // system theme live-follow: terminal palette switches (kitty theme change)
 // re-derive through applyConfig — a no-op unless [ui] follow-terminal is on
 settings.systemTheme.followSystemTheme();
+
+// --- startup update check: LAST, fire-and-forget. Nothing above depends on it,
+// so its presence cannot reorder the load-bearing wiring; it never blocks boot. ---
+const { wireUpdate } = await import("./wiring/update");
+wireUpdate({ core, chrome });

@@ -21,6 +21,8 @@ export type CliOptions = {
   preview: boolean;
   info: boolean;
   terminal: boolean;
+  // --update: headless self-update for install.sh installs (no TUI boot)
+  update: boolean;
   // `tfm plugins <args>` — a headless management subcommand (no TUI boot)
   command: { name: string; args: string[] } | null;
   // first parse failure; when set, callers print it + usage hint and exit 2
@@ -38,6 +40,7 @@ export const parseArgs = (argv: string[]): CliOptions => {
     preview: false,
     info: false,
     terminal: false,
+    update: false,
     command: null,
     error: null,
   };
@@ -54,10 +57,10 @@ export const parseArgs = (argv: string[]): CliOptions => {
     args = args.slice(1);
   }
 
-  // subcommand form short-circuits option parsing: everything after `plugins`
-  // belongs to it (so a URL with dashes isn't read as a flag)
-  if (args[0] === "plugins") {
-    opts.command = { name: "plugins", args: args.slice(1) };
+  // subcommand form short-circuits option parsing: everything after the
+  // subcommand belongs to it (so a URL or path with dashes isn't read as a flag)
+  if (args[0] === "plugins" || args[0] === "deps") {
+    opts.command = { name: args[0], args: args.slice(1) };
     return opts;
   }
 
@@ -123,6 +126,10 @@ export const parseArgs = (argv: string[]): CliOptions => {
       opts.terminal = true;
       continue;
     }
+    if (a === "--update") {
+      opts.update = true;
+      continue;
+    }
     if (a === "--view") {
       const v = args[++i];
       if (v === undefined) return fail(`option '${a}' needs a value`);
@@ -178,8 +185,10 @@ Options:
   --preview          start with the preview pane open
   --info             start with the info sidebar open
   --terminal         open the integrated terminal on launch
+  --update           update tfm to the latest release (install.sh installs)
   --                 treat the rest as PATH (names that start with '-')
 
 Commands:
   plugins [list|search|add|remove|update|new]   manage plugins (see 'tfm plugins help')
+  deps [list|check|install]   check or install optional system tools (see 'tfm deps help')
 `;

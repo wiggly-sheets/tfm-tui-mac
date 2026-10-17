@@ -114,10 +114,32 @@ describe("parseArgs", () => {
     ]);
   });
 
+  test("--update is a plain switch with no value form", () => {
+    expect(parseArgs(["tfm", "--update"]).update).toBe(true);
+    expect(parseArgs(["tfm"]).update).toBe(false);
+    expect(parseArgs(["tfm", "--update=1"]).error).toBe("unknown option '--update=1'");
+    expect(parseArgs(["tfm", "--", "--update"]).update).toBe(false);
+  });
+
   test("new flags after -- are paths", () => {
     const r = parseArgs(["tfm", "--", "--view=list"]);
     expect(r.view).toBeNull();
     expect(r.paths).toEqual(["--view=list"]);
+  });
+
+  test("deps subcommand short-circuits and keeps its args", () => {
+    expect(parseArgs(["tfm", "deps"]).command).toEqual({ name: "deps", args: [] });
+    expect(parseArgs(["tfm", "deps", "list"]).command).toEqual({ name: "deps", args: ["list"] });
+    expect(parseArgs(["tfm", "deps", "check"]).command).toEqual({ name: "deps", args: ["check"] });
+    expect(parseArgs(["tfm", "deps", "install", "fd", "ripgrep"]).command).toEqual({
+      name: "deps",
+      args: ["install", "fd", "ripgrep"],
+    });
+    // flags after the subcommand belong to it, never to tfm
+    const r = parseArgs(["tfm", "deps", "install", "--help"]);
+    expect(r.command).toEqual({ name: "deps", args: ["install", "--help"] });
+    expect(r.help).toBe(false);
+    expect(r.paths).toEqual([]);
   });
 });
 
@@ -136,6 +158,8 @@ describe("usageText", () => {
     expect(u).toContain("--preview");
     expect(u).toContain("--info");
     expect(u).toContain("--terminal");
+    expect(u).toContain("--update");
+    expect(u).toContain("deps [list|check|install]");
     expect(u).toContain("PATH");
   });
 });
