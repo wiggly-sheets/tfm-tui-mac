@@ -250,6 +250,7 @@ export type UiConfig = {
   previewWidth: number;
   terminalHeight: number;
   dualPane: boolean;
+  vim: boolean;
   syncBrowsing: boolean;
   sidebarAutoHide: boolean;
   sidebarCollapseStyle: string;
@@ -830,6 +831,19 @@ const UI_ROWS: SchemaRow[] = [
     blurb: "Open a folder in both panes at once",
     group: "layout",
     subsection: "panes",
+  },
+  {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "vim",
+    prop: "vim",
+    def: false,
+    doc: "true = h/j/k/l move the file cursor between panes instead of the grid cursor (the arrow keys keep their moveUp/Down/Left/Right jobs; the vim binds are separate focusPaneLeft/Right/Up/Down actions)",
+    label: "vim navigation",
+    blurb: "Use vim-style keys to move between panes",
+    group: "layout",
+    subsection: "panes",
+    showWhen: () => true,
   },
   {
     kind: "int",

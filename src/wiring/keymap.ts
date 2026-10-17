@@ -7,6 +7,7 @@
 // reads exists by now. ---
 
 import type { KeyEvent } from "@opentui/core";
+import type { KeyAction } from "../config/config-schema";
 import type { KeyEventLike } from "../config/keyspec";
 import { makeKeyRouter } from "../input/keymap";
 import { makePick } from "../ui/ui-pick";
@@ -15,6 +16,7 @@ import { makeGoToFolder } from "../ui/ui-goto";
 import { makeQuicklook } from "../ui/ui-quicklook";
 import { themePresetIdx, zoomUiPatch } from "../ui/settings";
 import { THEME_PRESETS } from "../config/themes";
+import { presetKeys } from "../config/keymap-presets";
 import { cycleSortMode } from "../lib/sort";
 import { currentViewSlot, nextViewSlot, setPluginViewId, viewCycle, viewModeFor } from "../app/panes";
 import { activeFacade } from "../app/panes";
@@ -175,6 +177,44 @@ export const wireKeymap = (deps: {
       `${op} to other pane`,
     );
   };
+
+  // [ui] vim: merge the yazi preset's file-nav binds (h/j/k/l + o) onto the
+  // live config. The yazi preset table IS the canonical vim set — arrows never
+  // change (moveUp/Down/Left/Right keep their binds, and the yazi table keeps
+  // them too). Re-running after a user remap re-owns the five keys (the yazi
+  // switcher already behaves this way — a preset commit overwrites every bind);
+  // any other hand edit is left untouched. No vim state machine: the binds ARE
+  // the mode.
+  const applyVimBinds = (): void => {
+    const vim = core.config.ui.vim;
+    const yazi = presetKeys("yazi");
+    const keys = core.config.keys;
+    const changed: Partial<Record<KeyAction, string[]>> = {};
+    for (const action of ["parentDir", "moveUp", "moveDown", "openSelected"] as KeyAction[]) {
+      const want = yazi[action];
+      if (want && !want.every((spec) => (keys[action] ?? []).includes(spec))) changed[action] = want;
+    }
+    // vim off: drop the bare j/k/h/l/o that the vim mode added (the yazi preset
+    // also owns these; it stays intact because its table matches verbatim)
+    if (!vim) {
+      const vimKeys: Array<[KeyAction, string]> = [
+        ["parentDir", "h"],
+        ["moveUp", "k"],
+        ["moveDown", "j"],
+        ["openSelected", "l"],
+        ["openSelected", "o"],
+      ];
+      for (const [action, spec] of vimKeys) {
+        if ((keys[action] ?? []).includes(spec)) changed[action] = (keys[action] ?? []).filter((s) => s !== spec);
+      }
+    }
+    const any = Object.keys(changed).length > 0;
+    if (any) core.config.keys = { ...keys, ...changed };
+  };
+
+  // boot: [ui] vim on means the vim binds are already live before the first
+  // keypress (no applyConfig — config is loaded, not committed)
+  applyVimBinds();
 
   const keyRouter = makeKeyRouter({
     byId,

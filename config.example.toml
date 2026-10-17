@@ -36,6 +36,7 @@ terminal-auto-hide                    = false       # true = the open terminal p
 terminal-collapse-style               = "hidden"    # "header" = keep the title row visible; "hidden" = height 0
 dual-pane                             = false       # true = two independent file panes side by side (tab switches the active pane); false = single pane
 sync-browsing                         = false       # true = entering a directory in the active pane also opens it in the other pane (Finder-style); false = panes stay independent. Off by default so existing single-pane and dual-pane users see no behavior change. Only fires on an actual directory entry (Enter/double-click/open), not on hover — and only the pane the user acted on drives the other (the driven pane never drives back, so it can't recurse).
+vim                                   = false       # true = h/j/k/l move the file cursor between panes instead of the grid cursor (the arrow keys keep their moveUp/Down/Left/Right jobs; the vim binds are separate focusPaneLeft/Right/Up/Down actions)
 tile-width                            = 20          # 10..40 cells (grid view)
 tile-height                           = 5           # 3..10 cells (grid view)
 icon-cells                            = 3           # grid icon height in rows, 1..5
