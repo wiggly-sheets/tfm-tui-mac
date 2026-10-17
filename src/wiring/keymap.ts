@@ -330,6 +330,9 @@ export const wireKeymap = (deps: {
         setPluginViewId(s, next.pluginView);
       }
       void grid.renderGrid();
+      // view mode decides the slider's visibility — renderGrid (not renderAll)
+      // is this path's only repaint
+      chrome.iconSlider.refresh();
     },
     // single-key sort cycle on the ACTIVE pane's state (same nautilus
     // semantics + renderGrid tail as the sort menu's pick)

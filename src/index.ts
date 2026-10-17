@@ -166,6 +166,9 @@ const chrome = await wireChrome({
   getPrompt: () => keymap.prompt,
   finishDrag: () => grid.finishDrag(),
   resizePress: (x) => mouseResize?.edgePress("sidebar", x) ?? false,
+  // icon-size slider commits through the config path — retheme wires later
+  // (TDZ seam, same as getGrid/getFileops above)
+  getRetheme: () => retheme,
 });
 
 // graceful shutdown on SIGHUP/SIGTERM/SIGINT (terminal-window close sends

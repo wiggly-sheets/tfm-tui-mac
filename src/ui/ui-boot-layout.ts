@@ -122,7 +122,7 @@ export const buildAppContainer = (o: AppContainerOpts): SlotElement =>
           justifyContent: "flex-end",
           paddingRight: 1,
         },
-        Text({ id: "tfm-status-label", content: "", fg: o.colors.sidebarFgMuted }),
+        Text({ id: "tfm-status-label", content: "", fg: o.colors.sidebarFgMuted, flexShrink: 1 }),
       ),
       Box({ id: "tfm-term-host", width: "100%", height: 0, flexDirection: "column", overflow: "hidden" }),
     ),

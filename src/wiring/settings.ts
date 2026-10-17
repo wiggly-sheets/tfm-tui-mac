@@ -374,6 +374,9 @@ export const wireRetheme = (deps: {
     resetIconQueue: core.slots.resetIconQueue,
     syncTerminalTheme: fileops.terminal.syncTerminalTheme,
     syncTerminalHeight: () => fileops.terminal.syncTerminalHeight(),
+    // bottom-bar slider: value/visibility/colors re-read from live config +
+    // the active pane each apply (value-only knobs skip the renderAll)
+    syncIconSlider: () => chrome.iconSlider.refresh(),
     repaintButtons: () => {
       for (const t of chrome.toolbars.values()) t.repaintButtons();
     },

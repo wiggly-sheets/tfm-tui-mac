@@ -19,6 +19,7 @@ import type { makeSearch } from "../input/search";
 import type { makeMenu } from "../ui/ui-menu";
 import type { makeChrome } from "../ui/ui-chrome";
 import type { makeToolbar } from "../ui/ui-toolbar";
+import type { makeIconSlider } from "../ui/icon-slider";
 import type { makeNotify } from "../ui/notify";
 import type { makeRecentOpen } from "../fs/recent-open";
 import type { makeDialogs } from "../ui/ui-dialogs";
@@ -64,6 +65,9 @@ export type ChromeWiring = {
   topbarIntro: ReturnType<typeof makeTopbarAnim>;
   toolbars: Map<string, ReturnType<typeof makeToolbar>>;
   activeToolbar: () => ReturnType<typeof makeToolbar>;
+  // bottom-bar icon-size slider (drives the grid zoom); refresh() resyncs its
+  // value + visibility from live config/state
+  iconSlider: ReturnType<typeof makeIconSlider>;
   notify: ReturnType<typeof makeNotify>["notify"];
   notifySticky: ReturnType<typeof makeNotify>["notifySticky"];
   ensureSudo: ReturnType<typeof makeEnsureSudo>;

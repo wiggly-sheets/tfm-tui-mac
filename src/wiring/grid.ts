@@ -178,6 +178,9 @@ export const wireGrid = (deps: {
     selections.get(prev)?.clearTileSelection();
     core.setActiveId(id);
     core.refreshPaneFocus();
+    // per-pane view mode differs: re-evaluate the bottom-bar slider (this path
+    // deliberately skips a full renderAll)
+    chrome.iconSlider.refresh();
     try {
       chrome.chrome.normalizePlaces();
       plugins.refreshSlots?.();

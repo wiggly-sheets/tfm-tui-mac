@@ -93,6 +93,10 @@ export const wireNav = (deps: {
       },
       pluginSlots: () => getPlugins?.().refreshSlots?.(),
       stripSelectable: () => core.lookup.stripSelectable(),
+      // bottom-bar icon-size slider: re-evaluate visibility (active pane view
+      // mode + image protocol) on every repaint — covers resize, pane switch
+      // and boot, where no config apply runs
+      iconSlider: () => getChrome().iconSlider.refresh(),
     },
   });
 

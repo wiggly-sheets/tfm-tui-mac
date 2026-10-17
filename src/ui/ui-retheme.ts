@@ -43,6 +43,10 @@ type RethemeCtx = {
   // live-resize for the RENDER_EXEMPT terminal-height knob (no renderAll):
   // the open pane resizes its VT node itself. Optional so tests stay light.
   syncTerminalHeight?(): void;
+  // bottom-bar icon-size slider: re-evaluate visibility + value on every config
+  // apply (value-only knobs skip the renderAll below). Optional so tests stay
+  // light; absent = no slider (the chrome wiring owns it).
+  syncIconSlider?(): void;
   repaintButtons(): void;
   renderCrumbs(): void;
   refreshNav(): void;
@@ -431,6 +435,11 @@ export const makeRetheme = (ctx: RethemeCtx) => {
     // skip the full repaint for value-only knobs (no layout/theme change):
     // the settings row already repainted its own value text
     if (renderChanged) ctx.renderAll();
+    // the bottom-bar slider reads live config (zoom keys, its own toggle, the
+    // active pane's view mode) — resync even when the rebuild was skipped
+    try {
+      ctx.syncIconSlider?.();
+    } catch {}
   };
 
   // signature of the last file WE wrote; the watcher skips it so saving

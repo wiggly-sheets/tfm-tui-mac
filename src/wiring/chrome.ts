@@ -19,9 +19,11 @@ import { makeNetworkActions, type GioResult } from "../fs/netmount";
 import { makeMenu, MENU_W } from "../ui/ui-menu";
 import { makeChrome } from "../ui/ui-chrome";
 import { makeToolbar, toolbarItemIds, crumbItemIds } from "../ui/ui-toolbar";
-import { getMap, makeLeafRegistry, type PaneId } from "../app/panes";
+import { getMap, makeLeafRegistry, type PaneId, viewModeFor } from "../app/panes";
 import { leafRectsOf } from "../app/layout";
 import { buildAppContainer, buildTitle, setPathbarPosition } from "../ui/ui-boot-layout";
+import { makeIconSlider } from "../ui/icon-slider";
+import { imageProtocolFor } from "../ui/ui-slots";
 import { warmEmbeddedIcons } from "../ui/icons";
 import type { NodeLike } from "../lib/node-like";
 import { makeNotify } from "../ui/notify";
@@ -40,6 +42,7 @@ import { destroyChildren, errMessage } from "../lib/uiutil";
 import { dlog } from "../app/log";
 import type { CoreWiring } from "./core";
 import type { FileopsWiring, GridWiring, NavWiring } from "./types";
+import type { RethemeWiring } from "./settings";
 
 export const wireChrome = async (deps: {
   core: CoreWiring;
@@ -64,6 +67,10 @@ export const wireChrome = async (deps: {
   // band must arm the gesture instead of navigating. Wired after chrome
   // (renderer TDZ) — read at press time.
   resizePress?(x: number): boolean;
+  // the bottom-bar icon-size slider commits through the ONE config path
+  // (applyConfig + scheduleSaveConfig). retheme wires after chrome — the
+  // callbacks above are only invoked at interaction time (settled TDZ).
+  getRetheme(): RethemeWiring;
 }) => {
   const { core, nav, getGrid, getFileops, getKeyRouter } = deps;
   const { byId, stripSelectable } = core.lookup;
@@ -295,6 +302,26 @@ export const wireChrome = async (deps: {
   // modes stay transparent here (the old unconditional reset re-opaqued boot)
   if (core.config.ui.transparentBg !== "off" && !core.isTtyMode()) renderer.setBackgroundColor("transparent");
   else renderer.setBackgroundColor(core.colors.bg);
+
+  // --- Bottom-bar icon-size slider: drives the EXISTING grid zoom through the
+  // ONE config path (the same one ctrl+= / ctrl+- use). Appended into the
+  // status row, which the boot layout built with the label only. ---
+  const iconSlider = makeIconSlider({
+    renderer,
+    byId,
+    colors: themeGet,
+    ui: () => core.config.ui,
+    viewMode: () => viewModeFor(core.panes.stateOf(core.panes.activeId), core.config.ui.viewMode, core.isTtyMode),
+    // no reactive signal for the image protocol — recomputed on every refresh
+    imageProtocol: () => imageProtocolFor(renderer.capabilities, renderer.resolution != null),
+    applyPatch: (patch) => {
+      const ui = core.config.ui;
+      const keys = Object.keys(patch) as (keyof typeof patch)[];
+      if (!keys.some((k) => patch[k] !== ui[k])) return; // saturated / already there
+      deps.getRetheme().applyConfig({ ...core.config, ui: { ...ui, ...patch } });
+    },
+    commit: () => deps.getRetheme().scheduleSaveConfig(),
+  });
 
   // --- Sidebar startup intro (cold-boot-only): one reused timeline over the
   // places sidebar, played by the playSidebarIntro boot step after the first
@@ -656,6 +683,7 @@ export const wireChrome = async (deps: {
     topbarIntro,
     toolbars,
     activeToolbar: () => getMap(toolbars, core.panes.activeId),
+    iconSlider,
     notify,
     notifySticky,
     ensureSudo: ensureSudoChrome,

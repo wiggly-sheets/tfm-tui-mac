@@ -283,6 +283,9 @@ export type UiConfig = {
   tabBar: boolean;
   pathbarPosition: PathbarPosition;
   viewMode: ViewMode;
+  // bottom-bar icon-size slider visibility (grid view with live image graphics
+  // only). The slider drives the EXISTING grid zoom (tileW/H + iconCells).
+  iconSizeSlider: boolean;
   toastDurationMs: number;
   typeToSearch: boolean;
   dragThresholdCells: number;
@@ -517,6 +520,18 @@ const UI_ROWS: SchemaRow[] = [
     group: "layout",
     subsection: "view",
     restart: true,
+  },
+  {
+    kind: "bool",
+    section: "ui",
+    tomlKey: "icon-size-slider",
+    prop: "iconSizeSlider",
+    def: true,
+    doc: "true = show the icon-size slider at the right of the bottom bar (grid view with image graphics only); false = hide it",
+    label: "icon size slider",
+    blurb: "Drag a slider in the bottom bar to zoom grid icons",
+    group: "layout",
+    subsection: "view",
   },
   {
     kind: "int",
