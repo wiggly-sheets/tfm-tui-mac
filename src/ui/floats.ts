@@ -31,12 +31,13 @@ export type FloatKind =
   | "prompt"
   | "gotofolder"
   | "bulkrename"
+  | "toolbaritems"
   | "quicklook";
 
 // layers that are NOT modals: they neither dim the desktop (hasModal stays
 // false, so no raster scrim) nor swallow the keyboard, and opening one leaves
 // the modals below it alone.
-const NON_MODAL: ReadonlySet<FloatKind> = new Set<FloatKind>(["filemenu", "quicklook"]);
+const NON_MODAL: ReadonlySet<FloatKind> = new Set<FloatKind>(["filemenu", "quicklook", "toolbaritems"]);
 
 // z-order of the floating layers — the one table documenting which layer
 // renders above which. Outside the stack: band rect 2500 (gesture), progress
@@ -49,6 +50,10 @@ export const FLOAT_Z: Record<FloatKind, number> = {
   // quicklook overlay (the preview without the preview pane): non-modal, so it
   // sits UNDER the cursor popup — a context menu opened over it stays on top
   quicklook: 3590,
+  // toolbar-item palette drawer (stage B3): NON-MODAL — the user drags chips
+  // onto the live strip and clicks it while the drawer is open, so a modal
+  // scrim would swallow both. Sits below the cursor popup like quicklook.
+  toolbaritems: 3585,
   filemenu: 3600,
   // generic filter-list overlay (api.ui.pick, e.g. the palette plugin): the
   // newest modal wins, so it sits on top; opening one dismisses the rest

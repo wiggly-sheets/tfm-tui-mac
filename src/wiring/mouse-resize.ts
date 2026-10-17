@@ -10,6 +10,7 @@
 import { UI_SCHEMA, type UiConfig } from "../config/config-schema";
 import { sideInnerWidth } from "../ui/style";
 import { gridDrag } from "../input/grid-input";
+import { toolbarDrag } from "../input/toolbar-drag";
 import { dlog } from "../app/log";
 import { makeMouseResize, type MouseResizeWiring, type ResizeBounds, type ResizeTarget } from "../input/mouse-resize";
 import type { CoreWiring } from "./core";
@@ -111,6 +112,7 @@ export const wireMouseResize = (deps: {
       core.floats.depth() > 0 ||
       chrome.activeToolbar().pathEditMode() ||
       gridFoundation.rename.isRenaming() ||
+      toolbarDrag.active ||
       gridDrag.active,
     log: (msg) => dlog(msg),
   });
