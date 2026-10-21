@@ -195,6 +195,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The checkout comes first: it cleans the workspace, so the artifacts
+      # that are downloaded below would be gone if it ran afterwards.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -203,10 +207,18 @@ jobs:
       - name: Verify checksums
         run: (cd dist && sha256sum -c *.sha256)
 
+      # The notes are the section of our own CHANGELOG for this version. A
+      # version without a section fails the release, so the exit code of the
+      # script is never swallowed.
+      - name: Release notes from the CHANGELOG
+        run: |
+          VERSION="${{ github.ref_name }}"
+          ./scripts/release-notes.sh "${VERSION#v}" > release-notes.md
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             dist/tfm-x86_64-linux.gz
             dist/tfm-x86_64-linux.gz.sha256

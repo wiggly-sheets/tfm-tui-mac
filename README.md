@@ -123,8 +123,8 @@ Or manually build from source:
 git clone https://github.com/wiggly-sheets/tfm-tui-mac.git
 cd tfm-tui-mac
 bun install --frozen-lockfile
-bun run check && bun test
-bun run compile && cp dist/tfm ~/.local/bin/
+make test
+cp dist/tfm ~/.local/bin/
 ```
 
 Cross-compile release-target binaries from one host:
@@ -138,6 +138,24 @@ Targets: `linux-x64`, `linux-arm64`, `mac-x64`, `mac-arm64`, `mac-universal`
 (`mac-universal` lipos both darwin slices into `dist/tfm-universal-macos` and
 needs a macOS host). The same targets are wired as `bun run build:<target>`
 scripts in `package.json`.
+
+## Build targets
+
+`make` prints the list of targets. The names are the same in every repository
+of the estate.
+
+- `make help` — list every target (the default).
+- `make build` — compile the binary into `dist/tfm`.
+- `make test` — run the checks, the test suite and the version smoke test.
+- `make release-artifacts` — build the universal macOS binary and write the
+  checksum file next to it.
+- `make release VERSION=1.2.3` — build the artifacts, tag `v1.2.3` locally and
+  print the command that pushes it. It never pushes by itself.
+- `make clean` — remove the build output.
+
+The release publishes `tfm-universal-macos.gz` and the sidecar
+`tfm-universal-macos.gz.sha256`. The Homebrew tap matches those two names, so
+they never change.
 
 ## Updating
 

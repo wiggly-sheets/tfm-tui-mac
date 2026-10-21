@@ -18,8 +18,15 @@ Self-update for install.sh installs:
 Build, CI and docs:
 
 - CI runs the compiled binary and checks its `--version` output; both workflows
-  add concurrency groups and least-privilege permissions; releases generate
-  notes and keep artifacts for seven days.
+  add concurrency groups and least-privilege permissions; releases publish the
+  notes of the CHANGELOG and keep artifacts for seven days.
+- The build interface now follows the shared contract of the estate: `make`
+  prints the targets, `make build` compiles the binary, `make test` runs the
+  checks and the test suite, `make release-artifacts` builds the universal
+  binary with its checksum file, `make release VERSION=x.y.z` prepares a
+  release without pushing, and `make clean` removes the build output.
+- The release notes come from the section of this CHANGELOG for the released
+  version. A stable version without a section fails the release.
 - Dependabot for bun and GitHub Actions; issue and PR templates; `SECURITY.md`
   and `CONTRIBUTING.md`.
 
