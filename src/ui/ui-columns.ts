@@ -9,14 +9,17 @@
 // owns its own column-stack state machine and its own scroll containers.
 
 import path from "node:path";
-import { readFileSync, statSync } from "node:fs";
+import { stat, readFile } from "node:fs/promises";
 import { Box, Text } from "@opentui/core";
 import { listDir, type Entry } from "../fs/listing";
 import { fmtBytes } from "../fs/propsinfo";
 import { destroyChildren } from "../lib/uiutil";
 import type { GridRendererCtx } from "./ui-grid-types";
-import type { SortMode } from "../lib/sort";
+import type { KeyAction } from "../config/config-schema";
 import type { KeyEventLike } from "../config/keyspec";
+import { keyMatch, parseKeySpec } from "../config/keyspec";
+import { isAppBundle, isDarwin } from "../fs/darwin";
+import type { SortMode } from "../lib/sort";
 
 const PREVIEW_MAX_BYTES = 1_048_576;
 const PREVIEW_MAX_LINES = 2000;
@@ -36,6 +39,10 @@ export type ColumnsModelOpts = {
   readFile?: (filePath: string) => Promise<string | null>;
   openFile?: (filePath: string) => void;
   onNavigate?: (dir: string) => void;
+  // active-column entry sink: the wiring feeds the shared selection model, so
+  // the status bar / preview / info sidebar and every file action see the
+  // columns view's cursor. Empty path = column has no entry.
+  onSelect?: (path: string, isDir: boolean) => void;
 };
 
 // Pure column-stack state machine: testable without a terminal renderer.
@@ -52,6 +59,20 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
     path: previewFile,
     text: previewText,
   });
+
+  const entryPath = (col: ColumnData, entry: Entry): string => entry.abs ?? path.join(col.dir, entry.name);
+
+  // the active column's entry IS the columns view's cursor
+  const emitSelection = (): void => {
+    if (!opts.onSelect) return;
+    const col = columns[activeCol];
+    const entry = col ? col.entries[col.sel] : undefined;
+    if (!col || !entry) {
+      opts.onSelect("", false);
+      return;
+    }
+    opts.onSelect(entryPath(col, entry), entry.isDir);
+  };
 
   const loadEntries = async (dir: string): Promise<Entry[]> => {
     try {
@@ -70,12 +91,12 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
       return;
     }
     try {
-      const st = statSync(filePath);
+      const st = await stat(filePath);
       if (st.size > PREVIEW_MAX_BYTES) {
         previewText = `[File too large to preview: ${fmtBytes(st.size)}]`;
         return;
       }
-      const raw = readFileSync(filePath, "utf8");
+      const raw = await readFile(filePath, "utf8");
       const lines = raw.split("\n").slice(0, PREVIEW_MAX_LINES);
       previewText = lines.join("\n");
       if (lines.length === PREVIEW_MAX_LINES) {
@@ -93,6 +114,7 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
     activeCol = 0;
     previewText = null;
     previewFile = null;
+    emitSelection();
   };
 
   const updateSelectionForCol = async (colIdx: number, selIdx: number): Promise<void> => {
@@ -130,12 +152,14 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
     if (colIdx < 0 || colIdx >= columns.length) return;
     activeCol = colIdx;
     await updateSelectionForCol(colIdx, selIdx);
+    emitSelection();
   };
 
   const moveCol = (delta: number): void => {
     if (columns.length === 0) return;
     const next = Math.max(0, Math.min(columns.length - 1, activeCol + delta));
     activeCol = next;
+    emitSelection();
   };
 
   const moveRow = async (delta: number): Promise<void> => {
@@ -145,22 +169,68 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
     if (nextSel !== col.sel) {
       await updateSelectionForCol(activeCol, nextSel);
     }
+    emitSelection();
   };
 
-  const openActive = async (): Promise<void> => {
+  // re-list the open columns IN PLACE: watcher ticks, delete/rename and the
+  // refresh action all land here (there is no other signal for a columns
+  // pane). The stack, active column and row cursor stay put unless an entry
+  // vanished.
+  const reload = async (): Promise<void> => {
+    if (!columns.length) return;
+    const next: ColumnData[] = [];
+    for (const col of columns) {
+      const entries = await loadEntries(col.dir);
+      // keep a child column whose folder still exists even when it lists
+      // empty (or only hidden dotfiles): Finder shows an empty column, and
+      // dropping it made Enter on an empty folder a dead end. Only a truly
+      // vanished folder (and everything below) drops out.
+      const alive = await (async () => {
+        try {
+          return (await stat(col.dir)).isDirectory();
+        } catch {
+          // test/fake listings have no real dirs; a non-empty entry set is the
+          // best available evidence that the folder still exists
+          return entries.length > 0;
+        }
+      })();
+      if (!alive && next.length > 0) break;
+      next.push({ dir: col.dir, entries, sel: Math.max(0, Math.min(col.sel, entries.length - 1)) });
+      if (!alive) break;
+    }
+    columns = next;
+    activeCol = Math.max(0, Math.min(activeCol, columns.length - 1));
+    const col = columns[activeCol];
+    const entry = col ? col.entries[col.sel] : undefined;
+    const itemPath = col && entry ? entryPath(col, entry) : null;
+    // a preview of a vanished/renamed file must not linger
+    if (previewFile !== null && previewFile !== itemPath) {
+      previewFile = null;
+      previewText = null;
+    }
+    emitSelection();
+  };
+
+  const openActive = async (forceFolder = false): Promise<void> => {
     const col = columns[activeCol];
     if (!col) return;
     const entry = col.entries[col.sel];
     if (!entry) return;
     const itemPath = entry.abs ?? path.join(col.dir, entry.name);
-    if (entry.isDir) {
-      // enter on dir: focus next column if present
+    if (entry.isDir && isDarwin() && isAppBundle(itemPath) && !forceFolder) {
+      opts.openFile?.(itemPath);
+    } else if (entry.isDir) {
+      // enter on dir: focus the next column, or materialize it when this is
+      // the last one (an empty/childless folder still gets its column)
       if (activeCol + 1 < columns.length) {
         activeCol++;
+      } else {
+        await updateSelectionForCol(activeCol, col.sel);
       }
     } else {
       opts.openFile?.(itemPath);
     }
+    emitSelection();
   };
 
   const backspace = async (): Promise<boolean> => {
@@ -170,6 +240,7 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
       activeCol = Math.max(0, Math.min(activeCol, columns.length - 1));
       previewFile = null;
       previewText = null;
+      emitSelection();
       return true;
     }
     // Only 1 column: navigate to parent directory through the app nav
@@ -190,6 +261,7 @@ export const makeColumnsModel = (opts: ColumnsModelOpts) => {
     select,
     moveCol,
     moveRow,
+    reload,
     openActive,
     backspace,
   };
@@ -203,7 +275,16 @@ export type ColumnsRenderer = {
   getModel: () => ReturnType<typeof makeColumnsModel>;
 };
 
-export const makeColumnsRenderer = (ctx: GridRendererCtx): ColumnsRenderer => {
+// the columns pane reads the config bindings so its nav keys never shadow a
+// modifier/remap (alt+left history, alt+up parent, shift+arrow extend…)
+export type ColumnsRendererCtx = GridRendererCtx & {
+  keybinds?(action: KeyAction): string[];
+  // active-entry sink: wiring feeds the shared selection model (status bar,
+  // preview/info, file actions)
+  onSelect?(path: string, isDir: boolean): void;
+};
+
+export const makeColumnsRenderer = (ctx: ColumnsRendererCtx): ColumnsRenderer => {
   const colors = ctx.colors();
 
   const model = makeColumnsModel({
@@ -212,6 +293,7 @@ export const makeColumnsRenderer = (ctx: GridRendererCtx): ColumnsRenderer => {
     sortBy: ctx.state.sortBy,
     sortAsc: ctx.state.sortAsc,
     openFile: ctx.openFileDefault,
+    onSelect: (p, isDir) => ctx.onSelect?.(p, isDir),
     onNavigate: (dir) => {
       ctx.navigate?.(dir);
     },
@@ -240,6 +322,11 @@ export const makeColumnsRenderer = (ctx: GridRendererCtx): ColumnsRenderer => {
       lastAsc = ctx.state.sortAsc;
       await model.init(ctx.state.cwd);
       initialized = true;
+    } else {
+      // a watcher tick / refresh / hover-drawer settle lands here with no other
+      // signal: re-list the open columns so deletes/renames show up in place
+      // (listDir is TTL-cached, so a repaint is not a disk storm)
+      await model.reload();
     }
 
     destroyChildren(scroller.content);
@@ -272,8 +359,20 @@ export const makeColumnsRenderer = (ctx: GridRendererCtx): ColumnsRenderer => {
         backgroundColor: isActive ? colors.hoverBg : "transparent",
       });
 
-      // Populate entries
-      col.entries.forEach((entry, entryIdx) => {
+      // Populate entries: only the viewport slice around the cursor is built.
+      // A 2k-entry folder used to create 2k Box+Text nodes on every arrow key;
+      // the padding rows keep the selected row at the same screen position.
+      const viewH = (() => {
+        const h = scroller.viewport?.height;
+        return Math.max(3, (typeof h === "number" ? h : ctx.termH() - 4) - 1);
+      })();
+      const total = col.entries.length;
+      const start = Math.max(0, Math.min(col.sel - Math.floor(viewH / 2), total - viewH));
+      const end = Math.min(total, start + viewH);
+      if (start > 0) colBox.add(Box({ width: "100%", height: start }));
+      for (let entryIdx = start; entryIdx < end; entryIdx++) {
+        const entry = col.entries[entryIdx];
+        if (!entry) continue;
         const isSelected = col.sel === entryIdx;
         const entryRow = Box(
           {
@@ -296,7 +395,8 @@ export const makeColumnsRenderer = (ctx: GridRendererCtx): ColumnsRenderer => {
           }),
         );
         colBox.add(entryRow);
-      });
+      }
+      if (end < total) colBox.add(Box({ width: "100%", height: total - end }));
 
       rowContainer.add(colBox);
     });
@@ -327,31 +427,62 @@ export const makeColumnsRenderer = (ctx: GridRendererCtx): ColumnsRenderer => {
     // Columns view does not use windowed slide; no-op
   };
 
+  const enterAlias = (name: string): string | null =>
+    name === "enter" ? "return" : name === "return" ? "enter" : null;
+
+  // does this event match the configured bind for `action`? With no keybind
+  // seam (older fakes) only the unmodified default key name matches — a
+  // modifier always falls through to the remapped-action block above/below.
+  const bound = (ev: KeyEventLike, action: KeyAction, fallbackName: string): boolean => {
+    const specs = ctx.keybinds?.(action);
+    if (specs?.length) {
+      for (const specText of specs) {
+        const spec = parseKeySpec(specText);
+        if (!spec) continue;
+        if (keyMatch(ev, spec)) return true;
+        const alias = enterAlias(spec.name);
+        if (alias && keyMatch(ev, { ...spec, name: alias })) return true;
+      }
+      return false;
+    }
+    if (ev.name !== fallbackName) return false;
+    return !ev.ctrl && !ev.shift && !ev.meta && !ev.option && !ev.super;
+  };
+
   const handleKey = (ev: KeyEventLike): boolean => {
     if (ctx.viewMode() !== "columns") return false;
-    if (ev.name === "left") {
+    // only the CONFIGURED nav binds claim a key: alt+left (history), alt+up
+    // (parent) and shift+arrows (extend) must reach the remapped-action block
+    if (bound(ev, "moveLeft", "left")) {
       model.moveCol(-1);
       void renderColumns();
       return true;
     }
-    if (ev.name === "right") {
+    if (bound(ev, "moveRight", "right")) {
       model.moveCol(1);
       void renderColumns();
       return true;
     }
-    if (ev.name === "up") {
+    if (bound(ev, "moveUp", "up")) {
       void model.moveRow(-1).then(() => renderColumns());
       return true;
     }
-    if (ev.name === "down") {
+    if (bound(ev, "moveDown", "down")) {
       void model.moveRow(1).then(() => renderColumns());
       return true;
     }
-    if (ev.name === "return") {
+    // option+Enter opens a macOS bundle as a folder (grid's "Open as Folder"
+    // equivalent). It is checked BEFORE the configured binding because keyMatch
+    // is modifier-strict and alt+Enter is bound to Properties globally.
+    if ((ev.name === "return" || ev.name === "enter") && ev.option) {
+      void model.openActive(true).then(() => renderColumns());
+      return true;
+    }
+    if (bound(ev, "openSelected", "return")) {
       void model.openActive().then(() => renderColumns());
       return true;
     }
-    if (ev.name === "backspace") {
+    if (bound(ev, "parentDir", "backspace")) {
       void model.backspace().then((handled) => {
         if (handled) void renderColumns();
       });

@@ -1093,6 +1093,30 @@ describe("plugins view (separate from settings)", () => {
     plugGroups = [];
   });
 
+  test("a throwing plugin toggle get() never bricks the root menu", async () => {
+    plugGroups = [
+      {
+        header: "boom",
+        rows: [
+          {
+            kind: "toggle",
+            label: "enabled",
+            get: () => {
+              throw new Error("boom");
+            },
+            set: () => {},
+          },
+        ],
+      },
+    ];
+    await openRoot();
+    // the count read is guarded: the menu still paints every root entry
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("Settings");
+    expect(frame).toContain("Plugins");
+    plugGroups = [];
+  });
+
   test("activating Plugins opens its own view rendering that plugin's rows", async () => {
     plugGroups = [helloGroup(() => {})];
     await openRoot();

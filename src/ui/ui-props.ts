@@ -10,7 +10,7 @@ import { canThumbVideo } from "./icons";
 import type { IconSlotHandle, IconSpec, IconState, SlotElement, ThumbJob } from "./ui-slots";
 import { dirWalkStats, fmtBytes, fmtDate, inodeKey, mimeLabelFor } from "../fs/propsinfo";
 import { readStarredList, starredRegistryAdd, starredRegistryRemove } from "../fs/recent";
-import { isDarwin, parseMdlsTags, syncStarTag } from "../fs/darwin";
+import { isAppBundle, isDarwin, parseMdlsTags, syncStarTag } from "../fs/darwin";
 import { isBookmarked, setBookmarked, loadSystemPlaces } from "../fs/places";
 import type { ListEntry } from "./ui-menu";
 import { FLOAT_Z, type Floats } from "./floats";
@@ -56,6 +56,9 @@ type PropsCtx = {
   uiStyle(): UiStyle;
   colors(): Theme;
   home: string;
+  // live terminal width: fixed-width dialogs clamp to termW-2 on narrow
+  // terminals. Absent = the design width (old fakes keep working).
+  termW?(): number;
   makeIconSlot(
     name: string,
     states: IconState[],
@@ -82,6 +85,9 @@ const execFileP = promisify(execFile);
 export const makeProps = (ctx: PropsCtx) => {
   // --- Properties dialog (floating, right-click -> Properties…) ---
   const PROPS_W = 46;
+  // the design width, clamped so the panel never overflows a narrow terminal
+  // (min 32 keeps the two-column rows readable)
+  const propsW = (): number => Math.max(32, Math.min(PROPS_W, (ctx.termW?.() ?? PROPS_W) - 2));
   let propsOpen = false;
   let dirWalkGen = 0;
 
@@ -106,7 +112,7 @@ export const makeProps = (ctx: PropsCtx) => {
     ctx.openDialog({
       id: "tfm-props",
       zIndex: FLOAT_Z.props,
-      width: PROPS_W,
+      width: propsW(),
       paddingDiv: 4,
       rows: () => [],
       onClose: () => closeProps(),
@@ -116,6 +122,7 @@ export const makeProps = (ctx: PropsCtx) => {
 
   const openSingle = (targetPath: string): void => {
     const colors = ctx.colors();
+    const W = propsW();
     let st: Stats | null = null;
     try {
       // on-disk cost: a symlink reports its own bytes, never the target's
@@ -314,8 +321,8 @@ export const makeProps = (ctx: PropsCtx) => {
         { width: "100%", height: 1, flexDirection: "row", justifyContent: "center", paddingLeft: 1, paddingRight: 1 },
         Text({
           content:
-            path.basename(targetPath).length > PROPS_W - 4
-              ? `${path.basename(targetPath).slice(0, PROPS_W - 5)}…`
+            path.basename(targetPath).length > W - 4
+              ? `${path.basename(targetPath).slice(0, W - 5)}…`
               : path.basename(targetPath),
           fg: colors.white,
         }),
@@ -334,7 +341,7 @@ export const makeProps = (ctx: PropsCtx) => {
     panel.add(
       Box(
         { width: "100%", height: 1, paddingLeft: 1, paddingRight: 1 },
-        Text({ content: ` ${"~".repeat(PROPS_W - 2)}`, fg: colors.divider }),
+        Text({ content: ` ${"~".repeat(W - 2)}`, fg: colors.divider }),
       ),
     );
 
@@ -345,7 +352,7 @@ export const makeProps = (ctx: PropsCtx) => {
         Text({ content: ` ${label}`.padEnd(12), fg: colors.sidebarFgMuted }),
         Text({
           ...(id ? { id } : {}),
-          content: v.length > PROPS_W - 14 ? `${v.slice(0, PROPS_W - 15)}…` : v,
+          content: v.length > W - 14 ? `${v.slice(0, W - 15)}…` : v,
           fg: colors.white,
         }),
       );
@@ -378,7 +385,16 @@ export const makeProps = (ctx: PropsCtx) => {
         }
       });
     }
-    panel.add(row("type", isDirTarget ? "inode/directory" : mimeLabelFor(targetPath)));
+    panel.add(
+      row(
+        "type",
+        isDirTarget
+          ? isDarwin() && isAppBundle(targetPath)
+            ? "application/x-mac-application"
+            : "inode/directory"
+          : mimeLabelFor(targetPath),
+      ),
+    );
     panel.add(row("location", path.dirname(targetPath).replace(ctx.home, "~")));
     panel.add(row("modified", fmtDate(st.mtimeMs)));
     panel.add(row("accessed", fmtDate(st.atimeMs)));
@@ -422,6 +438,7 @@ export const makeProps = (ctx: PropsCtx) => {
 
   const openMulti = (items: { path: string; st: Stats }[]): void => {
     const colors = ctx.colors();
+    const W = propsW();
     const panel = openPropsDialog();
     if (!panel) return;
 
@@ -468,7 +485,7 @@ export const makeProps = (ctx: PropsCtx) => {
     panel.add(
       Box(
         { width: "100%", height: 1, paddingLeft: 1, paddingRight: 1 },
-        Text({ content: ` ${"~".repeat(PROPS_W - 2)}`, fg: colors.divider }),
+        Text({ content: ` ${"~".repeat(W - 2)}`, fg: colors.divider }),
       ),
     );
 
@@ -525,7 +542,7 @@ export const makeProps = (ctx: PropsCtx) => {
           Text({
             content: (() => {
               const s = ` ${path.basename(it.path)}`;
-              return s.length > PROPS_W - 1 ? `${s.slice(0, PROPS_W - 2)}…` : s;
+              return s.length > W - 1 ? `${s.slice(0, W - 2)}…` : s;
             })(),
             fg: colors.white,
           }),
@@ -560,8 +577,8 @@ export const makeProps = (ctx: PropsCtx) => {
   let lastTarget: string | string[] | null = null;
 
   const openProperties = (target: string | string[]): void => {
-    lastTarget = target;
     if (!Array.isArray(target)) {
+      lastTarget = target;
       openSingle(target);
       return;
     }
@@ -571,6 +588,13 @@ export const makeProps = (ctx: PropsCtx) => {
         stats.push({ path: p, st: lstatSync(p) });
       } catch {}
     }
+    // nothing survives (all sources vanished since the selection was made):
+    // say so instead of a silent no-op
+    if (stats.length === 0) {
+      ctx.notify("Can't show properties (source gone)", "properties", "error");
+      return;
+    }
+    lastTarget = target;
     const only = stats[0];
     if (stats.length === 1 && only) {
       openSingle(only.path);

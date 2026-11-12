@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  beginBand,
   commitPendingCtrlToggle,
+  type BandCtx,
   fallbackDrag,
+  finalizeBand,
   finishDragState,
   gridDrag,
   makeEntryMouseHandlers,
+  updateBandRect,
   type GridInputCtx,
 } from "./grid-input";
 
@@ -486,6 +490,75 @@ describe("mouse pointer shapes", () => {
       ["/w/a.txt", true],
       ["/w/a.txt", false],
     ]);
+  });
+});
+
+describe("rubber-band selection cursor", () => {
+  const makeBand = () => {
+    const coords: Record<string, { screenX: number; screenY: number; width: number; height: number }> = {
+      "/w/a": { screenX: 0, screenY: 0, width: 5, height: 2 },
+      "/w/b": { screenX: 5, screenY: 0, width: 5, height: 2 },
+      "/w/c": { screenX: 0, screenY: 2, width: 5, height: 2 },
+    };
+    const refs = new Map<string, { selected: boolean; tileId: string }>();
+    for (const k of Object.keys(coords)) refs.set(k, { selected: false, tileId: k });
+    const state = { focus: -1 as number, anchor: 1 as number | null, visuals: [] as string[], previews: 0 };
+    const ctx: BandCtx = {
+      byId: (id) => coords[id] as any,
+      tileRefs: refs,
+      clearTileSelection: () => {
+        for (const r of refs.values()) r.selected = false;
+      },
+      setTileVisual: (key, mode) => void state.visuals.push(`${key}:${mode}`),
+      updateSelectionStatusReal: () => {},
+      renderPreview: () => {
+        state.previews++;
+      },
+      setSelAnchor: (v) => {
+        state.anchor = v;
+      },
+      setFocusIdx: (v) => {
+        state.focus = v;
+      },
+    };
+    return { ctx, refs, state };
+  };
+
+  test("focus + anchor land on the last intersecting tile (map order)", () => {
+    const { ctx, refs, state } = makeBand();
+    beginBand({ x: 0, y: 0, button: 0 });
+    updateBandRect(ctx, { x: 9, y: 1 });
+    finalizeBand(ctx, { x: 9, y: 1 });
+    expect(refs.get("/w/a")!.selected).toBe(true);
+    expect(refs.get("/w/b")!.selected).toBe(true);
+    expect(refs.get("/w/c")!.selected).toBe(false);
+    expect(state.focus).toBe(1); // b is the last hit in build order
+    expect(state.anchor).toBe(1);
+  });
+
+  test("a band that hits nothing leaves the cursor unset (fresh listing)", () => {
+    const { ctx, state } = makeBand();
+    beginBand({ x: 50, y: 50, button: 0 });
+    finalizeBand(ctx, { x: 100, y: 100 });
+    expect(state.focus).toBe(-1);
+    expect(state.anchor).toBeNull();
+  });
+
+  test("only the mounted window is hit-tested (off-window byId skipped)", () => {
+    const { ctx, refs, state } = makeBand();
+    let lookups = 0;
+    const baseById = ctx.byId;
+    ctx.byId = (id) => {
+      if (id.startsWith("/w/")) lookups++;
+      return baseById(id);
+    };
+    ctx.visibleKeys = () => new Set(["/w/a", "/w/b"]);
+    beginBand({ x: 0, y: 0, button: 0 });
+    updateBandRect(ctx, { x: 9, y: 1 });
+    finalizeBand(ctx, { x: 9, y: 1 });
+    expect(lookups).toBe(2); // a + b only, not c
+    expect(state.focus).toBe(1);
+    expect(refs.get("/w/a")!.selected).toBe(true);
   });
 });
 

@@ -193,7 +193,7 @@ describe("openDialog chokepoint", () => {
       const frame = t.captureCharFrame();
       // the irreversibility warning must survive — the old 36-wide slice cut it
       // (wrapped over two lines, so assert the words, not one contiguous span)
-      expect(frame).toContain("cannot be");
+      expect(frame).toContain("cannot");
       expect(frame).toContain("undone");
       expect(frame).toContain("Permanently delete 3 items?");
       // both buttons paint in full, not clipped by the panel edge
@@ -269,6 +269,70 @@ const mkLive = (t: TestRendererSetup, floats: Floats, getColors: () => any) => {
     }),
   };
 };
+
+describe("dialog keyboard + narrow terminals", () => {
+  test("conflict: ←/→ move the Replace/Keep both/Skip cursor, enter picks it", async () => {
+    const t = await createTestRenderer({ width: 90, height: 24 });
+    try {
+      const floats = makeFloats();
+      const { conflict } = mkLive(t, floats, makeCtx().ctx.colors);
+      let choice = "";
+      const p = conflict.promptConflict("/a/b.txt", 0).then((c) => (choice = c));
+      await t.renderOnce();
+      // default cursor is Skip (a stray Enter never replaces)
+      conflict.submit();
+      await p;
+      expect(choice).toBe("skip");
+      expect(floats.isOpen("conflict")).toBe(false);
+
+      const p2 = conflict.promptConflict("/a/b.txt", 0).then((c) => (choice = c));
+      await t.renderOnce();
+      conflict.moveFocus(-1); // skip -> keepBoth
+      await t.renderOnce();
+      conflict.submit();
+      await p2;
+      expect(choice).toBe("keepBoth");
+    } finally {
+      t.renderer.destroy();
+    }
+  });
+
+  test("moveFocus no-ops while the dialog is closed", () => {
+    const { ctx, floats } = makeCtx();
+    const conflict = makeConflict(makeDialogs(ctx), {
+      colors: ctx.colors,
+      uiStyle: ctx.uiStyle,
+      byId: () => null,
+      drainIconQueue: () => {},
+      floats,
+    });
+    expect(() => conflict.moveFocus(1)).not.toThrow();
+    expect(() => conflict.submit()).not.toThrow();
+  });
+
+  test("a fixed-width dialog clamps to termW-2 on a narrow terminal", async () => {
+    const t = await createTestRenderer({ width: 30, height: 24 });
+    try {
+      const cols = makeCtx().ctx.colors;
+      const dialogs = makeDialogs({
+        byId: (id) => t.renderer.root.findDescendantById(id),
+        rootAdd: (n) => t.renderer.root.add(n),
+        stripSelectable: () => {},
+        termH: () => 24,
+        termW: () => 30,
+        uiStyle: () => "solid" as const,
+        colors: cols,
+        closeFileMenu: () => {},
+      });
+      dialogs.openDialog({ id: "tfm-test", zIndex: 3300, width: 48, rows: () => [], onClose: () => {} });
+      await t.renderOnce();
+      const panel = t.renderer.root.findDescendantById("tfm-test-panel") as any;
+      expect(panel.width).toBe(28);
+    } finally {
+      t.renderer.destroy();
+    }
+  });
+});
 
 describe("dialog repaints", () => {
   test("conflict repaint() repaints panel + buttons + texts, keeps the pending choice", async () => {

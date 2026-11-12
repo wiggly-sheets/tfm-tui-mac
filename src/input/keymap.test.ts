@@ -868,6 +868,182 @@ describe("file operation keys", () => {
   });
 });
 
+describe("cursor vs selection (arrow movement keeps the set)", () => {
+  test("select-all then down preserves the selection and moves the cursor", () => {
+    const h = makeHarness();
+    h.key("a", { ctrl: true }); // select all
+    h.selection.selectTileAt(0);
+    h.selection.selectAll();
+    h.key("down");
+    expect(h.selection.selPaths().length).toBe(4);
+    expect(h.selection.focusIdx()).toBe(1);
+  });
+
+  test("space+down+space builds a two-tile set", () => {
+    const h = makeHarness();
+    h.key("space"); // focuses + selects a.txt
+    h.key("down"); // cursor b.txt, a.txt stays selected
+    h.key("space");
+    expect(
+      h.selection
+        .selPaths()
+        .map((p) => p.path)
+        .sort(),
+    ).toEqual(["a.txt", "b.txt"]);
+  });
+
+  test("enter opens the cursor even when the multi-selection excludes it", () => {
+    const h = makeHarness();
+    h.selection.selectTileAt(0); // a.txt selected
+    h.selection.moveCursorTo(2); // cursor on c.txt, selection untouched
+    h.key("return");
+    expect(h.calls).toEqual(["open:c.txt"]);
+  });
+
+  test("delete still acts on selPaths, not the cursor tile", () => {
+    const h = makeHarness();
+    h.selection.selectTileAt(0);
+    h.selection.moveCursorTo(2);
+    h.key("delete");
+    expect(h.calls).toEqual(["trash:a.txt"]);
+  });
+});
+
+describe("type-to-search no longer swallows every key", () => {
+  const searching = (query: string): Partial<KeyRouterCtx> => ({
+    searchVisible: () => true,
+    searchQuery: () => query,
+  });
+
+  test("printable keys stay with the box (typing-to-filter)", () => {
+    const h = makeHarness(searching("a"));
+    h.key("b");
+    h.key("space");
+    expect(h.calls).toEqual([]);
+    expect(h.calls).not.toContain("search:begin:b");
+  });
+
+  test("arrows fall through to grid navigation while the box is open", () => {
+    const h = makeHarness(searching("a"));
+    h.key("down");
+    expect(h.selection.focusIdx()).toBe(0);
+    h.key("right");
+    expect(h.selection.focusIdx()).toBe(1);
+  });
+
+  test("actions are consumed (backspace/delete never navigate or trash)", () => {
+    const h = makeHarness(searching("a"));
+    h.selection.selectTileAt(0);
+    h.calls.length = 0;
+    h.key("delete");
+    h.key("backspace");
+    expect(h.calls).toEqual([]);
+  });
+
+  test("esc and enter stay owned by the search layer", () => {
+    const h = makeHarness(searching("a"));
+    h.key("escape");
+    expect(h.calls).toEqual(["search:clear", "renderGrid"]);
+  });
+});
+
+describe("sidebar focus (hide + escape)", () => {
+  test("esc leaves the sidebar instead of opening the esc menu", () => {
+    const h = makeHarness();
+    h.key("left");
+    expect(h.router.sidebarActive()).toBe(true);
+    h.calls.length = 0;
+    h.key("escape");
+    expect(h.router.sidebarActive()).toBe(false);
+    expect(h.calls).toEqual(["places:normalize"]);
+    // the NEXT escape opens the menu (the sidebar no longer owns it)
+    h.calls.length = 0;
+    h.key("escape");
+    expect(h.calls).toEqual(["escmenu:open"]);
+  });
+
+  test("a hidden sidebar is not enterable; grid arrows keep working", () => {
+    const h = makeHarness({ sidebarVisible: () => false });
+    h.key("left");
+    expect(h.router.sidebarActive()).toBe(false);
+    h.key("down");
+    expect(h.selection.focusIdx()).toBe(0);
+  });
+
+  test("a visible sidebar still takes focus", () => {
+    const h = makeHarness({ sidebarVisible: () => true });
+    h.key("left");
+    expect(h.router.sidebarActive()).toBe(true);
+  });
+});
+
+describe("properties dialog + cursor popup precedence", () => {
+  test("a permission popup above props owns esc/arrows; props stays open", () => {
+    const fmenu = {
+      idx: 0,
+      subIdx: null as number | null,
+      entries: [{ action: () => {} }, { action: () => {} }],
+    };
+    const h = makeHarness({ propsIsOpen: () => true, getFileMenuState: () => fmenu });
+    h.key("down");
+    expect(fmenu.idx).toBe(1);
+    h.key("escape");
+    expect(h.calls).toContain("fmenu:close");
+    expect(h.calls).not.toContain("props:close");
+  });
+
+  test("without a popup, esc still closes props", () => {
+    const h = makeHarness({ propsIsOpen: () => true });
+    h.key("escape");
+    expect(h.calls).toEqual(["props:close"]);
+  });
+});
+
+describe("conflict dialog keyboard", () => {
+  test("left/right move the choice cursor; enter activates it", () => {
+    const h = makeHarness({
+      conflict: {
+        isOpen: () => true,
+        closeConflict: (p) => h.calls.push(`conflict:close:${p}`),
+        moveFocus: (d) => h.calls.push(`conflict:move:${d}`),
+        submit: () => h.calls.push("conflict:submit"),
+      },
+    });
+    h.key("left");
+    h.key("right");
+    h.key("return");
+    expect(h.calls).toEqual(["conflict:move:-1", "conflict:move:1", "conflict:submit"]);
+    h.key("escape");
+    expect(h.calls).toContain("conflict:close:skip");
+  });
+});
+
+describe("terminal focus owns quit/restart", () => {
+  test("ctrl+q reaches the shell instead of quitting", () => {
+    const h = makeHarness({ termOwnsKeyboard: () => true });
+    h.key("q", { ctrl: true });
+    expect(h.calls).not.toContain("quit");
+    expect(h.calls).toEqual(["notify:terminal:info:Terminal owns keyboard — click the grid to leave"]);
+  });
+
+  test("quit still works once the terminal is left", () => {
+    const h = makeHarness({ termOwnsKeyboard: () => false });
+    h.key("q", { ctrl: true });
+    expect(h.calls).toEqual(["quit"]);
+  });
+});
+
+test.skipIf(process.platform !== "darwin")("darwin: opening a .app bundle launches it instead of navigating", () => {
+  const h = makeHarness();
+  const appPath = "/Applications/Example.app";
+  h.seedTiles([appPath, "b.txt"]);
+  const ref = h.selection.tileRefs.get(appPath)!;
+  ref.isDir = true;
+  h.selection.selectTileAt(0);
+  h.key("return");
+  expect(h.calls).toEqual([`open:${appPath}`]);
+});
+
 describe("remappable keybinds", () => {
   test("remapped action fires on the new key and not the old one", () => {
     const h = makeHarness();

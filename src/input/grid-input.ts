@@ -7,6 +7,7 @@
 import type { MaybeNode } from "../lib/node-like";
 import type { PointerStyle } from "../lib/pointer";
 import type { ListEntry } from "../ui/ui-menu";
+import { isAppBundle, isDarwin } from "../fs/darwin";
 
 export type ClipItem = { path: string; isDir: boolean };
 
@@ -32,8 +33,11 @@ export type TileMouseEvent = {
 
 // Tile highlight states painted by selection.setTileVisual. Names replace the
 // bare 0/1/2 literals at call sites — Rest also covers the cut-dim case (the
-// dim itself is resolved inside setTileVisual via isCutKey).
-export const TileVisual = { Rest: 0, Hover: 1, Selected: 2 } as const;
+// dim itself is resolved inside setTileVisual via isCutKey). Cursor is the
+// keyboard cursor on an UNSELECTED tile: accent icon + accent label over the
+// rest surface (it is not a raster state of its own — setTileVisual maps it
+// onto the existing accent raster state).
+export const TileVisual = { Rest: 0, Hover: 1, Selected: 2, Cursor: 3 } as const;
 export type TileVisualMode = (typeof TileVisual)[keyof typeof TileVisual];
 
 // structural view of a tile ref — the full TileRefs in ./selection satisfies this
@@ -222,12 +226,18 @@ export const scheduleDragCleanup = (ctx: GridInputCtx): void => {
 
 export type BandCtx = {
   byId(id: string): MaybeNode;
-  tileRefs: Map<string, { selected: boolean; tileId: string }>;
+  tileRefs: Map<string, { selected: boolean; tileId: string; tileNode?: MaybeNode }>;
+  // keys currently mounted in the window: hit-testing only needs these (a
+  // 10k-folder band otherwise does one full-tree byId per ref). Absent = all.
+  visibleKeys?(): ReadonlySet<string> | null;
   clearTileSelection(): void;
   setTileVisual(key: string, mode: TileVisualMode): void;
   updateSelectionStatusReal(): void;
   renderPreview(): void | Promise<void>;
   setSelAnchor(v: number | null): void;
+  // the band leaves the keyboard cursor on its last intersecting tile; the
+  // index is in tileRefs/focusKeys build order (see finalizeBand)
+  setFocusIdx(v: number): void;
 };
 
 export const BAND_ID = "tfm-band";
@@ -270,7 +280,17 @@ export const finalizeBand = (ctx: BandCtx, ev: { x: number; y: number }): void =
   const x1 = Math.max(start.x, ev.x),
     y1 = Math.max(start.y, ev.y);
   ctx.clearTileSelection();
+  // tileRefs is in focusKeys/build order, so the iteration index IS the
+  // keyboard-cursor index. Track the last intersecting tile: the band leaves
+  // the cursor (and its extend anchor) there instead of on a stale pre-band
+  // tile, or Enter/arrows act on a tile the band already replaced.
+  let idx = -1;
+  let lastHit = -1;
+  const visible = ctx.visibleKeys?.() ?? null;
   ctx.tileRefs.forEach((refs, key) => {
+    idx++;
+    // off-window tiles have no mounted node; skip the DFS entirely
+    if (visible && !visible.has(key)) return;
     const t = ctx.byId(refs.tileId);
     if (!t) return;
     // width/height carry OpenTUI's CssLike union; a mounted tile is always a
@@ -282,8 +302,11 @@ export const finalizeBand = (ctx: BandCtx, ev: { x: number; y: number }): void =
     if (tx < x1 + 1 && tx + tw > x0 && ty < y1 + 1 && ty + th > y0) {
       refs.selected = true;
       ctx.setTileVisual(key, TileVisual.Selected);
+      lastHit = idx;
     }
   });
+  ctx.setFocusIdx(lastHit);
+  if (lastHit >= 0) ctx.setSelAnchor(lastHit);
   ctx.updateSelectionStatusReal();
   void ctx.renderPreview();
 };
@@ -340,7 +363,7 @@ export const makeEntryMouseHandlers = (ctx: GridInputCtx) => {
         lastClick = now;
         return false;
       }
-      if (entry.isDir) ctx.navigate(key);
+      if (entry.isDir && !(isDarwin() && isAppBundle(key))) ctx.navigate(key);
       else ctx.openFileDefault(key);
       lastClick = 0;
       return true;

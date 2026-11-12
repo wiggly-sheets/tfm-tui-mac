@@ -232,12 +232,16 @@ describe("toggleFocused / invertSelection", () => {
     expect(h.sel.selPaths().map((p) => p.path)).toEqual(["b"]);
   });
 
-  test("toggleFocused with no focus is a no-op", () => {
+  test("toggleFocused with no cursor seeds tile 0 (space works on a fresh listing)", () => {
     const h = makeHarness();
-    h.sel.setFocusKeys(["a"]);
-    h.addTile("a");
-    expect(h.sel.toggleFocused()).toBe(false);
-    expect(h.sel.selPaths()).toEqual([]);
+    const keys = ["a", "b"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    expect(h.sel.toggleFocused()).toBe(true);
+    expect(h.sel.focusIdx()).toBe(0);
+    expect(h.sel.tileRefs.get("a")!.selected).toBe(true);
   });
 
   test("invertSelection flips every tile", () => {
@@ -497,6 +501,162 @@ describe("tileStates", () => {
     expect(dim[0]!.fg).toBe(COLORS.sidebarFgMuted);
     expect(norm[3]!.fg).toBe(COLORS.sidebarFgMuted);
     expect(norm[2]!.bg).toBe(COLORS.accentBg);
+  });
+});
+
+describe("selection model: cursor distinct from selection", () => {
+  test("arrow movement keeps the selected set and only moves the cursor", () => {
+    const h = makeHarness();
+    const keys = ["a", "b", "c", "d"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    h.sel.selectTileAt(0);
+    h.sel.selectAll();
+    h.sel.moveFocus(0, 1);
+    expect(
+      h.sel
+        .selPaths()
+        .map((p) => p.path)
+        .sort(),
+    ).toEqual(["a", "b", "c", "d"]);
+    expect(h.sel.focusIdx()).toBe(1);
+  });
+
+  test("space+down+space builds a two-tile set (toggle keeps the cursor put)", () => {
+    const h = makeHarness();
+    const keys = ["a", "b", "c"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    h.sel.toggleFocused(); // focuses + selects a
+    h.sel.moveFocus(0, 1); // cursor b, a stays selected
+    h.sel.toggleFocused();
+    expect(
+      h.sel
+        .selPaths()
+        .map((p) => p.path)
+        .sort(),
+    ).toEqual(["a", "b"]);
+    expect(h.sel.focusIdx()).toBe(1);
+  });
+
+  test("unselected cursor paints the accent cue over the rest surface", () => {
+    const h = makeHarness();
+    const keys = ["a", "b"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    h.sel.selectAll();
+    h.sel.moveCursorTo(1); // cursor b (selected)
+    h.sel.toggleFocused(); // b off, cursor stays on b
+    expect(h.sel.tileRefs.get("b")!.selected).toBe(false);
+    // accent icon raster (state 1) and accent label, but the REST tile fill
+    expect(h.iconEvents.some((e) => e.key === "b" && e.mode === 1)).toBe(true);
+    expect(h.nodes.get("label:b").fg).toBe(COLORS.accent);
+    expect(h.nodes.get("tile:b").backgroundColor).toBe(COLORS.bg);
+  });
+
+  test("only one cursor is painted: the old tile falls back to rest", () => {
+    const h = makeHarness();
+    const keys = ["a", "b", "c"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    h.sel.selectAll();
+    h.sel.moveCursorTo(1);
+    h.sel.toggleFocused(); // b unselected -> b is the cursor cue
+    expect(h.iconEvents.filter((e) => e.key === "b").at(-1)?.mode).toBe(1);
+    h.sel.moveFocus(0, 1); // cursor c; b is no longer the cursor
+    expect(h.iconEvents.filter((e) => e.key === "b").at(-1)?.mode).toBe(0);
+  });
+
+  test("explicit selectTileAt still replaces the selection", () => {
+    const h = makeHarness();
+    const keys = ["a", "b"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    h.sel.selectAll();
+    h.sel.selectTileAt(1);
+    expect(h.sel.selPaths().map((p) => p.path)).toEqual(["b"]);
+  });
+
+  test("ensureCursor seeds tile 0 when the previous focus key vanished", () => {
+    const h = makeHarness();
+    h.sel.setFocusKeys(["a", "b"]);
+    h.addTile("a");
+    h.addTile("b");
+    h.sel.setFocusIdx(-1);
+    h.sel.ensureCursor();
+    expect(h.sel.focusIdx()).toBe(0);
+    // cursor-only: Enter works, but nothing is selected until the user acts
+    expect(h.sel.tileRefs.get("a")!.selected).toBe(false);
+    // empty listing keeps the -1 (nothing to land on)
+    h.sel.setFocusKeys([]);
+    h.sel.ensureCursor();
+    expect(h.sel.focusIdx()).toBe(-1);
+  });
+
+  test("after a real build the selection follows the cursor (no stale file)", () => {
+    const h = makeHarness();
+    const keys = ["a", "b", "c"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    h.sel.ensureCursor(); // fresh listing: cursor at 0, nothing selected
+    expect(h.sel.selPaths()).toEqual([]);
+    h.sel.moveFocus(0, 1);
+    expect(h.sel.selPaths().map((p) => p.path)).toEqual(["b"]); // cursor == selection
+    h.sel.moveFocus(0, 1);
+    expect(h.sel.selPaths().map((p) => p.path)).toEqual(["c"]);
+  });
+
+  test("space+down+space from a fresh listing builds a two-tile set", () => {
+    const h = makeHarness();
+    const keys = ["a", "b", "c"];
+    h.sel.setFocusKeys(keys);
+    keys.forEach((k) => {
+      h.addTile(k);
+    });
+    h.sel.ensureCursor();
+    h.sel.toggleFocused(); // select a
+    h.sel.moveFocus(0, 1); // cursor b, a stays
+    h.sel.toggleFocused(); // add b
+    expect(
+      h.sel
+        .selPaths()
+        .map((p) => p.path)
+        .sort(),
+    ).toEqual(["a", "b"]);
+  });
+
+  test("a mouse-built set (band/ctrl-click) survives plain arrow movement", () => {
+    const h = makeHarness();
+    const keys = ["a", "b", "c", "d"];
+    h.sel.setFocusKeys(keys);
+    for (const k of keys) h.addTile(k);
+    h.sel.ensureCursor();
+    // band-style mutation: clear then select b/c/d directly (finalizeBand and
+    // ctrl-click do the same without setting the internal explicit flag)
+    h.sel.clearTileSelection();
+    for (const k of ["b", "c", "d"]) {
+      h.sel.tileRefs.get(k)!.selected = true;
+    }
+    h.sel.setFocusIdx(1);
+    h.sel.moveFocus(0, 1);
+    expect(
+      h.sel
+        .selPaths()
+        .map((p) => p.path)
+        .sort(),
+    ).toEqual(["b", "c", "d"]);
   });
 });
 

@@ -1,8 +1,9 @@
 // --- Keyboard router: ONE keypress entry point with a strict precedence
-// chain — capture > quit/restart > overlay-modals (prompt/bulk-rename/conflict/yes-no/rename/
-// props, which keep their keys even above an open pick) > pick > esc-menu >
-// terminal > path-edit > file menu > search > specifics (histBack/showProps/…)
-// > sidebar > extend > grid > parentDir > type-to-search > actions.
+// chain — capture > terminal > quit/restart > overlay-modals
+// (prompt/bulk-rename/conflict/yes-no/rename/props, which keep their keys even
+// above an open pick) > pick > esc-menu > path-edit > file menu > search >
+// specifics (histBack/showProps/…) > sidebar > extend > grid > parentDir >
+// type-to-search > actions.
 // ALL dispatchable keys are remappable via config [keys] (see config-schema.ts):
 // the move*/openSelected/extend*/page*/first/last binds drive the grid AND
 // every menu/sidebar/search context (one row moves everywhere). Still
@@ -16,6 +17,7 @@ import path from "node:path";
 import { RECENT_URI, STARRED_URI } from "../fs/uri";
 import { archiveParent } from "../app/archive-nav";
 import { loadSystemPlaces } from "../fs/places";
+import { isAppBundle, isDarwin } from "../fs/darwin";
 import type { KeyAction } from "../config/config-schema";
 import { KEY_SCHEMA } from "../config/config-schema";
 import { type KeyEventLike, keyMatch, parseKeySpec } from "../config/keyspec";
@@ -50,7 +52,14 @@ export type KeyRouterCtx = {
   quit(): void;
   restart(): void;
   // --- modal layers (precedence order) ---
-  conflict: { isOpen(): boolean; closeConflict(policy: "skip"): void };
+  conflict: {
+    isOpen(): boolean;
+    closeConflict(policy: "skip"): void;
+    // keyboard cursor over Replace/Keep both/Skip (esc stays skip). Optional
+    // so older fakes keep the esc-only behavior.
+    moveFocus?(delta: number): void;
+    submit?(): void;
+  };
   yesNo: { isOpen(): boolean; close(): void; moveFocus(delta: number): void; submit(): void };
   // [ui] type-to-search knob (live read): false = bare keys never filter.
   // The yazi preset flips it off (it binds bare j/k/h/l…); startSearch
@@ -117,9 +126,21 @@ export type KeyRouterCtx = {
     handleKey(ev: KeyPressEvent): boolean;
   };
   // --- sidebar kb-focus state (read by makeChrome for the highlight) ---
-  placesHost: Array<{ selected: boolean; place: { scheme?: string; path?: string | null; mountDevice?: string } }>;
+  placesHost: Array<{
+    selected: boolean;
+    place: {
+      scheme?: string;
+      path?: string | null;
+      mountDevice?: string;
+      action?: "connect";
+      networkUri?: string;
+    };
+  }>;
   normalizePlaces(): void;
   mountDevice(dev: string): void;
+  // sidebar visibility (live). A hidden sidebar must not take keyboard focus;
+  // absent = visible (older fakes / single-pane callers).
+  sidebarVisible?(): boolean;
   // --- navigation / open ---
   navigate(dir: string): void;
   goBack(): void;
@@ -287,10 +308,10 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
   };
 
   // --- Precedence stages below: each returns true when it consumes the event.
-  // Order is load-bearing (capture > quit/restart > prompt > bulk-rename > conflict >
-  // yes/no > rename > props > esc-menu > terminal > path-edit > file menu >
-  // search > sidebar > grid > actions) — do not reorder; mirrors the module
-  // header. ---
+  // Order is load-bearing (capture > terminal > quit/restart > prompt >
+  // bulk-rename > conflict > yes/no > rename > props > esc-menu > path-edit >
+  // file menu > search > sidebar > grid > actions) — do not reorder; mirrors
+  // the module header. ---
 
   // Modal layers swallow everything while open (mostly mouse-driven dialogs).
   // true modals that keep their keys even above the pick overlay: floats
@@ -315,9 +336,15 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       ctx.bulkRename.handleKey(ev);
       return true;
     }
-    // override/conflict modal: esc = skip, everything else swallowed
+    // override/conflict modal: esc = skip; ←/→ (or moveLeft/Right) move the
+    // Replace/Keep both/Skip cursor, openSelected activates it. Everything
+    // else swallowed.
     if (ctx.conflict.isOpen()) {
       if (ev.name === "escape") ctx.conflict.closeConflict("skip");
+      else if (hitDir(ev, "moveLeft", "extendLeft") || hitDir(ev, "moveUp", "extendUp")) ctx.conflict.moveFocus?.(-1);
+      else if (hitDir(ev, "moveRight", "extendRight") || hitDir(ev, "moveDown", "extendDown"))
+        ctx.conflict.moveFocus?.(1);
+      else if (hit(ev, "openSelected")) ctx.conflict.submit?.();
       return true;
     }
     // yes/no confirm: esc = No, arrows move the No/Yes cursor (focus starts
@@ -333,8 +360,12 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     // else so arrows/shortcuts don't move grid focus mid-edit (esc/enter
     // handled at the source via handleKeyPress / "enter")
     if (ctx.isRenaming()) return true;
-    // floating properties dialog: esc/openSelected closes, else swallowed
+    // floating properties dialog: esc/openSelected closes, else swallowed.
+    // A cursor popup (the permission menu) can be open ABOVE it — the topmost
+    // layer owns esc/arrows/enter (floats policy: closing props takes the
+    // popup with it, but closing the popup must not close props).
     if (ctx.propsIsOpen()) {
+      if (ctx.getFileMenuState() && handleFileMenuKeys(ev)) return true;
       if (ev.name === "escape" || hit(ev, "openSelected")) ctx.closeProps();
       return true;
     }
@@ -354,17 +385,6 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       else if (hit(ev, "openSelected")) ctx.escMenu.menuActivate();
       return true;
     }
-    // embedded terminal owns the keyboard while focused — everything below is
-    // host UI. Toast once per focus visit, not per key, instead of
-    // dead-ending silently: users otherwise think the app hung.
-    if (ctx.termOwnsKeyboard()) {
-      if (!termHintShown) {
-        termHintShown = true;
-        ctx.notify("Terminal owns keyboard — click the grid to leave", "terminal", "info");
-      }
-      return true;
-    }
-    termHintShown = false;
     if (ctx.pathInputVisible() || ctx.pathEditMode()) {
       if (ev.name === "escape") ctx.exitPathEdit();
       return true;
@@ -419,8 +439,11 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     return true;
   };
 
-  // Type-to-search commit/cancel. Returns true while the search box is open
-  // (openSelected commits the first match, esc clears).
+  // Type-to-search commit/cancel. Esc clears and openSelected commits; a
+  // PRINTABLE key belongs to the focused Input (typing-to-filter) and is
+  // swallowed here. Everything else — arrows, pages, file actions — falls
+  // through to the normal chain so the grid still navigates while the box is
+  // open. Returns true only when the search layer claims the event.
   const commitSearch = (): void => {
     // open the first folder match (dirs sort first in the filtered grid);
     // fall back to opening the first file match. The grid render is DEBOUNCED
@@ -428,9 +451,14 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     // pre-debounce listing — only open a match that still satisfies the query.
     const q = (ctx.searchQuery?.() ?? "").toLowerCase();
     const matchesQ = (k?: string): boolean => !q || !k || path.basename(k).toLowerCase().includes(q);
+    // the cursor may have been walked to a specific match while the filter was
+    // open — Enter opens THAT entry, not the first match
+    const cursorKey = selection.focusKeys()[selection.focusIdx()];
+    const cursorHit =
+      cursorKey !== undefined && selection.tileRefs.has(cursorKey) && matchesQ(cursorKey) ? cursorKey : undefined;
     const firstDir = selection.focusKeys().find((key) => selection.tileRefs.get(key)?.isDir && matchesQ(key));
     const fallback = selection.focusKeys().find((key) => matchesQ(key));
-    const targetKey = firstDir ?? fallback;
+    const targetKey = cursorHit ?? firstDir ?? fallback;
     const refs = targetKey !== undefined ? selection.tileRefs.get(targetKey) : undefined;
     if (targetKey && refs) {
       if (refs.isDir) ctx.navigate(targetKey);
@@ -444,6 +472,9 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       void ctx.renderGrid();
     }
   };
+  // a printable key feeds the focused search Input natively (multi-char names
+  // like "space" are printable too); modifiers other than shift mean a chord
+  // (kept for reference by the comment above; navigation handling decides).
   const handleSearchKeys = (ev: KeyPressEvent): boolean => {
     if (!ctx.searchVisible()) return false;
     if (ev.name === "escape") {
@@ -452,7 +483,28 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       if (had) void ctx.renderGrid();
       return true;
     }
-    if (hit(ev, "openSelected")) commitSearch();
+    if (hit(ev, "openSelected")) {
+      commitSearch();
+      return true;
+    }
+    // only grid NAVIGATION falls through while the filter is open; every
+    // other key (backspace = parentDir, delete = trash, undo chords, …) is
+    // consumed so correcting a typo can never navigate or delete a file
+    const NAV_ACTIONS = [
+      "moveUp",
+      "moveDown",
+      "moveLeft",
+      "moveRight",
+      "pageUp",
+      "pageDown",
+      "firstItem",
+      "lastItem",
+      "extendUp",
+      "extendDown",
+      "extendLeft",
+      "extendRight",
+    ] as const;
+    if (NAV_ACTIONS.some((a) => hit(ev, a))) return false;
     return true;
   };
 
@@ -480,19 +532,31 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     placeIdx = -1;
     const target =
       rec.place.scheme === "recent" ? RECENT_URI : rec.place.scheme === "starred" ? STARRED_URI : rec.place.path;
-    if (target) ctx.navigate(target);
+    if (rec.place.action === "connect") ctx.connectServer();
+    else if (target) ctx.navigate(target);
+    else if (rec.place.networkUri) ctx.connectServer(rec.place.networkUri);
     else if (rec.place.mountDevice) ctx.mountDevice(rec.place.mountDevice);
   };
 
   // Sidebar keyboard focus (entered via moveLeft at the grid edge).
-  // Returns true while sidebar focus is active (it swallows all keys).
+  // Returns true while sidebar focus is active (it swallows all keys). Esc
+  // leaves the sidebar (and is consumed here — it must not fall through to the
+  // esc-menu opener); left/right hand focus back to the grid without touching
+  // the selection.
   const handleSidebarKeys = (ev: KeyPressEvent): boolean => {
     if (!sidebarActive) return false;
-    if (hitDir(ev, "moveUp", "extendUp")) setSidebarFocus(placeIdx - 1);
+    // the sidebar may disappear while it owns keyboard focus (ctrl+b toggle,
+    // hover-drawer collapse): never keep driving an invisible place cursor
+    if (ctx.sidebarVisible && !ctx.sidebarVisible()) {
+      leaveSidebarToGrid();
+      return false;
+    }
+    if (ev.name === "escape") leaveSidebarToGrid();
+    else if (hitDir(ev, "moveUp", "extendUp")) setSidebarFocus(placeIdx - 1);
     else if (hitDir(ev, "moveDown", "extendDown")) setSidebarFocus(placeIdx + 1);
     else if (hitDir(ev, "moveLeft", "extendLeft") || hitDir(ev, "moveRight", "extendRight")) {
       leaveSidebarToGrid();
-      selection.selectTileAt(selection.focusIdx() >= 0 ? selection.focusIdx() : 0);
+      selection.ensureCursor();
     } else if (hit(ev, "openSelected")) activateSidebarPlace();
     return true;
   };
@@ -502,12 +566,19 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     const key = selection.focusKeys()[selection.focusIdx()];
     const refs = key !== undefined ? selection.tileRefs.get(key) : undefined;
     if (key && refs) {
-      if (refs.isDir) ctx.navigate(key);
-      else ctx.openFileDefault(key);
+      if (refs.isDir) {
+        // macOS .app bundles are directories on disk but must be LAUNCHED, not
+        // entered (Finder semantics); every other directory navigates
+        if (isDarwin() && isAppBundle(key)) ctx.openFileDefault(key);
+        else ctx.navigate(key);
+      } else ctx.openFileDefault(key);
     }
   };
 
+  // sidebar keyboard focus is only enterable while the sidebar is on screen
+  // (a hidden sidebar would paint a keyboard cursor nowhere)
   const enterSidebarFromGrid = (): void => {
+    if (ctx.sidebarVisible && !ctx.sidebarVisible()) return;
     const selRec = ctx.placesHost.findIndex((place) => place.selected);
     const pressedKey = selection.focusIdx() >= 0 ? selection.focusKeys()[selection.focusIdx()] : undefined;
     if (pressedKey !== undefined) {
@@ -558,11 +629,11 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       return true;
     }
     if (hit(ev, "firstItem")) {
-      selection.selectTileAt(0);
+      selection.moveCursorTo(0);
       return true;
     }
     if (hit(ev, "lastItem")) {
-      selection.selectTileAt(selection.focusKeys().length - 1);
+      selection.moveCursorTo(selection.focusKeys().length - 1);
       return true;
     }
     return false;
@@ -696,7 +767,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     }
     if (sidebarActive) {
       leaveSidebarToGrid();
-      selection.selectTileAt(selection.focusIdx() >= 0 ? selection.focusIdx() : 0);
+      selection.ensureCursor();
       return;
     }
     const atLeftEdge = selection.focusIdx() === -1 || selection.focusIdx() % selection.colsAtBuild() === 0;
@@ -715,7 +786,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     }
     if (sidebarActive) {
       leaveSidebarToGrid();
-      selection.selectTileAt(selection.focusIdx() >= 0 ? selection.focusIdx() : 0);
+      selection.ensureCursor();
       return;
     }
     selection.moveFocus(1, 0);
@@ -794,7 +865,13 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "togglePreview", run: () => ctx.togglePreview() },
     { action: "toggleInfoSidebar", run: () => ctx.toggleInfoSidebar() },
     { action: "toggleQuicklook", run: () => ctx.toggleQuicklook?.() },
-    { action: "toggleSidebar", run: () => ctx.toggleSidebar() },
+    {
+      action: "toggleSidebar",
+      run: () => {
+        if (sidebarActive) leaveSidebarToGrid();
+        ctx.toggleSidebar();
+      },
+    },
     { action: "openTerminal", run: () => ctx.openTerminal() },
     { action: "connectServer", run: () => ctx.connectServer() },
     { action: "toggleView", run: () => ctx.toggleViewMode() },
@@ -830,8 +907,8 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     { action: "extendRight", run: doExtendRight },
     { action: "pageUp", run: () => selection.pageBy(-1) },
     { action: "pageDown", run: () => selection.pageBy(1) },
-    { action: "firstItem", run: () => selection.selectTileAt(0) },
-    { action: "lastItem", run: () => selection.selectTileAt(selection.focusKeys().length - 1) },
+    { action: "firstItem", run: () => selection.moveCursorTo(0) },
+    { action: "lastItem", run: () => selection.moveCursorTo(selection.focusKeys().length - 1) },
     { action: "toggleFocused", run: () => selection.toggleFocused() },
     { action: "invertSelection", run: () => selection.invertSelection() },
     {
@@ -869,6 +946,18 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     // keybind capture in the settings panel is the ONE state above quit:
     // recording ctrl+q must not quit the app mid-capture
     if (ctx.escMenu.captureKey(ev)) return;
+    // the embedded shell owns the keyboard while focused — even the quit and
+    // restart chords belong to it (ctrl+q must reach a running REPL; quit stays
+    // reachable once the terminal is left). Toast once per focus visit, not per
+    // key, instead of dead-ending silently: users otherwise think the app hung.
+    if (ctx.termOwnsKeyboard()) {
+      if (!termHintShown) {
+        termHintShown = true;
+        ctx.notify("Terminal owns keyboard — click the grid to leave", "terminal", "info");
+      }
+      return;
+    }
+    termHintShown = false;
     // any non-copy key ends the ctrl+c streak (and re-arms the quit hint);
     // the streak itself only advances at the copy dispatch below, so keys
     // swallowed by modals/terminal/pick never count toward it

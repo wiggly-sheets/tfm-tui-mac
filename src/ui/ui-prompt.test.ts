@@ -171,4 +171,25 @@ describe("prompt widget", () => {
       t.renderer.destroy();
     }
   });
+
+  test("password mode accepts a pasted multi-char sequence (masked)", async () => {
+    const t: TestRendererSetup = await createTestRenderer({ width: 90, height: 24 });
+    try {
+      const floats = makeFloats();
+      const prompt = mkPrompt(t, floats);
+      const pending = prompt.open({ title: "Password", okLabel: "OK", password: true });
+      await t.renderOnce();
+      // a paste arrives as ONE sequence: every printable char is collected
+      prompt.handleKey({ name: "paste", sequence: "hunter2" });
+      // an escape sequence (←) carries control bytes and is rejected whole
+      prompt.handleKey({ name: "left", sequence: "\u001b[D" });
+      prompt.handleKey({ name: "p", sequence: "p" });
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain("••••••••");
+      prompt.handleKey({ name: "return" });
+      await expect(pending).resolves.toBe("hunter2p");
+    } finally {
+      t.renderer.destroy();
+    }
+  });
 });

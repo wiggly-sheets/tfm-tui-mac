@@ -11,6 +11,7 @@ import { compareEntries, fillStatsInto, listDir, type Entry } from "../fs/listin
 import { archiveBreadcrumb, archiveUri, buildArchiveTree, listArchiveDir, parseArchiveUri } from "../app/archive-nav";
 import { searchTree } from "../fs/search";
 import { fsErrText, isTrashFilesDir } from "../fs/fsutil";
+import { TRASH_META_DIR } from "../fs/darwin";
 import type { Renderable } from "@opentui/core";
 import { RECENT_URI, STARRED_URI } from "../fs/uri";
 import { fmtBytes } from "../fs/propsinfo";
@@ -113,6 +114,16 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // overscan row) — the scroll-reveal fires on rows crossing THIS, not the
     // build edge, or every reveal would animate off-screen and arrive settled
     vis: { top: number; bottom: number };
+  } | null = null;
+  // archive browsing: the member tree is O(members) and listArchiveDir walks
+  // it on every repaint; cache both while the container's cached member array
+  // (archive-read's single-entry cache) is the same object.
+  const archiveTrees = new WeakMap<object, ReturnType<typeof buildArchiveTree>>();
+  let archiveView: {
+    tree: ReturnType<typeof buildArchiveTree>;
+    inner: string;
+    hidden: boolean;
+    rows: Entry[];
   } | null = null;
   // [ui] file-animation-scroll-reveal-delay-ms: deferred reveal state. A fast
   // fling crosses a row per notch; playing every notch retriggers the wave
@@ -292,6 +303,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // no tiles to navigate: drop the old listing's nav geometry or arrows move
     // against phantom refs (same contract as the empty-pane path)
     selection.setFocusKeys([]);
+    selection.setFocusIdx(-1);
     selection.setCols(1);
     selection.setRowH(ctx.viewMode() === "list" ? rowH() : ctx.tileH());
     // one text node rewritten in place per tick — no rebuild, no native churn
@@ -448,12 +460,13 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // the entry list is mapped to a string 3× per render (sigOf, structOf,
     // contentSigOf) — 10k folder = 30k string builds. sigOf and contentSigOf
     // want the SAME per-entry string (name+size+mtime), so build it once and
-    // share; structOf wants name+isDir and keeps its own map.
+    // share (they run on the same pass: signature check, then the claim/anim
+    // signature); structOf wants name+isDir and keeps its own map.
     const entryParts = (list: Entry[] | string): string[] =>
       typeof list === "string" ? [list] : list.map((e) => `${e.name}\u0000${e.size ?? ""}\u0000${e.mtimeMs ?? ""}`);
     const structParts = (list: Entry[] | string): string[] =>
       typeof list === "string" ? [list] : list.map((e) => `${e.name}\u0000${e.isDir ? 1 : 0}`);
-    const sigOf = (list: Entry[] | string): string => JSON.stringify([...baseParts, ...entryParts(list)]);
+    const sigOf = (parts: string[]): string => JSON.stringify([...baseParts, ...parts]);
     // The pane is showing THIS listing now — claim it. NEVER call before the
     // paint (see dropPaintClaim) and never from the placeholder: a claim for a
     // screen the pane isn't showing strands it until the cwd moves. NOTE: the
@@ -479,7 +492,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     const structOf = (list: Entry[] | string): string => JSON.stringify([...baseParts, ...structParts(list)]);
     // content-only signature: what the animation keys off (the listed files +
     // how they're shown), WITHOUT geometry/theme — layout-only rebuilds keep it
-    const contentSigOf = (list: Entry[] | string): string =>
+    const contentSigOf = (parts: string[]): string =>
       JSON.stringify([
         state.cwd,
         state.showHidden,
@@ -489,7 +502,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         ctx.wrapMode(),
         q,
         recursive,
-        ...entryParts(list),
+        ...parts,
       ]);
     // [ui] loading-delay-ms: the screen no longer matches this request. Give
     // the listing the delay to arrive, then swap the stale tiles for the
@@ -503,15 +516,33 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         // unlistable container: the error branch below says why instead of
         // painting a wrong empty folder
         if (members === null) throw new Error("can't list this archive");
-        const tree = buildArchiveTree(members);
-        allEntries = listArchiveDir(tree, archiveLoc.inner, state.showHidden).map((e) => ({
-          name: e.name,
-          isDir: e.isDir,
-          ...(e.size === undefined ? {} : { size: e.size }),
-          // the member's OWN location: the key every later action re-resolves
-          // (an inner dir's URI is what Enter navigates to)
-          abs: archiveUri(archiveLoc.archive, archiveLoc.inner ? `${archiveLoc.inner}/${e.name}` : e.name),
-        }));
+        const tree =
+          archiveTrees.get(members as object) ??
+          (() => {
+            const t = buildArchiveTree(members);
+            archiveTrees.set(members as object, t);
+            return t;
+          })();
+        let rows: Entry[];
+        if (
+          archiveView &&
+          archiveView.tree === tree &&
+          archiveView.inner === archiveLoc.inner &&
+          archiveView.hidden === state.showHidden
+        ) {
+          rows = archiveView.rows.map((e) => ({ ...e }));
+        } else {
+          rows = listArchiveDir(tree, archiveLoc.inner, state.showHidden).map((e) => ({
+            name: e.name,
+            isDir: e.isDir,
+            ...(e.size === undefined ? {} : { size: e.size }),
+            // the member's OWN location: the key every later action re-resolves
+            // (an inner dir's URI is what Enter navigates to)
+            abs: archiveUri(archiveLoc.archive, archiveLoc.inner ? `${archiveLoc.inner}/${e.name}` : e.name),
+          }));
+          archiveView = { tree, inner: archiveLoc.inner, hidden: state.showHidden, rows };
+        }
+        allEntries = rows;
         allEntries.sort(compareEntries(state.sortBy, state.sortAsc));
       } else if (recursive) {
         const ac = new AbortController();
@@ -528,11 +559,21 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         // first (same comparator listDir uses — a hardcoded name order here
         // silently diverged from [ui] sort-mode)
         allEntries.sort(compareEntries(state.sortBy, state.sortAsc));
+        // the darwin trash root's .tfm-info sidecars are metadata, never rows
+        // (recursive search bypasses listDir's filter)
+        if (isTrashFilesDir(state.cwd)) {
+          allEntries = allEntries.filter(
+            (e) => e.name !== TRASH_META_DIR && !(e.abs ?? "").includes(`/${TRASH_META_DIR}/`),
+          );
+        }
       } else {
         allEntries = await listDir(state.cwd, state.showHidden, state.sortBy, state.sortAsc, {
           cache: ctx.listingsCache?.() ?? true,
           cacheStats: ctx.listingsCacheStats?.() ?? true,
           ttlMs: ctx.listingsCacheTtlMs?.(),
+          // only the list view paints size/date columns; a grid never needs a
+          // cold-listing lstat sweep for stats it does not show
+          needStats: isList,
         });
         // an archive lane can list real archives: the tile becomes an enterable
         // DIRECTORY row, so Enter and double-click take the directory path
@@ -550,7 +591,8 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     } catch (err) {
       // restricted dir (/root, foreign 000 dirs): say why instead of a blank pane
       if (gen !== gridGen) return;
-      const sig = sigOf(`err:${fsErrText(err)}`);
+      const errParts = entryParts(`err:${fsErrText(err)}`);
+      const sig = sigOf(errParts);
       // `showingLoading` gate: the pane is the PLACEHOLDER, not the claimed
       // listing, so a matching signature must still rebuild the screen
       if (!force && sig === lastSig && !showingLoading) {
@@ -570,12 +612,13 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         ]);
         // the claim is written only now that the pane actually shows it
         claimPaint(sig, structOf(`err:${fsErrText(err)}`), null);
-        lastContentSig = contentSigOf(`err:${fsErrText(err)}`);
+        lastContentSig = contentSigOf(errParts);
         ctx.stripSelectable();
         // no tiles to navigate: clear the old listing's nav geometry or arrows
         // consume keys against a phantom list (focusKeys still holds the previous
         // folder's paths with emptied tileRefs)
         selection.setFocusKeys([]);
+        selection.setFocusIdx(-1);
         selection.setCols(1);
         selection.setRowH(ctx.viewMode() === "list" ? rowH() : ctx.tileH());
       } catch (buildErr) {
@@ -590,7 +633,8 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     if (gen !== gridGen) return;
 
     if (entries.length === 0) {
-      const sig = sigOf("empty");
+      const emptyParts = entryParts("empty");
+      const sig = sigOf(emptyParts);
       if (!force && sig === lastSig && !showingLoading) {
         abandonPaint();
         return;
@@ -612,9 +656,10 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         ]);
         // the claim is written only now that the pane actually shows it
         claimPaint(sig, structOf("empty"), null);
-        lastContentSig = contentSigOf("empty");
+        lastContentSig = contentSigOf(emptyParts);
         // no tiles to navigate: drop the previous listing's focusKeys/cols/rowH
         selection.setFocusKeys([]);
+        selection.setFocusIdx(-1);
         selection.setCols(1);
         selection.setRowH(isList ? rowH() : ctx.tileH());
       } catch (buildErr) {
@@ -636,7 +681,13 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // computation above and the park below)
     if (gen !== gridGen) return;
 
-    const sig = sigOf(entries);
+    // one pass over the entries for both stats signatures; the structural
+    // string is built lazily so an unchanged repaint that early-outs above
+    // never pays for it
+    const parts = entryParts(entries);
+    const sig = sigOf(parts);
+    let structural: string | null = null;
+    const structuralSig = (): string => (structural ??= structOf(entries));
     if (!force && sig === lastSig && !showingLoading) {
       abandonPaint();
       return;
@@ -650,10 +701,10 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     // ... and never while the pane shows the placeholder: the stat cells it
     // would rewrite don't exist (no claim is written for a placeholder)
     if (!force && !showingLoading && ctx.setTextOnId && lastStructuralSig !== null) {
-      const structural = structOf(entries);
-      if (structural === lastStructuralSig && !thumbStatsChanged(lastEntries, entries)) {
-        claimPaint(sig, structural, entries);
-        lastContentSig = contentSigOf(entries);
+      const structuralNow = structuralSig();
+      if (structuralNow === lastStructuralSig && !thumbStatsChanged(lastEntries, entries)) {
+        claimPaint(sig, structuralNow, entries);
+        lastContentSig = contentSigOf(parts);
         // later window slides build rows from this snapshot — carry the stats
         if (win) {
           for (let i = 0; i < win.entries.length && i < entries.length; i++) {
@@ -762,6 +813,15 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       selection.tileRefs.forEach((_ref, key) => {
         if (ctx.isCutKey(key)) selection.setTileVisual(key, TileVisual.Rest);
       });
+      // inactive-pane dimming on freshly built rows: setTileVisual resolves the
+      // rest surface (rest → inactive when this pane is not active and
+      // [ui] dim-inactive-panes is on). Without this a rebuild repainted every
+      // row on the plain bg while the interacting tiles kept the dim lift.
+      if (ctx.dimInactivePanes?.() && ctx.isActive && !ctx.isActive()) {
+        selection.tileRefs.forEach((ref, key) => {
+          if (!ref.selected && !ctx.isCutKey(key)) selection.setTileVisual(key, TileVisual.Rest);
+        });
+      }
 
       // fresh Text nodes default selectable=true; strip AFTER the async rebuild or
       // the renderer's text-selection drag hijacks file-drag events
@@ -788,6 +848,10 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       selection.setSelAnchor(anchorNewIdx < 0 ? null : anchorNewIdx);
       selection.setCols(cols);
       selection.setRowH(isList ? rowH() : TILE_H);
+      // seed/repaint the keyboard cursor AFTER the selection restore: the
+      // previous focus key can be gone (navigate, delete) — landing on tile 0
+      // keeps Enter/arrows live instead of dead-ending on focusIdx -1
+      selection.ensureCursor();
       // one-shot launch-file highlight (`tfm some/file.txt`): after the first
       // build, select the tile whose key is that path, then clear the request
       if (state.pendingSelect) {
@@ -798,7 +862,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       }
       selection.updateSelectionStatusReal();
       // the pane now shows this listing — claim it (never before the paint)
-      claimPaint(sig, structOf(entries), entries);
+      claimPaint(sig, structuralSig(), entries);
       painted = true;
       // slow-navigation breadcrumb (always on, one line, only when slow): a
       // report of "it feels stuck" names its own culprit without --debug
@@ -815,7 +879,7 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       // not replay it. The very first build (lastContentSig null) IS content
       // appearing, so it animates — that's the boot intro.
       if (gen === gridGen) {
-        const contentSig = contentSigOf(entries);
+        const contentSig = contentSigOf(parts);
         const contentChanged = lastContentSig === null || contentSig !== lastContentSig;
         lastContentSig = contentSig;
         if (contentChanged) {
@@ -895,6 +959,9 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       if (a > b) return;
       const lo = isList ? a : a * cols;
       const hi = Math.min(entries.length - 1, isList ? b : (b + 1) * cols - 1);
+      // an inactive pane paints every newly built rest row in the dim lift too
+      const dimInactive = !!ctx.dimInactivePanes?.() && !!ctx.isActive && !ctx.isActive();
+      const cursorKey = selection.focusKeys()[selection.focusIdx()];
       for (let i = lo; i <= hi; i++) {
         const e = entries[i];
         if (!e) continue;
@@ -906,7 +973,8 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
         // traversals per scroll notch). Test fakes that build refs by hand
         // leave them undefined and setTileVisual falls back to byId.
         if (ref?.selected) selection.setTileVisual(key, TileVisual.Selected);
-        else if (ctx.isCutKey(key)) selection.setTileVisual(key, TileVisual.Rest);
+        else if (key === cursorKey && !ctx.isCutKey(key)) selection.setTileVisual(key, TileVisual.Cursor);
+        else if (ctx.isCutKey(key) || dimInactive) selection.setTileVisual(key, TileVisual.Rest);
       }
     };
     // a sub-row notch leaves the built window in place but can still push a
@@ -1062,9 +1130,14 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
       }
     }
     win = { ...win, r0, r1, vis: { top: visTop, bottom: visBottom } };
-    ctx.stripSelectable();
-    void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
-    void Promise.resolve(ctx.drainThumbs()).catch(() => {});
+    // Only a moved window built (or raster-requeued) anything: a scroll write
+    // that leaves the built range alone must not walk the whole renderable
+    // tree (stripSelectable) or start the icon/thumb drains for zero new slots.
+    if (windowMoved) {
+      ctx.stripSelectable();
+      void Promise.resolve(ctx.drainIconQueue()).catch(() => {});
+      void Promise.resolve(ctx.drainThumbs()).catch(() => {});
+    }
     // pads keep the content height exact, so the offset survives untouched —
     // restore only after a slide moved the window (matches the io
     // drawer-settle pattern; the nested hook call range-checks equal and
@@ -1075,5 +1148,20 @@ export const makeGridRenderer = (ctx: GridRendererCtx) => {
     } catch {}
   };
 
-  return { renderGrid, syncWindow };
+  // keys currently mounted in the build window — the rubber-band hit test
+  // needs only these; asking byId for every tileRef (10k) was a mouse-up stall
+  const visibleKeys = (): ReadonlySet<string> | null => {
+    if (!win) return null;
+    const { entries, isList, cols, r0, r1 } = win;
+    const lo = isList ? r0 : r0 * cols;
+    const hi = Math.min(entries.length - 1, isList ? r1 : (r1 + 1) * cols - 1);
+    const set = new Set<string>();
+    for (let i = lo; i <= hi; i++) {
+      const e = entries[i];
+      if (e) set.add(entryKey(e));
+    }
+    return set;
+  };
+
+  return { renderGrid, syncWindow, visibleKeys };
 };

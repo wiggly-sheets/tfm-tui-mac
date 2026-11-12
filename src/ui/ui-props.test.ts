@@ -35,6 +35,7 @@ const colors = defaultConfig.theme as Theme & Record<string, any>;
 let t: TestRendererSetup;
 let liveColors: Theme & Record<string, any>;
 let liveStyle: "solid" | "outline" | "outline-partial";
+let liveTermW: number;
 // every makeIconSlot call's states, in order — the ONLY way to see what bg a
 // raster will flatten onto (the handle's spec is not mounted)
 let slotStates: Array<{ name: string; states: any[] }>;
@@ -116,6 +117,7 @@ beforeAll(async () => {
   floats = makeFloats();
   liveColors = colors;
   liveStyle = "solid";
+  liveTermW = 90;
 
   const dialogs = makeDialogs({
     byId,
@@ -169,6 +171,7 @@ beforeAll(async () => {
     uiStyle: () => liveStyle,
     colors: () => liveColors,
     home: os.homedir(),
+    termW: () => liveTermW,
     makeIconSlot: (
       name: string,
       states: any,
@@ -265,6 +268,31 @@ describe("single-file properties", () => {
     await t.renderOnce();
     expect(props.isOpen()).toBe(false);
     expect(statusMsgs).toContain("properties:error:Can't show properties (source gone)");
+  });
+
+  test("a vanished multi-selection also toasts instead of a silent no-op", async () => {
+    statusMsgs.length = 0;
+    props.openProperties([path.join(sandbox, "gone-a.txt"), path.join(sandbox, "gone-b.txt")]);
+    await t.renderOnce();
+    expect(props.isOpen()).toBe(false);
+    expect(statusMsgs).toContain("properties:error:Can't show properties (source gone)");
+  });
+
+  test("narrow terminals clamp the panel to termW-2", async () => {
+    liveTermW = 40;
+    try {
+      props.openProperties(fileA);
+      await t.renderOnce();
+      const panel = byId("tfm-props-panel") as any;
+      // the panel's renderable width reports its content box; the clamped
+      // design width (termW-2 = 38) is the ceiling
+      expect(panel.width).toBeLessThanOrEqual(40 - 2);
+      expect(panel.width).toBeLessThan(46);
+    } finally {
+      props.closeProps();
+      liveTermW = 90;
+      await t.renderOnce();
+    }
   });
 
   test("exec checkbox only exists for exec-capable files (shebang/ext/mode)", async () => {

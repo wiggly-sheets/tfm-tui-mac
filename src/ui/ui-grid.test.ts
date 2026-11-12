@@ -9,7 +9,8 @@ import { hookScrollerScroll } from "./ui-grid-window";
 import type { GridState } from "./ui-grid-types";
 import { fmtBytes } from "../fs/propsinfo";
 import { trashFilesDir } from "../fs/fsutil";
-import { linkRowLabel, loadingNodeId } from "./ui-grid-rows";
+import { fmtDateShort, linkRowLabel, loadingNodeId } from "./ui-grid-rows";
+import { tileSurface } from "./style";
 import type { ScrollerLike } from "../lib/node-like";
 import { RECENT_URI, STARRED_URI } from "../fs/uri";
 import { makeSelection } from "../input/selection";
@@ -108,11 +109,17 @@ let revealDelayMs: number;
 let loadingDelayMs: number | undefined;
 let ttyModeOn: boolean;
 let fileAnimMode: "rows" | "tiles" | "container" | null;
+// inactive-pane dim seam: a test flips these to pin the rebuilt-row surface
+let paneActive: boolean;
+let dimInactive: boolean;
 // the park between "decide to rebuild" and "build" — the console's null
 // renderer.resolution makes the real one a 50ms-per-poll sleep, so tests swap
 // in a controllable one to interleave two renders inside that window
 let waitForResolutionImpl: () => Promise<void>;
 let gridLogs: string[];
+// stripSelectable is a whole-tree walk: syncWindow only needs it when a slide
+// built new nodes. Counted so the no-op-slide test can pin the guard.
+let stripCalls = 0;
 let fileAnimCalls: Array<{
   tiles: string[];
   rows: string[] | null;
@@ -158,7 +165,10 @@ beforeAll(async () => {
   waitForResolutionImpl = () => Promise.resolve();
   loadingDelayMs = undefined;
   ttyModeOn = false;
+  paneActive = true;
+  dimInactive = false;
   gridLogs = [];
+  stripCalls = 0;
   let iconSeq = 0;
 
   t.renderer.root.add(Box({ id: "tfm-scroll-test", flexDirection: "column", flexGrow: 1 }));
@@ -178,6 +188,8 @@ beforeAll(async () => {
     viewH: () => TERM_H - 3,
     rowHInit: () => TILE_H,
     renderPreview: () => {},
+    isActive: () => paneActive,
+    dimInactivePanes: () => dimInactive,
   });
 
   // the grid reads scroller.scrollTop to place its viewport window; a fresh
@@ -211,6 +223,8 @@ beforeAll(async () => {
     rasterSig: () => rasterSig,
     wrapMode: () => wrapMode,
     reservedRight: () => 0,
+    isActive: () => paneActive,
+    dimInactivePanes: () => dimInactive,
     // per-pane width: null falls back to termW - sw - reservedRight
     availW: () => availWSet ?? TERM_W - SW,
     get tileIdPrefix() {
@@ -228,7 +242,9 @@ beforeAll(async () => {
     nextIconId: () => `fake-icon-${iconSeq++}`,
     drainIconQueue: () => {},
     drainThumbs: () => {},
-    stripSelectable: () => {},
+    stripSelectable: () => {
+      stripCalls++;
+    },
     // mirrors makeLookup.setTextOnId (wiring passes the real one): stats-only
     // ticks repaint size/date cells in place instead of rebuilding rows
     setTextOnId: (id: string, s: string) => {
@@ -259,6 +275,11 @@ beforeAll(async () => {
     now: () => testNow,
     windowedGrid: () => windowedGridOn,
     isRenaming: () => renamingOn,
+    // [ui] listings-cache-ttl = 0: these tests assert that an in-place size/
+    // mtime edit is observed on the NEXT render (the grid's stats-only fast
+    // path, the thumb re-raster guard). Production caches stats for the TTL —
+    // that staleness contract is pinned in fs/listing.test.ts.
+    listingsCacheTtlMs: () => 0,
     selection,
     entryMouseHandlers: (e, key, idx) => {
       if (throwOnName !== null && e.name === throwOnName) throw new Error("boom");
@@ -309,9 +330,12 @@ describe("renderGrid (grid tiles)", () => {
     // col math: floor((80 - 20 - 0 - 3) / 10) = 5; row height = TILE_H
     expect(selection.colsAtBuild()).toBe(5);
     expect(selection.rowHAtBuild()).toBe(TILE_H);
-    // keyboard state reset at rebuild tail
-    expect(selection.focusIdx()).toBe(-1);
-    expect(selection.selAnchor()).toBeNull();
+    // keyboard state seeded at the rebuild tail: the cursor lands on tile 0 so
+    // Enter/arrows are live right after a navigate. The cursor is NOT a
+    // selection (nothing is acted on until the user selects).
+    expect(selection.focusIdx()).toBe(0);
+    expect(selection.selAnchor()).toBe(0);
+    expect(selection.tileRefs.get(keys[0]!)!.selected).toBe(false);
 
     // dirs get the folder icon, files their classifier icon; render order is
     // listDir's (dirs first, then files — compareEntries)
@@ -319,6 +343,44 @@ describe("renderGrid (grid tiles)", () => {
     expect(mouseHandlers.map((m) => m.name)).toEqual(["subdir", "a.txt", "b.md"]);
     expect(mouseHandlers[0]!.key).toBe(path.join(tmp, "subdir"));
     expect(mouseHandlers[0]!.idx).toBe(0);
+  });
+
+  test("navigating into a folder seeds the cursor (Enter is not a no-op)", async () => {
+    const next = path.join(tmp, "seeded-dir");
+    mkdirSync(next);
+    writeFileSync(path.join(next, "one.txt"), "x");
+    writeFileSync(path.join(next, "two.txt"), "y");
+    const prevCwd = gridState.cwd;
+    try {
+      gridState.cwd = next;
+      await renderGrid();
+      await t.renderOnce();
+      expect(selection.focusIdx()).toBe(0);
+      expect(selection.tileRefs.get(path.join(next, "one.txt"))!.selected).toBe(false);
+    } finally {
+      gridState.cwd = prevCwd;
+      rmSync(next, { recursive: true, force: true });
+      await renderGrid();
+    }
+  });
+
+  test("inactive pane: rebuilt rows get the inactive rest surface", async () => {
+    paneActive = false;
+    dimInactive = true;
+    try {
+      await renderGrid(true);
+      await t.renderOnce();
+      const rest = [...selection.tileRefs.values()].find((r) => !r.selected);
+      expect(rest).toBeTruthy();
+      const node = t.renderer.root.findDescendantById(rest!.tileId) as any;
+      const expected = tileSurface("solid", colors as Theme, "inactive").backgroundColor!;
+      const n = Number.parseInt(expected.slice(1), 16);
+      expect([...node.backgroundColor.toInts()]).toEqual([(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff, 255]);
+    } finally {
+      paneActive = true;
+      dimInactive = false;
+      await renderGrid(true);
+    }
   });
 
   test("per-pane availW drives column math (dual pane halves the width)", async () => {
@@ -1631,10 +1693,13 @@ describe("renderGrid (windowed grid)", () => {
       // the full list while the DOM holds only the window
       expect(selection.selPaths().map((s) => s.path)).toEqual([bigFile(2)]);
       expect(selection.focusKeys().length).toBe(500);
-      // a second syncWindow without scroll movement must not rebuild
+      // a second syncWindow without scroll movement must not rebuild — and
+      // must not pay the whole-tree stripSelectable walk either
       const rows1 = byId("tfm-tile-inner").getChildren()[1];
+      stripCalls = 0;
       syncWindow();
       expect(byId("tfm-tile-inner").getChildren()[1]).toBe(rows1);
+      expect(stripCalls).toBe(0);
 
       // ONE-row notch: the slide is INCREMENTAL — the inner and every
       // surviving row keep their identity (destroying/rebuilding them is
@@ -2637,6 +2702,15 @@ describe("renderGrid (loading placeholder)", () => {
   test("linkRowLabel truncates the combined label to max", () => {
     expect(linkRowLabel("lnk", "tgt.txt", 30)).toBe("lnk → tgt.txt");
     expect(linkRowLabel("averylongname.txt", "anotherlongtarget.txt", 20)).toBe("averylongname.txt →…");
+  });
+
+  test("fmtDateShort keeps the exact format with a hoisted current year", () => {
+    const year = new Date().getFullYear();
+    expect(fmtDateShort(undefined)).toBe("-");
+    expect(fmtDateShort(0)).toBe("-");
+    // this year: compact MM-DD HH:MM; any other year: YYYY-MM-DD
+    expect(fmtDateShort(new Date(year, 0, 5, 7, 8).getTime())).toBe("01-05 07:08");
+    expect(fmtDateShort(new Date(year - 1, 11, 31, 23, 59).getTime())).toBe(`${year - 1}-12-31`);
   });
 
   test("never yanks a live inline rename", async () => {

@@ -231,10 +231,19 @@ export const makePrompt = (ctx: PromptCtx) => {
         paintMask();
       } else {
         const ctrl = !!ev.ctrl || !!ev.control;
-        const seq = typeof ev.sequence === "string" ? ev.sequence : "";
-        const ch = seq.length === 1 && seq.charCodeAt(0) >= 0x20 ? seq : "";
-        if (ch && !ctrl && !ev.meta) {
-          secret += ch;
+        // a paste arrives as ONE multi-char sequence: accept it when every
+        // char is printable (an escape sequence like ← carries ESC/control
+        // bytes and is rejected whole). A trailing newline/CRLF from a copied
+        // line is stripped, not treated as fatal.
+        const seq = (typeof ev.sequence === "string" ? ev.sequence : "").replace(/[\r\n]+$/, "");
+        const printable =
+          seq.length > 0 &&
+          [...seq].every((ch) => {
+            const code = ch.codePointAt(0) ?? 0;
+            return code >= 0x20 && code !== 0x7f;
+          });
+        if (printable && !ctrl && !ev.meta) {
+          secret += seq;
           paintMask();
         }
       }

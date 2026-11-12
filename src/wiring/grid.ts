@@ -24,7 +24,7 @@ import { runSudo, sudoCatArgv } from "../fs/elevate";
 import type { makePick } from "../ui/ui-pick";
 import { makePreview } from "../ui/ui-preview";
 import { makeInfoSidebar } from "../ui/ui-info";
-import { finishDragState, gridDrag, makeEntryMouseHandlers, type BandCtx } from "../input/grid-input";
+import { finishDragState, gridDrag, makeEntryMouseHandlers, TileVisual, type BandCtx } from "../input/grid-input";
 import { makeGridRenderer } from "../ui/ui-grid";
 import { makeColumnsRenderer } from "../ui/ui-columns";
 import { type EaseKey, fileAnimStyleFrom, makeFileAnim, makeTileHoverAnim, type SlideDir } from "../ui/ui-grid-anim";
@@ -36,6 +36,8 @@ import { activeFacade, makeLeafRegistry, type PaneId, viewModeFor } from "../app
 import { leafRectsOf } from "../app/layout";
 import { isVirtualUri } from "../fs/uri";
 import { isTrashFilesDir, canReadSync } from "../fs/fsutil";
+import { isDarwin } from "../fs/darwin";
+import { makeUrlOpener } from "../fs/open-url";
 import { dlog } from "../app/log";
 import type { ListEntry } from "../ui/ui-menu";
 import type { CoreWiring } from "./core";
@@ -161,12 +163,16 @@ export const wireGrid = (deps: {
   const bandCtx: BandCtx = {
     byId,
     tileRefs: selection.tileRefs,
+    visibleKeys: () => renderers.get(core.panes.activeId)?.visibleKeys?.() ?? null,
     clearTileSelection: selection.clearTileSelection,
     setTileVisual: selection.setTileVisual,
     updateSelectionStatusReal: selection.updateSelectionStatusReal,
     renderPreview,
     setSelAnchor: (v: number | null) => {
       selection.setSelAnchor(v);
+    },
+    setFocusIdx: (v: number) => {
+      selection.setFocusIdx(v);
     },
   };
 
@@ -177,12 +183,19 @@ export const wireGrid = (deps: {
   // bars and tab strips already show the right thing, so re-rendering them here
   // only re-created their icon slots (fallback-glyph flash on every pane click).
   const focusPane = (id: PaneId): void => {
-    const prev = core.panes.activeId;
-    if (prev === id) return;
-    // a selection must not survive a pane switch: drop the pane we're leaving
-    selections.get(prev)?.clearTileSelection();
+    if (core.panes.activeId === id) return;
+    // each pane keeps its own selection across a focus switch (selections are
+    // per-pane state; only the ACTIVE one drives status/preview/actions)
     core.setActiveId(id);
     core.refreshPaneFocus();
+    // rest tiles carry the inactive lift at BUILD time, so a mouse focus switch
+    // must repaint both panes' rest tiles (no rebuild: the pressed node must
+    // survive the gesture)
+    for (const sel of selections.values()) {
+      sel.tileRefs.forEach((ref, key) => {
+        if (!ref.selected) sel.setTileVisual(key, TileVisual.Rest);
+      });
+    }
     // per-pane view mode differs: re-evaluate the bottom-bar slider (this path
     // deliberately skips a full renderAll)
     chrome.iconSlider.refresh();
@@ -419,6 +432,10 @@ export const wireGrid = (deps: {
       // the global [ui] viewMode default; the tty console forces list/columns
       // (no icon tiles — no graphics, no Nerd PUA)
       viewMode: () => viewModeFor(core.panes.stateOf(id), core.config.ui.viewMode, core.isTtyMode),
+      // inactive-pane dimming is a build-time surface decision: a rebuilt row
+      // must repaint itself in the inactive rest lift (see ui-grid's tail)
+      isActive: () => core.panes.activeId === id,
+      dimInactivePanes: () => core.config.ui.dimInactivePanes,
       // raster-affecting state the grid rebuild keys off (force-glyph/icons/
       // tty mode/transparent-bg flips must rebuild even though the listing
       // is unchanged)
@@ -465,6 +482,32 @@ export const wireGrid = (deps: {
     });
   const renderers = makeLeafRegistry(core.panes, (id) => makeRenderer(id));
 
+  // Columns (Miller) view has no grid tiles, so the shared selection model is
+  // fed from the model's active entry: the status bar, preview/info sidebar
+  // and every file action read ONE selection regardless of view mode.
+  const columnsSelect = (id: PaneId, p: string, isDir: boolean): void => {
+    const s = getSelection(id);
+    if (!p) {
+      s.setFocusKeys([]);
+      s.setFocusIdx(-1);
+      s.clearTileSelection();
+      void renderPreview();
+      return;
+    }
+    s.setFocusKeys([p]);
+    // columns view has exactly one cursor: drop the previous listing's refs so
+    // selectAll/invert never act on every file visited this session
+    s.tileRefs.clear();
+    s.tileRefs.set(p, {
+      selected: false,
+      baseFg: themeGet().sidebarFg,
+      tileId: "",
+      labelId: "",
+      isDir,
+    });
+    s.selectPaths([p]);
+  };
+
   const makeColRenderer = (id: PaneId) =>
     makeColumnsRenderer({
       termW: () => chrome.renderer.terminalWidth,
@@ -506,6 +549,10 @@ export const wireGrid = (deps: {
       navigate: nav.navigate,
       fileAnim: (target) => get(fileAnims, id).play(target),
       fileAnimVisibleOnly: () => core.config.ui.fileAnimationVisibleOnly,
+      // the columns hook only claims keys bound to its own actions (alt
+      // history/parent bindings fall through to the remapped-action block)
+      keybinds: (action) => core.config.keys[action] ?? [],
+      onSelect: (p, isDir) => columnsSelect(id, p, isDir),
     });
   const columnsRenderers = makeLeafRegistry(core.panes, (id) => makeColRenderer(id));
 
@@ -566,6 +613,7 @@ export const wireGrid = (deps: {
     uiStyle,
     colors: themeGet,
     home,
+    termW: () => chrome.renderer.terminalWidth,
     makeIconSlot: core.slots.makeIconSlot,
     setIconState: core.slots.setIconState,
     fallbackGlyphFor: (name) => glyph[name] ?? FILE_GLYPH,
@@ -586,8 +634,8 @@ export const wireGrid = (deps: {
     }
     const active = core.panes.activeId;
     const other: PaneId = core.panes.leafIds().find((id) => id !== active) ?? active;
-    // a selection must not survive a pane switch (same rule as switchPane)
-    gridFoundation.selections.get(active)?.clearTileSelection();
+    // pane selections are independent state: opening a folder on the other
+    // side must not wipe the selection the user built here
     core.setActiveId(other);
     nav.navigate(dir);
   };
@@ -667,11 +715,18 @@ export const wireGrid = (deps: {
     });
   };
 
+  // shared reveal opener (context menu): Finder select on macOS, parent dir on
+  // Linux — the same primitive About links use
+  const revealOpener = makeUrlOpener({
+    notify: (m, t, l) => chrome.notify(m, t, l),
+    log: (m) => dlog(m),
+  });
   const menuEntries = makeMenuEntries({
     closeFileMenu: chrome.menu.closeFileMenu,
     navigate: nav.navigate,
     newTab: nav.newTab,
     openInOtherPane,
+    reveal: (p) => revealOpener.revealPath(p),
     // "Open With…": enumerate handlers for the file's mime, then let the
     // generic pick overlay choose (same pick instance the compress picker uses).
     // Unreadable files escalate: the chosen app launches elevated after the
@@ -687,7 +742,9 @@ export const wireGrid = (deps: {
           placeholder: "Filter applications…",
           items: apps.map((a) => ({
             label: a.name,
-            hint: a.id.replace(/\.desktop$/, ""),
+            // linux: the .desktop id tells handlers apart; darwin ids are the
+            // app names themselves, so the hint would just repeat the label
+            hint: isDarwin() ? undefined : a.id.replace(/\.desktop$/, ""),
             run: () => {
               // ENOENT (deleted between listing and pick, dangling symlink)
               // launches unprivileged and errors honestly — no sudo prompt
@@ -696,7 +753,10 @@ export const wireGrid = (deps: {
                 void chrome.launchAppAsRoot(a.file, a.name, p);
                 return;
               }
-              launchApp(a.file, p, (err) => dlog(`gio launch failed: ${err.message}`));
+              launchApp(a.file, p, (err) => {
+                dlog(`open with failed: ${err.message}`);
+                chrome.notify(`Couldn't open ${path.basename(p)} · ${a.name}`, "open failed", "error");
+              });
               chrome.notify(`Opening ${path.basename(p)} · ${a.name}`, "open");
             },
           })),

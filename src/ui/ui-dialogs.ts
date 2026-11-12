@@ -19,6 +19,9 @@ type DialogsCtx = {
   rootAdd(node: unknown): void;
   stripSelectable(): void;
   termH(): number;
+  // live terminal width: fixed-width modals clamp to termW-2 on narrow
+  // terminals. Absent = the requested width (old fakes keep working).
+  termW?(): number;
   uiStyle(): UiStyle;
   colors(): Theme;
   // skeleton baseline for ANY future dialog: the context menu floats above
@@ -96,6 +99,9 @@ export const makeDialogs = (ctx: DialogsCtx) => {
     onClose: () => void;
   }): void => {
     ctx.closeFileMenu();
+    // a fixed-width panel must never overflow a narrow terminal (min 28 keeps
+    // the title + button row readable)
+    const width = Math.max(28, Math.min(opts.width, (ctx.termW?.() ?? opts.width) - 2));
     const scrim = Box(
       {
         id: opts.id,
@@ -113,7 +119,7 @@ export const makeDialogs = (ctx: DialogsCtx) => {
       Box(
         {
           id: `${opts.id}-panel`,
-          width: opts.width,
+          width,
           ...floatSurface(ctx.uiStyle(), ctx.colors(), ctx.colors().sidebarBg),
           paddingTop: 1,
           paddingBottom: 1,
@@ -177,6 +183,8 @@ type ConflictCtx = {
   uiStyle(): UiStyle;
   byId(id: string): MaybeNode;
   drainIconQueue(): void | Promise<void>;
+  // live terminal width: fixed-width modals clamp to termW-2 on narrow screens
+  termW?(): number;
   // open/close orchestration + the dismiss-others policy live in ./floats
   floats: Floats;
   // mouse pointer shape (OSC 22 via the wiring's tty-guarded setter).
@@ -191,6 +199,33 @@ export const makeConflict = (dialogs: ReturnType<typeof makeDialogs>, ctx: Confl
   let conflictPolicy: ConflictChoice | null = null;
   let conflictOpen = false;
   let conflictResolveFn: ((c: ConflictChoice) => void) | null = null;
+  // keyboard cursor over the three primary choices (the "…all" row stays
+  // mouse-only). Skip is the default so a stray Enter never replaces; esc
+  // always means skip.
+  const CONFLICT_CHOICES: ConflictChoice[] = ["replace", "keepBoth", "skip"];
+  let conflictFocus = 2;
+
+  // paint the keyboard cursor with the same surface dialogBtn's hover uses
+  const paintFocus = (): void => {
+    for (let i = 0; i < CONFLICT_CHOICES.length; i++) {
+      try {
+        const btn = ctx.byId(`tfm-conflict-b${i}`);
+        if (btn)
+          applySurface(btn, btnSurface(ctx.uiStyle(), ctx.colors(), i === conflictFocus, ctx.colors().sidebarBg));
+      } catch {}
+    }
+  };
+
+  // ←/→ (the router's moveLeft/Right) move the cursor; openSelected activates.
+  const moveFocus = (delta: number): void => {
+    if (!conflictOpen) return;
+    conflictFocus = (conflictFocus + delta + CONFLICT_CHOICES.length) % CONFLICT_CHOICES.length;
+    paintFocus();
+  };
+  const submit = (): void => {
+    if (!conflictOpen) return;
+    closeConflict(CONFLICT_CHOICES[conflictFocus] ?? "skip");
+  };
 
   // raw teardown — registered with floats at open time; a floats-initiated
   // close (policy dismissal / replace) resolves a pending prompt as "skip"
@@ -217,8 +252,10 @@ export const makeConflict = (dialogs: ReturnType<typeof makeDialogs>, ctx: Confl
       // the prompt must be the only thing on screen
       ctx.floats.open("conflict", rawTeardown);
       conflictOpen = true;
+      conflictFocus = 2;
       conflictResolveFn = resolve;
       const c = ctx.colors();
+      const W = Math.max(28, Math.min(CONFLICT_W, (ctx.termW?.() ?? CONFLICT_W) - 2));
       const name = path.basename(destPath);
       const parentName = path.basename(path.dirname(destPath)) || "/";
       let bseq = 0;
@@ -236,17 +273,17 @@ export const makeConflict = (dialogs: ReturnType<typeof makeDialogs>, ctx: Confl
       const rows: ReturnType<typeof Box>[] = [
         Box(
           { width: "100%", height: 1, paddingLeft: 1, paddingRight: 1 },
-          Text({ id: "tfm-conflict-title", content: ` Replace "${ellipsize(name, CONFLICT_W - 14)}"?`, fg: c.accent }),
+          Text({ id: "tfm-conflict-title", content: ` Replace "${ellipsize(name, W - 14)}"?`, fg: c.accent }),
         ),
         Box(
           { width: "100%", height: 1, paddingLeft: 1, paddingRight: 1 },
-          Text({ id: "tfm-conflict-div", content: ` ${"~".repeat(CONFLICT_W - 2)}`, fg: c.divider }),
+          Text({ id: "tfm-conflict-div", content: ` ${"~".repeat(W - 2)}`, fg: c.divider }),
         ),
         Box(
           { width: "100%", height: 1, paddingLeft: 1, paddingRight: 1 },
           Text({
             id: "tfm-conflict-loc",
-            content: ellipsize(locationLine, CONFLICT_W - 1),
+            content: ellipsize(locationLine, W - 1),
             fg: c.sidebarFgMuted,
           }),
         ),
@@ -272,11 +309,12 @@ export const makeConflict = (dialogs: ReturnType<typeof makeDialogs>, ctx: Confl
       openDialog({
         id: "tfm-conflict",
         zIndex: FLOAT_Z.conflict,
-        width: CONFLICT_W,
+        width: W,
         rows: () => rows,
         onClose: () => closeConflict("skip"),
       });
       void ctx.drainIconQueue();
+      queueMicrotask(paintFocus);
     });
 
   // theme-switch repaint while open: panel + texts by id, buttons back to
@@ -308,6 +346,8 @@ export const makeConflict = (dialogs: ReturnType<typeof makeDialogs>, ctx: Confl
         if (label) label.fg = c.white;
       } catch {}
     }
+    // the keyboard cursor survives the repaint (mouse hover repaints live)
+    paintFocus();
   };
 
   return {
@@ -315,6 +355,8 @@ export const makeConflict = (dialogs: ReturnType<typeof makeDialogs>, ctx: Confl
     closeConflict,
     isOpen: (): boolean => conflictOpen,
     repaint: repaintConflict,
+    moveFocus,
+    submit,
     policy: (): ConflictChoice | null => conflictPolicy,
     resetPolicy: (): void => {
       conflictPolicy = null;
@@ -330,6 +372,8 @@ type YesNoCtx = {
   colors(): Theme;
   uiStyle(): UiStyle;
   byId(id: string): MaybeNode;
+  // live terminal width: fixed-width modals clamp to termW-2 on narrow screens
+  termW?(): number;
   // NO readiness gate: a dialog mounts on the renderer root, which exists for
   // the renderer's whole life. The old `canOpen: () => !!renderer.resolution`
   // wiring only became true once the terminal answered OpenTUI's pixel-size
@@ -453,14 +497,15 @@ export const makeYesNo = (dialogs: ReturnType<typeof makeDialogs>, ctx: YesNoCtx
     lastDanger = danger;
     const c = ctx.colors();
     const yesFg = danger ? c.ansi1 : c.accent;
+    const W = Math.max(28, Math.min(YESNO_W, (ctx.termW?.() ?? YESNO_W) - 2));
     let bseq = 0;
     const mkBtn = (label: string, fg: string, onPick: () => void): ReturnType<typeof Box> =>
       dialogBtn(`tfm-yesno-b${bseq++}`, label, fg, onPick);
-    const msgLines = wrapYesNoMessage(message);
+    const msgLines = wrapYesNoMessage(message, W - 2);
     openDialog({
       id: "tfm-yesno",
       zIndex: FLOAT_Z.yesno,
-      width: YESNO_W,
+      width: W,
       rows: () => [
         Box(
           { width: "100%", height: 1, paddingLeft: 1, paddingRight: 1 },
@@ -476,7 +521,7 @@ export const makeYesNo = (dialogs: ReturnType<typeof makeDialogs>, ctx: YesNoCtx
           : []),
         Box(
           { width: "100%", height: 1, paddingLeft: 1, paddingRight: 1 },
-          Text({ id: "tfm-yesno-div", content: ` ${"~".repeat(YESNO_W - 2)}`, fg: c.divider }),
+          Text({ id: "tfm-yesno-div", content: ` ${"~".repeat(W - 2)}`, fg: c.divider }),
         ),
         Box({ height: 1 }),
         Box(

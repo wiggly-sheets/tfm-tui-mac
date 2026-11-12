@@ -4,6 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import {
   MAX_TOAST_LINES,
   makeNotify,
+  repositionToasts,
   toastLevelMeta,
   truncateToastText,
   wrapToastText,
@@ -24,6 +25,8 @@ const makeFake = (opts?: { durationMs?: number }) => {
   const nodes = new Map<string, any>();
   const removed: string[] = [];
   const icons: Array<{ name: string; fg: string; bg: string }> = [];
+  let fakeNow = 1_000_000;
+  let width = 80;
   const ctx: NotifyCtx = {
     rootAdd: (_node: any) => {},
     remove: (node: any) => {
@@ -44,15 +47,27 @@ const makeFake = (opts?: { durationMs?: number }) => {
       }
       return n;
     },
-    termW: () => 80,
+    termW: () => width,
     accentBg: () => "#1a1b26",
     white: () => "#ffffff",
     sidebarFgMuted: () => "#666666",
     ansi1: () => "#e06c75",
     ansi2: () => "#7fd88f",
     durationMs: () => opts?.durationMs ?? 25,
+    now: () => fakeNow,
   };
-  return { ctx, nodes, removed, icons };
+  return {
+    ctx,
+    nodes,
+    removed,
+    icons,
+    advance: (ms: number) => {
+      fakeNow += ms;
+    },
+    setWidth: (w: number) => {
+      width = w;
+    },
+  };
 };
 
 describe("toastLevelMeta", () => {
@@ -186,6 +201,44 @@ describe("notify stacking", () => {
     sticky!.close();
     await settleUntil(() => removed.length > 1 || Date.now() > deadline); // poll, never a bare sleep
     expect(removed).toEqual([sticky!.nodeId]);
+  });
+});
+
+describe("toast dedupe + resize", () => {
+  test("an identical (title,message) inside 1s refreshes the live toast", () => {
+    const h = makeFake({ durationMs: 10_000 });
+    const { notify } = makeNotify(h.ctx);
+    notify("Operation failed", "run", "error");
+    notify("Operation failed", "run", "error");
+    expect(h.nodes.has("tfm-toast-1")).toBe(true);
+    expect(h.nodes.has("tfm-toast-2")).toBe(false);
+    // outside the window it is a new message, not a refresh
+    h.advance(1500);
+    notify("Operation failed", "run", "error");
+    expect(h.nodes.has("tfm-toast-2")).toBe(true);
+  });
+
+  test("different titles/messages never dedupe", () => {
+    const h = makeFake({ durationMs: 10_000 });
+    const { notify } = makeNotify(h.ctx);
+    notify("done", "copy");
+    notify("done", "move");
+    notify("failed", "copy");
+    expect(h.nodes.has("tfm-toast-2")).toBe(true);
+    expect(h.nodes.has("tfm-toast-3")).toBe(true);
+  });
+
+  test("a terminal resize repositions live toasts at the new right edge", () => {
+    const h = makeFake({ durationMs: 10_000 });
+    const { notify } = makeNotify(h.ctx);
+    notify("resize me");
+    const node = h.nodes.get("tfm-toast-1")!;
+    expect(node.top).toBe(1);
+    h.setWidth(60);
+    repositionToasts();
+    // width 36 + 2-cell margin, flush against the new right edge
+    expect(node.left).toBe(60 - 36 - 2);
+    expect(node.top).toBe(1);
   });
 });
 

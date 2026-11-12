@@ -30,6 +30,9 @@ export type NotifyCtx = {
   stripSelectable(): void;
   // config knob [ui] toast-duration-ms (default 3000)
   durationMs?(): number;
+  // injectable clock (tests drive a virtual one) for the duplicate-suppression
+  // window; defaults to wall time
+  now?(): number;
 };
 
 // error toasts linger so the failure is actually read; a longer configured
@@ -107,10 +110,36 @@ export const wrapToastText = (s: string, budget: number, maxLines: number = MAX_
 type ToastEntry = {
   id: number;
   nodeId: string;
+  width: number;
   height: number;
   sticky: boolean;
+  // what the toast says (identical (title,message) pairs inside the dedupe
+  // window refresh the live toast instead of stacking a copy)
+  title: string;
+  message: string;
+  shownAt: number;
   // auto-dismiss handle; null while a sticky toast waits for an explicit close
   timer: ReturnType<typeof setTimeout> | null;
+};
+
+// an identical (title,message) toast inside this window refreshes the live one
+// (re-arms its dismiss timer) instead of stacking a duplicate
+export const TOAST_DEDUPE_MS = 1000;
+
+// live stacks: terminal resize repaints the toasts at their new right edge and
+// reflows the stack (wiring/io's resize path calls this — no new wiring seam).
+const toastRepositioners = new Set<() => void>();
+export const repositionToasts = (): void => {
+  for (const fn of toastRepositioners) {
+    try {
+      fn();
+    } catch {}
+  }
+};
+// app shutdown/tests: module-level registrations would otherwise accumulate
+// one closure per makeNotify instance (restart in-process, test files)
+export const clearToastRepositioners = (): void => {
+  toastRepositioners.clear();
 };
 
 // shared slide-in animation (slide-out is just the reverse direction)
@@ -135,6 +164,20 @@ export const makeNotify = (
 } => {
   let toasts: ToastEntry[] = [];
   let toastSeq = 0;
+  const now = (): number => ctx.now?.() ?? Date.now();
+
+  // resize repaint: keep the right edge flush and the stack reflowed
+  const reposition = (): void => {
+    toasts.forEach((t, i) => {
+      const n = ctx.byId(t.nodeId);
+      if (!n) return;
+      try {
+        n.left = Math.max(0, ctx.termW() - t.width - 2);
+        n.top = slotTop(i);
+      } catch {}
+    });
+  };
+  toastRepositioners.add(reposition);
 
   // slot grid: entries stack downward with a 1-row gap, each at the running
   // sum of the heights above it — mixed heights (3-row notifies, 4-row
@@ -210,6 +253,7 @@ export const makeNotify = (
     children: SlotElement[],
     sticky: boolean,
     duration?: number,
+    origin?: { title: string; message: string },
   ): ToastHandle | null => {
     // toasts fire from all over (incl. error paths during native memory
     // pressure — see the OOM note in AGENTS.md); a missing toast must never
@@ -252,7 +296,17 @@ export const makeNotify = (
       } catch {}
       const targetX = Math.max(0, ctx.termW() - width - 2);
       animateLeft(real, ctx.termW() + 2, targetX, 180);
-      const entry: ToastEntry = { id, nodeId, height, sticky, timer: null };
+      const entry: ToastEntry = {
+        id,
+        nodeId,
+        width,
+        height,
+        sticky,
+        title: origin?.title ?? "",
+        message: origin?.message ?? "",
+        shownAt: now(),
+        timer: null,
+      };
       toasts.push(entry);
       if (!sticky) {
         entry.timer = setTimeout(() => fadeOut(id), duration ?? ctx.durationMs?.() ?? 3000);
@@ -286,6 +340,23 @@ export const makeNotify = (
           },
           ctx.durationMs?.() ?? 3000,
         );
+        // the same notice fired twice within a second (a retrying fs op, a
+        // keybind spam) refreshes the live toast: re-arm its dismiss timer
+        // instead of stacking an identical copy
+        const at = now();
+        const dup = toasts.find(
+          (t) => !t.sticky && t.title === title && t.message === message && at - t.shownAt <= TOAST_DEDUPE_MS,
+        );
+        if (dup) {
+          if (dup.timer) {
+            try {
+              clearTimeout(dup.timer);
+            } catch {}
+          }
+          dup.shownAt = at;
+          dup.timer = setTimeout(() => fadeOut(dup.id), meta.duration);
+          return;
+        }
         // the level icon is a fixed 2-cell raster slot beside the title (same
         // shape as the progress toast's button slots); the drain swaps the
         // fallback glyph for the tinted raster async. The toast shell is a
@@ -309,6 +380,7 @@ export const makeNotify = (
           ],
           false,
           meta.duration,
+          { title, message },
         );
       } catch {
         return;

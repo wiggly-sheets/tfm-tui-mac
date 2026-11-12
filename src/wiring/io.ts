@@ -14,6 +14,7 @@ import { resolveDragPath } from "../dnd/transfer-drag";
 import { makeHitTargetAt } from "../dnd/hit-target";
 import { machineId } from "../dnd/machine-id";
 import { debounced } from "../lib/uiutil";
+import { repositionToasts } from "../ui/notify";
 import { makeHoverDrawer } from "../ui/ui-hover-drawer";
 import { gridDrag } from "../input/grid-input";
 import { makeLeafRegistry, mergedMapFacade } from "../app/panes";
@@ -299,6 +300,9 @@ export const wireResize = (deps: {
   const run = () => {
     core.slots.resetIconQueue();
     nav.renderAll();
+    // live toasts sit at an absolute right edge / stacked top: a resize must
+    // move them with the terminal instead of leaving them clipped or floating
+    repositionToasts();
     // the VT node may have resized during renderAll; onTerminalResize only
     // fires when the node actually changes, so a resize that lands while the
     // host box is clipped/unchanged would leave the PTY on stale cols/rows.

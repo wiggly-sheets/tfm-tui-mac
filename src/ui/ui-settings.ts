@@ -158,7 +158,15 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
     let enabledPlugins = 0;
     for (const g of plugGroups) {
       for (const r of g.rows) {
-        if (r.kind === "toggle" && r.get()) {
+        // a throwing plugin get() reads as disabled — it must never escape and
+        // take the whole root menu (Settings/Help/About/Quit) with it
+        let on = false;
+        try {
+          on = r.kind === "toggle" && !!r.get();
+        } catch {
+          on = false;
+        }
+        if (on) {
           enabledPlugins++;
           break; // one toggle per plugin group
         }
@@ -759,6 +767,7 @@ export const makeEscMenu = (ctx: EscMenuCtx) => {
         keybinds: (a) => ctx.keybinds?.(a) ?? [],
         renderer: ctx.renderer,
         termH: () => ctx.renderer().terminalHeight,
+        platform: () => process.platform,
       });
     } else if (view === "about") {
       // drillable brand block (no cursor — rows drive via mouse only)
