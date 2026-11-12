@@ -33,6 +33,8 @@ type MemHygieneCtx = {
   // heartbeat lines are only interesting under --debug
   debugLog?: (msg: string) => void;
   intervalMs?: number;
+  // GC seam (tests observe whether a tick actually poked); default pokeGc
+  poke?: () => void;
 };
 
 // Best-effort native-allocator drain, safe to call from anywhere (including
@@ -45,11 +47,24 @@ export const pokeGc = (): void => {
   } catch {}
 };
 
-// returns a stop() so tests (or a future settings knob) can tear it down
+// returns a stop() so tests (or a future settings knob) can tear it down.
+//
+// The poke is GROWTH-GATED: a full GC every tick even while the native
+// allocator is flat is a periodic frame-loop hitch for nothing. Native
+// allocations only climb when churn outruns finalizers (the failure mode this
+// exists for), so a tick that sees a HIGHER active count than the last one
+// pokes; a steady or shrinking count skips. Stats unavailable (the private
+// reach failing) keeps the old unconditional poke — that is the pressure
+// guard, not an optimization target.
 export const startMemHygiene = (ctx: MemHygieneCtx): (() => void) => {
+  const poke = ctx.poke ?? pokeGc;
+  let lastActive = -1;
   const timer = setInterval(() => {
-    pokeGc();
-    if (ctx.debugLog) ctx.debugLog(`mem ${nativeMemLine(ctx.allocatorStats())}`);
+    const stats = ctx.allocatorStats();
+    const active = stats?.activeAllocations ?? -1;
+    if (active < 0 || active > lastActive) poke();
+    lastActive = active;
+    if (ctx.debugLog) ctx.debugLog(`mem ${nativeMemLine(stats)}`);
   }, ctx.intervalMs ?? 10000);
   timer.unref?.();
   return () => clearInterval(timer);

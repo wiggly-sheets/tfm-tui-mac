@@ -352,6 +352,11 @@ export const makeSlots = (ctx: SlotsCtx) => {
   // This is the ONLY registry — a second `iconQueue` (the old design) grew
   // unbounded and re-armed dead specs on every reset.
   const allSpecs = new Map<string, IconSpec>();
+  // specs not yet rastered across the whole registry. drainIconQueue uses it
+  // to bail without even scheduling a pass: renderAll fires the drain from
+  // several steps and syncWindow on every scroll write, and a pass with an
+  // empty pending set only walked the tree looking for dead specs.
+  let undrained = 0;
   let iconSeq = 0;
   let thumbJobs: ThumbJob[] = [];
   // per-slot ownership: pushThumbJob records the key of the job it queued for a
@@ -363,6 +368,15 @@ export const makeSlots = (ctx: SlotsCtx) => {
   // blank until the cwd changed, because renderGrid early-outs on an unchanged
   // listing and never re-pushed them.
   const thumbOwners = new Map<string, string>();
+  // a drain in flight keeps its ownership keys: thumbJobs is emptied at drain
+  // start, so the array length alone cannot tell the cap that work is running
+  let thumbDraining = 0;
+  // backstop for the one path that abandons a queued batch without draining it
+  // (tty-mode flip between push and drain): entries are normally removed as
+  // their job settles, so this only fires on a leak, and only while nothing is
+  // queued (a big folder's in-flight batch must never lose its ownership keys —
+  // that would reject the very rasters it is waiting for).
+  const THUMB_OWNER_CAP = 4096;
   // icon drains are SERIALIZED instead of superseded: several renderAll steps
   // each fire drainIconQueue (sidebar, the iconQueue step, the grid), and a
   // supersession token stranded every spec a losing drain had already marked
@@ -413,6 +427,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
       ...(opts?.faithful ? { faithful: true } : {}),
     };
     allSpecs.set(slotId, spec);
+    undrained++;
     return {
       el: Box(
         {
@@ -476,89 +491,115 @@ export const makeSlots = (ctx: SlotsCtx) => {
     // pick (imageProtocolFor) is what keeps us off a raster that could not
     // draw — that path keeps the glyph instead (see below).
     if (jobs.length === 0) return;
-    // one protocol for the whole drain: it is a per-terminal decision, so a
-    // `null` means NO job here can paint — keep every glyph.
-    const protocol = imageProtocol();
-    // priority first, then visible tiles, then the off-screen backlog —
-    // Array#sort is stable, so each class keeps its push order
-    jobs.sort((a, b) => thumbJobRank(a) - thumbJobRank(b));
-    const { cellW, cellH } = cellMetrics();
-    let idx = 0;
-    const worker = async () => {
-      while (idx < jobs.length) {
-        const j = jobs[idx++];
-        if (!j) continue;
-        // probe size/mtime for links and rows whose stats weren't filled at
-        // build time (the synchronous statSync per tile used to block the
-        // build phase). A 0-byte / oversize / unreadable file keeps its icon.
-        if (j.probe) {
-          const st = await probeThumbStat(j.probe);
-          if (!st) continue;
-          j.mtimeMs = st.mtimeMs;
-          j.size = st.size;
-        }
-        let slot = ctx.byId(j.slotId);
-        if (!slot) continue;
-        // "do not raster" sentinel: kitty is absent and sixel has no pixel
-        // metrics (or no graphics at all). Mounting an ImageRenderable here
-        // would reserve cells for a placement that lands blank, so keep the
-        // crisp fallback glyph (same node the failure path below installs).
-        if (protocol === null) {
-          if (slot.getChildren().length === 0) {
-            try {
-              slot.add(Text({ content: j.fallbackGlyph, fg: ctx.colors().sidebarFgMuted }));
-            } catch {}
+    thumbDraining++;
+    try {
+      // one protocol for the whole drain: it is a per-terminal decision, so a
+      // `null` means NO job here can paint — keep every glyph.
+      const protocol = imageProtocol();
+      // priority first, then visible tiles, then the off-screen backlog —
+      // Array#sort is stable, so each class keeps its push order
+      jobs.sort((a, b) => thumbJobRank(a) - thumbJobRank(b));
+      const { cellW, cellH } = cellMetrics();
+      // Ownership entries are per JOB: drop ours once it settles (mounted,
+      // rejected, or bailed) or the map grows for the life of the process. Only
+      // OUR key is removed — a rebuild may have re-pushed the slot with a new one.
+      const forgetThumb = (j: ThumbJob): void => {
+        if (thumbOwners.get(j.slotId) === thumbJobKey(j)) thumbOwners.delete(j.slotId);
+      };
+      let idx = 0;
+      const worker = async () => {
+        while (idx < jobs.length) {
+          const j = jobs[idx++];
+          if (!j) continue;
+          // probe size/mtime for links and rows whose stats weren't filled at
+          // build time (the synchronous statSync per tile used to block the
+          // build phase). A 0-byte / oversize / unreadable file keeps its icon.
+          if (j.probe) {
+            // the queued ownership key used the build-time placeholders; a
+            // successful probe changes mtimeMs/size, so re-key before the stale
+            // check or the raster would reject its own job (dropped thumbnail)
+            const queuedKey = thumbJobKey(j);
+            const st = await probeThumbStat(j.probe);
+            if (!st) {
+              forgetThumb(j);
+              continue;
+            }
+            j.mtimeMs = st.mtimeMs;
+            j.size = st.size;
+            if (thumbOwners.get(j.slotId) === queuedKey) thumbOwners.set(j.slotId, thumbJobKey(j));
           }
-          continue;
-        }
-        const hCells = j.hCells ?? ctx.iconCells();
-        const jobBg = j.bg ?? ctx.colors().bg;
-        // 2px inset so kitty's cell->pixel rounding never bleeds onto neighbors
-        const pxW = Math.max(1, Math.round(j.wCells * cellW) - 2);
-        const pxH = Math.max(1, Math.round(hCells * cellH) - 2);
-        try {
-          const bytes = await thumbPng(j.path, j.mtimeMs, j.size, pxW, pxH, jobBg, j.vector, j.video);
-          const img = new ImageRenderable(ctx.renderer(), {
-            id: `${j.slotId}-t`,
-            source: bytes,
-            width: j.wCells,
-            height: hCells,
-            // rasters/video cover-crop into the tile; SVG vectors contain (see
-            // thumbImageFit) — icons keep fit:"fit" at their own site
-            fit: thumbImageFit(j.vector),
-            protocol,
-          });
-          if (img.loadPromise) await img.loadPromise;
-          // RE-RESOLVE: a rebuild during the raster detached the captured node;
-          // writing into it leaked a native image buffer and painted nowhere.
-          // A same-id replacement is the live slot, so use the fresh lookup.
-          slot = ctx.byId(j.slotId);
-          // stale guard: if the slot was rebuilt for another file, its re-pushed
-          // job overwrote our ownership key — drop this raster instead of
-          // painting the wrong thumbnail (or, worse, the old file's)
-          if (!slot || thumbOwners.get(j.slotId) !== thumbJobKey(j)) {
-            try {
-              img.destroy?.();
-            } catch {}
+          let slot = ctx.byId(j.slotId);
+          if (!slot) {
+            forgetThumb(j);
             continue;
           }
-          // destroy, not detach: the replaced node (fallback glyph or a stale
-          // raster) owns native memory that would otherwise wait for the GC poke
-          destroyChildren(slot);
-          slot.add(img);
-        } catch {
-          // `slot` is re-assigned inside the try above, so the catch sees the
-          // unnarrowed type again — the optional chain re-establishes it
-          if (slot?.getChildren().length === 0) {
-            try {
-              slot.add(Text({ content: j.fallbackGlyph, fg: ctx.colors().sidebarFgMuted }));
-            } catch {}
+          // "do not raster" sentinel: kitty is absent and sixel has no pixel
+          // metrics (or no graphics at all). Mounting an ImageRenderable here
+          // would reserve cells for a placement that lands blank, so keep the
+          // crisp fallback glyph (same node the failure path below installs).
+          if (protocol === null) {
+            if (slot.getChildren().length === 0) {
+              try {
+                slot.add(Text({ content: j.fallbackGlyph, fg: ctx.colors().sidebarFgMuted }));
+              } catch {}
+            }
+            forgetThumb(j);
+            continue;
           }
+          const hCells = j.hCells ?? ctx.iconCells();
+          const jobBg = j.bg ?? ctx.colors().bg;
+          // 2px inset so kitty's cell->pixel rounding never bleeds onto neighbors
+          const pxW = Math.max(1, Math.round(j.wCells * cellW) - 2);
+          const pxH = Math.max(1, Math.round(hCells * cellH) - 2);
+          try {
+            const bytes = await thumbPng(j.path, j.mtimeMs, j.size, pxW, pxH, jobBg, j.vector, j.video);
+            const img = new ImageRenderable(ctx.renderer(), {
+              id: `${j.slotId}-t`,
+              source: bytes,
+              width: j.wCells,
+              height: hCells,
+              // rasters/video cover-crop into the tile; SVG vectors contain (see
+              // thumbImageFit) — icons keep fit:"fit" at their own site
+              fit: thumbImageFit(j.vector),
+              protocol,
+            });
+            if (img.loadPromise) await img.loadPromise;
+            // RE-RESOLVE: a rebuild during the raster detached the captured node;
+            // writing into it leaked a native image buffer and painted nowhere.
+            // A same-id replacement is the live slot, so use the fresh lookup.
+            slot = ctx.byId(j.slotId);
+            // stale guard: if the slot was rebuilt for another file, its re-pushed
+            // job overwrote our ownership key — drop this raster instead of
+            // painting the wrong thumbnail (or, worse, the old file's)
+            if (!slot || thumbOwners.get(j.slotId) !== thumbJobKey(j)) {
+              try {
+                img.destroy?.();
+              } catch {}
+              continue;
+            }
+            // the raster is this slot's now — its ownership key has no further job
+            thumbOwners.delete(j.slotId);
+            // destroy, not detach: the replaced node (fallback glyph or a stale
+            // raster) owns native memory that would otherwise wait for the GC poke
+            destroyChildren(slot);
+            slot.add(img);
+          } catch {
+            // `slot` is re-assigned inside the try above, so the catch sees the
+            // unnarrowed type again — the optional chain re-establishes it
+            if (slot?.getChildren().length === 0) {
+              try {
+                slot.add(Text({ content: j.fallbackGlyph, fg: ctx.colors().sidebarFgMuted }));
+              } catch {}
+            }
+            forgetThumb(j);
+          }
+          await new Promise((r) => setTimeout(r, 0));
         }
-        await new Promise((r) => setTimeout(r, 0));
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(THUMB_WORKERS, jobs.length) }, () => worker()));
+      };
+      await Promise.all(Array.from({ length: Math.min(THUMB_WORKERS, jobs.length) }, () => worker()));
+    } finally {
+      thumbDraining--;
+    }
   };
 
   const rasterStatesInto = async (
@@ -571,6 +612,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
     dimFactor = 1,
     idPrefix = "s",
     faithful = false,
+    mountedSlot?: MaybeNode,
   ) => {
     const { cellW, cellH } = cellMetrics();
     const protocol = imageProtocol();
@@ -584,7 +626,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
     // transparent under force); float children keep flattening onto the island.
     const transparent = iconTransparent(
       ctx.iconsMode(),
-      isFloatChild(ctx.byId(slotId)),
+      isFloatChild(mountedSlot ?? ctx.byId(slotId)),
       ctx.transparentForce?.() ? "force" : undefined,
     );
     const imgs: ImageRenderable[] = [];
@@ -635,10 +677,15 @@ export const makeSlots = (ctx: SlotsCtx) => {
   // placement here can paint) leaves the spec undone so a later drain retries it,
   // while a spec that IS marked done either got its rasters or genuinely failed.
   const runIconDrain = async (): Promise<void> => {
-    const aspect = cellMetrics().aspect;
     const specs = [...allSpecs.values()];
     const pending = iconForceRedrain ? specs : specs.filter((s) => !s.done);
     iconForceRedrain = false;
+    // Orphan sweep is only meaningful when the registry holds more specs than
+    // this pass looked at (a rebuild left the previous build's specs behind).
+    // A first build or a whole-registry re-raster has nothing to sweep: the
+    // worker loop below drops any spec whose node is already gone.
+    const sweepOrphans = allSpecs.size > pending.length;
+    const aspect = cellMetrics().aspect;
     // bounded pool (like drainThumbs): a resize/theme flip re-rasters EVERY
     // registered slot, and an unbounded Promise.all launched one job per slot
     let idx = 0;
@@ -650,9 +697,17 @@ export const makeSlots = (ctx: SlotsCtx) => {
         // here can paint (see imageProtocolFor), so leave it undone for a later
         // drain to retry instead of marking it done with no rasters attached.
         if (imageProtocol() === null) continue;
-        spec.done = true;
+        if (!spec.done) {
+          spec.done = true;
+          undrained--;
+        }
         const slot = ctx.byId(spec.slotId);
-        if (!slot) continue;
+        if (!slot) {
+          // dead on the spot (rebuilt out from under the queue): drop it now
+          // instead of paying a second byId in the liveness sweep
+          allSpecs.delete(spec.slotId);
+          continue;
+        }
         if (spec.statesFactory) {
           try {
             spec.states = spec.statesFactory();
@@ -674,6 +729,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
           1,
           "s",
           spec.faithful ?? false,
+          slot,
         );
         if (imgs.length === 0) continue;
         slot.width = wCells;
@@ -714,8 +770,12 @@ export const makeSlots = (ctx: SlotsCtx) => {
     // `imageProtocol() === null` bail above leaves every spec `done = false`
     // forever, so the old `spec.done &&` guard kept every destroyed slot's
     // spec in the registry for the life of the process.
-    for (const [id] of allSpecs) {
-      if (!ctx.byId(id)) allSpecs.delete(id);
+    if (sweepOrphans) {
+      for (const [id, spec] of allSpecs) {
+        if (ctx.byId(id)) continue;
+        if (!spec.done) undrained--;
+        allSpecs.delete(id);
+      }
     }
     // re-rasters made fresh images visible; while a modal scrim is up the icons
     // must fall back to dimmed glyphs or they float over the menu
@@ -736,6 +796,12 @@ export const makeSlots = (ctx: SlotsCtx) => {
     // of per-spec inside runIconDrain) stops every renderAll step from
     // re-walking the whole registry on these terminals.
     if (imageProtocol() === null) return Promise.resolve();
+    // Nothing queued: renderAll fires this from several steps and syncWindow
+    // on every scroll write, and a pass with an empty pending set only walked
+    // the tree looking for dead specs. A rebuild registers new slots
+    // (undrained > 0) — that is the one time a pass has work, and the one time
+    // the orphan sweep is due.
+    if (undrained === 0 && !iconForceRedrain) return Promise.resolve();
     iconDrainAgain = true;
     if (!iconDrain) {
       iconDrain = (async () => {
@@ -868,6 +934,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
       // iconForceRedrain also covers a pass that is mid-flight right now: the
       // rerun revisits EVERY spec even one the in-flight pass already claimed.
       for (const s of allSpecs.values()) s.done = false;
+      undrained = allSpecs.size;
       iconForceRedrain = true;
       // an icon-style toggle also flips the fallback glyphs (shown pre-raster
       // and under the scrim): repaint mounted ones now so a failed/slow
@@ -885,6 +952,15 @@ export const makeSlots = (ctx: SlotsCtx) => {
     pushThumbJob: (job: ThumbJob): void => {
       if (ctx.isTtyMode?.() || ctx.forceGlyph?.()) return;
       thumbOwners.set(job.slotId, thumbJobKey(job));
+      // Leak backstop, only while nothing is queued: a queued batch's ownership
+      // keys are what its rasters validate against, so evicting one would reject
+      // a thumbnail it is still waiting for. Settled jobs remove their own entry.
+      if (thumbOwners.size > THUMB_OWNER_CAP && thumbJobs.length === 0 && thumbDraining === 0) {
+        for (const k of thumbOwners.keys()) {
+          if (thumbOwners.size <= THUMB_OWNER_CAP) break;
+          thumbOwners.delete(k);
+        }
+      }
       thumbJobs.push(job);
     },
   };

@@ -10,13 +10,14 @@ import {
   TextTableRenderable,
   type SyntaxStyle,
 } from "@opentui/core";
-import { existsSync, readdirSync, statSync, type Stats } from "node:fs";
-import { readFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { opendir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { destroyChildren, debounced, type Scheduler } from "../lib/uiutil";
 import { slotBg, type UiStyle } from "./style";
 import { extOf, fileIconFor, fileIsAudio, fileIsGif, fileIsImage, fileIsVideo, gifFrameCount } from "../fs/filetype";
 import { isPrivilegeError } from "../fs/elevate";
+import { errCode } from "../fs/fsutil";
 import { detectArchiveFormat } from "../fs/archive";
 import { readArchiveEntries, type ArchiveEntryInfo } from "../fs/archive-read";
 import { fmtBytes } from "../fs/propsinfo";
@@ -113,6 +114,25 @@ type SurfaceState = {
 // 32 MiB cap loaded the whole file synchronously on every GIF preview render
 // for a one-line label.
 const GIF_COUNT_READ_MAX = 1024 * 1024;
+// A preview directory shows only an entry count. Walking a 100k-entry folder
+// just to finish the count would stall the pane, so stop at this many and say
+// "N+ items".
+const DIR_COUNT_CAP = 10_000;
+
+// non-blocking entry count: opendir streams the names, so the frame loop keeps
+// running even on a huge/network folder (readdirSync froze it per focus move)
+const countDirEntries = async (dir: string): Promise<number> => {
+  const handle = await opendir(dir);
+  let n = 0;
+  try {
+    for await (const _ of handle) {
+      if (++n >= DIR_COUNT_CAP) break;
+    }
+  } finally {
+    await handle.close().catch(() => {});
+  }
+  return n;
+};
 
 // one archive listing row: the name clipped so the size column stays
 // right-aligned (the tail is kept — the file name lives there)
@@ -231,21 +251,30 @@ export const makePreview = (ctx: PreviewCtx) => {
       target.add(Text({ content: `${src.n} items selected`, fg: colors.white }));
       return;
     }
-    if (src.kind === "none" || !existsSync(src.key)) {
+    if (src.kind === "none") {
       target.add(Box({ height: 1 }));
       target.add(Text({ content: "no selection", fg: colors.sidebarFgMuted }));
       return;
     }
     const key = src.key;
 
-    let st: Stats | null = null;
+    // async stat: a hung/network path must not block the render loop, and one
+    // stat answers both the exists and the isDir/size/mtime questions (the old
+    // existsSync + statSync pair paid two sync syscalls per focus move)
+    let st: Stats;
     try {
       // follow ON PURPOSE: the gates below read target CONTENT (thumb raster,
       // text body, cache key) and no size number ships from this st — the
       // on-disk invariant covers displayed sizes, not content decisions
-      st = statSync(key);
-    } catch {
-      target.add(Text({ content: "source gone", fg: colors.sidebarFgMuted }));
+      st = await stat(key);
+    } catch (err) {
+      if (gen !== s.gen) return;
+      // a key that isn't on disk at all (vanished file, or an archive member's
+      // URI this pane can't preview) keeps the old "no selection" text; any
+      // other stat failure (permissions) is a real "source gone"
+      const code = errCode(err);
+      const missing = code === "ENOENT" || code === "ENOTDIR";
+      target.add(Text({ content: missing ? "no selection" : "source gone", fg: colors.sidebarFgMuted }));
       return;
     }
     if (gen !== s.gen) return;
@@ -258,11 +287,16 @@ export const makePreview = (ctx: PreviewCtx) => {
     // header (full stats live in right-click → Properties…)
     if (isDirTarget) {
       try {
-        const n = readdirSync(key).length;
+        const n = await countDirEntries(key);
+        if (gen !== s.gen) return;
         target.add(
-          Text({ content: ` ${n} item${n === 1 ? "" : "s"} — Properties… for details`, fg: colors.sidebarFgMuted }),
+          Text({
+            content: ` ${n}${n >= DIR_COUNT_CAP ? "+" : ""} item${n === 1 ? "" : "s"} — Properties… for details`,
+            fg: colors.sidebarFgMuted,
+          }),
         );
       } catch {
+        if (gen !== s.gen) return;
         target.add(Text({ content: "can't list this folder", fg: colors.sidebarFgMuted }));
       }
       void ctx.drainIconQueue();
@@ -379,7 +413,9 @@ export const makePreview = (ctx: PreviewCtx) => {
 
     let text: string;
     try {
-      text = (await readFile(key, "utf8")).slice(0, 65536);
+      // only the first 64 KiB is rendered: read exactly that many bytes instead
+      // of buffering (and decoding) the whole file just to slice it
+      text = await Bun.file(key).slice(0, 65536).text();
     } catch (err) {
       // privileged file: one quiet non-interactive attempt (never prompts —
       // focus moves constantly, a password popup per move is unusable)

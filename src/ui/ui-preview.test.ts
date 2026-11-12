@@ -498,6 +498,21 @@ describe("preview rich rendering", () => {
     }
   });
 
+  test("a large text body is previewed from its first 64 KiB only", async () => {
+    const file = path.join(tmpDir, "big.txt");
+    writeFileSync(file, "A".repeat(70_000));
+    const { clock, p, codeNodes } = mkLivePreview(file);
+    p.renderPreview();
+    clock.flush();
+    expect(await settleUntil(t, () => codeNodes().length === 1)).toBe(true);
+    const body = codeNodes()[0] as any;
+    const text =
+      typeof body.content === "string"
+        ? body.content
+        : (body.content?.chunks ?? body.chunks ?? []).map((c: any) => c.text).join("");
+    expect(text.length).toBe(65_536);
+  });
+
   test("markdown fences follow the mode, prose and tables stay word", async () => {
     // Fence blocks carry their info-string filetype (e.g. javascript);
     // prose blocks stay filetype markdown. Only fences take the mode.

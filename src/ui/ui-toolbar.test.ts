@@ -48,7 +48,11 @@ const mkToolbar = (
   t: TestRendererSetup,
   prefix: string,
   cwd: string,
-  hooks: { onAnimate?: (ids: string[]) => void; cwdOf?: () => string } = {},
+  hooks: {
+    onAnimate?: (ids: string[]) => void;
+    cwdOf?: () => string;
+    search?: { visible(): boolean; clear(): void };
+  } = {},
 ) =>
   makeToolbar({
     prefix,
@@ -77,6 +81,7 @@ const mkToolbar = (
     cwd: () => hooks.cwdOf?.() ?? cwd,
     animateCrumbs: hooks.onAnimate,
     home: "/home/u",
+    ...(hooks.search ? { searchVisible: () => hooks.search!.visible(), clearSearch: () => hooks.search!.clear() } : {}),
   });
 
 describe("makeToolbar (per pane)", () => {
@@ -150,6 +155,63 @@ describe("toolbar item ids (animation targets)", () => {
     for (let i = 0; i < 200; i++) ids.push(`tfm-p0-crumb-${i}`);
     const byId = mapById(ids);
     expect(crumbItemIds(byId, "tfm-p0-", 256)).toHaveLength(200);
+  });
+});
+
+describe("toolbar search button", () => {
+  const click = (t: TestRendererSetup, id: string) => {
+    const node = t.renderer.root.findDescendantById(id) as any;
+    node.processMouseEvent({
+      type: "down",
+      button: 0,
+      x: 0,
+      y: 0,
+      modifiers: { shift: false, alt: false, ctrl: false },
+    });
+  };
+
+  test("hiding goes through the search module (query cleared + box blurred)", async () => {
+    const t = await createTestRenderer({ width: 100, height: 6 });
+    try {
+      let visible = true;
+      let clears = 0;
+      const tb = mkToolbar(t, "tfm-p0-", "/x", {
+        search: {
+          visible: () => visible,
+          clear: () => {
+            clears++;
+            visible = false;
+          },
+        },
+      });
+      t.renderer.root.add(tb.makeToolbarShell());
+      await t.renderOnce();
+      const input = t.renderer.root.findDescendantById("tfm-p0-search") as any;
+      input.visible = true; // the open box
+      click(t, "tfm-p0-search-btn");
+      expect(clears).toBe(1);
+      // the button must NOT flip node.visible itself on the hide path: only the
+      // search module owns the box (it also resets the query + blurs)
+      expect(input.visible).toBe(true);
+    } finally {
+      t.renderer.destroy();
+    }
+  });
+
+  test("showing reveals and focuses the box", async () => {
+    const t = await createTestRenderer({ width: 100, height: 6 });
+    try {
+      const tb = mkToolbar(t, "tfm-p0-", "/x", {
+        search: { visible: () => false, clear: () => {} },
+      });
+      t.renderer.root.add(tb.makeToolbarShell());
+      await t.renderOnce();
+      click(t, "tfm-p0-search-btn");
+      const input = t.renderer.root.findDescendantById("tfm-p0-search") as any;
+      expect(input.visible).toBe(true);
+    } finally {
+      t.renderer.destroy();
+    }
   });
 });
 
@@ -252,6 +314,25 @@ describe("renderCrumbs directory-change animation", () => {
       tb.renderCrumbs();
       tb.renderCrumbs();
       expect(seen).toEqual([]);
+    } finally {
+      t.renderer.destroy();
+    }
+  });
+
+  test("an unchanged path reuses the crumb nodes instead of rebuilding them", async () => {
+    // renderAll calls renderCrumbs on every repaint: a destroy/rebuild there
+    // recreated every crumb + icon slot (and reset an in-progress path edit)
+    const t = await createTestRenderer({ width: 200, height: 6 });
+    try {
+      const tb = mkToolbar(t, "tfm-p0-", "/x/alpha");
+      t.renderer.root.add(tb.makeToolbarShell());
+      await t.renderOnce();
+      tb.renderCrumbs();
+      await t.renderOnce();
+      const crumb = t.renderer.root.findDescendantById("tfm-p0-crumb-0");
+      expect(crumb).toBeTruthy();
+      tb.renderCrumbs();
+      expect(t.renderer.root.findDescendantById("tfm-p0-crumb-0")).toBe(crumb);
     } finally {
       t.renderer.destroy();
     }

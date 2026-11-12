@@ -42,6 +42,9 @@ const makeHarness = () => {
   let ttyMode = false;
   let forceGlyph = false;
   let iconStyle: "filled" | "outline" = "filled";
+  // node-liveness lookups go through byId: the drain's skip-when-idle guard is
+  // visible as "no lookups at all for a drain with nothing queued"
+  let byIdCalls = 0;
   // a terminal that answers OpenTUI's pixel-size query. setResolution(null)
   // models iTerm2 / dumb frontends, where it stays null FOREVER; undefined is
   // the same "no pixels" for the protocol pick (see imageProtocolFor).
@@ -57,7 +60,10 @@ const makeHarness = () => {
   };
   const ctx: SlotsCtx = {
     renderer: () => ({ resolution, capabilities, terminalWidth: 80, terminalHeight: 20 }) as unknown as CliRenderer,
-    byId: (id) => nodes.get(id),
+    byId: (id) => {
+      byIdCalls++;
+      return nodes.get(id);
+    },
     colors: () => ({ bg: BG, sidebarFgMuted: FG, sidebarBg: BG, hoverBg: BG, white: "#fff" }) as unknown as Theme,
     uiStyle: () => "solid",
     iconsMode: () => "opaque",
@@ -89,6 +95,7 @@ const makeHarness = () => {
     slots,
     nodes,
     mountFakeSlot,
+    byIdCalls: () => byIdCalls,
     setModal: (v: boolean) => (modalUp = v),
     setTtyMode: (v: boolean) => (ttyMode = v),
     setForceGlyph: (v: boolean) => (forceGlyph = v),
@@ -115,6 +122,19 @@ describe("icon slot scrim", () => {
     h.slots.setScrim(false);
     expect(img.visible).toBe(true);
     expect(glyph.visible).toBe(false);
+  });
+
+  test("a drain with nothing queued does no node-liveness work", async () => {
+    // renderAll fires drainIconQueue from several steps and syncWindow on every
+    // scroll write; the old pass swept every registered spec through the tree
+    // even when nothing needed rastering
+    const h = makeHarness();
+    const s = h.slots.makeIconSlot("no-such-icon-xyz", [{ fg: FG, bg: BG }], 1, 0);
+    h.mountFakeSlot(s.spec);
+    await h.slots.drainIconQueue();
+    const before = h.byIdCalls();
+    await h.slots.drainIconQueue();
+    expect(h.byIdCalls()).toBe(before);
   });
 
   test("resetIconQueue re-queues a drained slot whose raster finished earlier", async () => {
@@ -532,6 +552,34 @@ describe("thumbnail mount", () => {
     const img = t.renderer.root.findDescendantById(`${slotId}-t`) as any;
     expect(img).toBeTruthy();
     expect(img.fit).toBe("cover");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Probe jobs carry build-time placeholders (0/0) until the drain stats the
+  // path. The ownership key must be re-keyed after a successful probe, or the
+  // raster's own stale check rejects it and the thumbnail is silently dropped.
+  test("a probe job mounts its raster after the stat re-keys ownership", async () => {
+    const slotId = "tfm-tile-probe-thumb";
+    t.renderer.root.add(Box({ id: slotId, width: 8, height: 8 }));
+    await t.renderOnce();
+    const { dir, p } = writePng("probe.png");
+    const slots = mkSlots();
+    openResolution();
+    openCaps();
+    slots.pushThumbJob({
+      slotId,
+      path: p,
+      mtimeMs: 0,
+      size: 0,
+      wCells: 4,
+      vector: false,
+      fallbackGlyph: "F",
+      probe: p,
+    });
+    await slots.drainThumbs();
+    await t.renderOnce();
+
+    expect(t.renderer.root.findDescendantById(`${slotId}-t`)).toBeTruthy();
     rmSync(dir, { recursive: true, force: true });
   });
 

@@ -26,6 +26,7 @@ describe("startMemHygiene", () => {
         return { activeAllocations: 7, totalRequestedBytes: 0 };
       },
       debugLog: (msg) => lines.push(msg),
+      poke: () => {},
       intervalMs: 15,
     });
     await new Promise((r) => setTimeout(r, 50));
@@ -37,17 +38,42 @@ describe("startMemHygiene", () => {
     expect(lines[0]).toMatch(/^mem native active=7/);
   });
 
-  test("no debugLog -> no per-tick work beyond the gc poke", async () => {
+  test("gc poke is growth-gated: a flat allocator is not collected every tick", async () => {
     let reads = 0;
+    let pokes = 0;
+    let active = 5;
     const stop = startMemHygiene({
       allocatorStats: () => {
         reads++;
-        return null;
+        return { activeAllocations: active, totalRequestedBytes: 0 };
+      },
+      poke: () => {
+        pokes++;
       },
       intervalMs: 10,
     });
+    await new Promise((r) => setTimeout(r, 45));
+    // first tick establishes the baseline (pokes), the rest see no growth
+    expect(reads).toBeGreaterThan(1);
+    expect(pokes).toBe(1);
+    const before = pokes;
+    active = 9; // native churn outran the finalizers
     await new Promise((r) => setTimeout(r, 35));
     stop();
-    expect(reads).toBe(0);
+    expect(pokes).toBeGreaterThan(before);
+  });
+
+  test("unavailable allocator stats keep the unconditional poke (pressure guard)", async () => {
+    let pokes = 0;
+    const stop = startMemHygiene({
+      allocatorStats: () => null,
+      poke: () => {
+        pokes++;
+      },
+      intervalMs: 10,
+    });
+    await new Promise((r) => setTimeout(r, 45));
+    stop();
+    expect(pokes).toBeGreaterThan(1);
   });
 });

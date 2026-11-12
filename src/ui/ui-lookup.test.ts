@@ -157,7 +157,7 @@ describe("makeResolutionGate", () => {
   });
 
   test("settle latches after the full budget and logs why", async () => {
-    // the console/tmux case: no reply ever comes. The 2s boot budget is spent
+    // the console/tmux case: no reply ever comes. The boot budget is spent
     // ONCE, then the render path must never park again.
     const clock = mkClock();
     const logs: string[] = [];
@@ -178,10 +178,29 @@ describe("makeResolutionGate", () => {
     expect(clock.slept.length).toBe(before);
   });
 
+  test("the pre-paint budget stays short (boot must not park behind a silent terminal)", () => {
+    expect(RESOLUTION_SETTLE_MS).toBeLessThanOrEqual(250);
+  });
+
+  test("a late pixel reply heals the latch (a resize requery still parks)", async () => {
+    const clock = mkClock();
+    let res: { width: number; height: number } | null = null;
+    const gate = makeResolutionGate(() => mkRenderer(() => res), { sleep: clock.sleep, now: clock.now });
+    await gate.settle(); // no reply within the budget: latched
+    const before = clock.slept.length;
+    await gate.wait();
+    expect(clock.slept.length).toBe(before); // latched: free
+    res = { width: 800, height: 480 }; // the terminal finally answered
+    await gate.wait(); // observes pixels and clears the latch
+    res = null; // a resize nulls the resolution for its requery
+    await gate.wait();
+    expect(clock.slept.length).toBeGreaterThan(before);
+  });
+
   test("a rasterless terminal (tty mode / force-glyph) never parks at all", async () => {
     // no rasters means cell pixels are never read: waiting on them is pure
     // startup/navigation delay for data nothing consumes (the console's
-    // leftover 2s boot stall)
+    // leftover boot stall)
     const clock = mkClock();
     const logs: string[] = [];
     const gate = makeResolutionGate(() => mkRenderer(() => null), {

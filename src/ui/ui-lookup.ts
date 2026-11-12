@@ -62,15 +62,22 @@ export const makeLookup = (ctx: LookupCtx) => {
 // previous folder sat on screen. The pane never needed those pixels (it builds
 // on cellMetrics' 10x20 fallback, and the icon/thumb drains raster at that
 // same fallback), so the park is split in two:
-//   settle() — the boot wait. One full budget, then LATCH: a terminal that
-//     answered nothing by then never will, and later waits are free.
+//   settle() — the boot wait. A SHORT pre-paint budget, then LATCH: a terminal
+//     that answered nothing by then almost certainly never will, and later
+//     waits are free. A reply that lands anyway heals the latch on the next
+//     gate call (see neverReports).
 //   wait()  — the render-path wait. Instant once the resolution landed or the
 //     gate latched; otherwise a short bounded park (a resize requery nulled it
 //     and the reply is milliseconds away).
 export const RESOLUTION_POLL_MS = 50;
-// boot: the terminal's one chance to report cell pixels (unchanged 2s budget —
-// the one place a late reply still buys pixel-accurate rasters)
-export const RESOLUTION_SETTLE_MS = 2000;
+// boot: the pre-paint budget. Boot used to park for up to 2s before building
+// the first frame; a terminal that answers the pixel query at all answers it
+// within the first frames, so 200ms buys the same correctness for the rasters
+// that drain right after the first paint and stops charging every slow/blank
+// terminal two seconds of black screen. A LATER reply still corrects the cell
+// metrics for subsequent drains (cellMetrics reads the resolution live), and
+// any gate call that observes pixels heals the latch (see neverReports).
+export const RESOLUTION_SETTLE_MS = 200;
 // render path: only ever paid on a terminal that DOES report pixels, right
 // after a resize nulled the resolution for its requery
 export const RESOLUTION_RENDER_MS = 200;
@@ -102,23 +109,31 @@ export const makeResolutionGate = (
     const deadline = now() + budgetMs;
     while (!renderer().resolution && now() < deadline) await sleepFn(RESOLUTION_POLL_MS);
   };
+  // A gate call that observes pixels heals a premature latch: the short boot
+  // budget can expire just before a slow terminal's reply, and the next resize
+  // requery (resolution nulled) must still be parked for.
+  const reported = (): boolean => {
+    if (!renderer().resolution) return false;
+    neverReports = false;
+    return true;
+  };
   return {
     async settle(budgetMs = RESOLUTION_SETTLE_MS): Promise<void> {
-      if (renderer().resolution || neverReports) return;
+      if (reported() || neverReports) return;
       if (deps?.rasterless?.()) {
         neverReports = true;
         deps.log?.("resolution: skipped — this terminal paints no rasters (tty mode / force-glyph)");
         return;
       }
       await park(budgetMs);
-      if (renderer().resolution) return;
+      if (reported()) return;
       neverReports = true;
       deps?.log?.(
         `resolution: none after ${budgetMs}ms — terminal doesn't report pixels (grid builds on fallback cell metrics)`,
       );
     },
     async wait(budgetMs = RESOLUTION_RENDER_MS): Promise<void> {
-      if (renderer().resolution || neverReports) return;
+      if (reported() || neverReports) return;
       if (deps?.rasterless?.()) return;
       await park(budgetMs);
     },

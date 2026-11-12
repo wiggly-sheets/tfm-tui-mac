@@ -100,11 +100,24 @@ export const linkRowLabel = (name: string, targetBase: string, max: number): str
 };
 
 // short modified-date for the list view's date column (and the stats-only
-// in-place repaint in ui-grid, which must format identically)
+// in-place repaint in ui-grid, which must format identically). The current
+// year is cached for an hour: `new Date()` per row is one Date allocation per
+// visible row per repaint, and the wall clock can't change year inside the
+// window. The row's own Date is still needed for month/day/time.
+let curYear = 0;
+let curYearAt = 0;
+const currentYear = (): number => {
+  const now = Date.now();
+  if (curYearAt === 0 || now - curYearAt > 3_600_000) {
+    curYear = new Date(now).getFullYear();
+    curYearAt = now;
+  }
+  return curYear;
+};
 export const fmtDateShort = (ms?: number): string => {
   if (!ms) return "-";
   const d = new Date(ms);
-  return d.getFullYear() === new Date().getFullYear()
+  return d.getFullYear() === currentYear()
     ? `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
     : `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 };
@@ -133,10 +146,13 @@ export const makeGridBuilders = (ctx: GridRendererCtx) => {
     const dim = entry.name.startsWith(".");
     const colors = ctx.colors();
     const tileId = `${tilePrefix()}${idx}`;
+    // one key resolve per entry: this runs for EVERY row on every rebuild, and
+    // path.join is not free on a 20k folder
+    const key = entryKey(entry);
     // preserve a selection set while the ref existed (window slides re-register
     // WITHOUT the full render's prevSel snapshot — the flag must survive)
-    const prevSel = selection.tileRefs.get(entryKey(entry))?.selected ?? false;
-    selection.tileRefs.set(entryKey(entry), {
+    const prevSel = selection.tileRefs.get(key)?.selected ?? false;
+    selection.tileRefs.set(key, {
       selected: prevSel,
       baseFg: dim ? colors.sidebarFgMuted : colors.sidebarFg,
       tileId,

@@ -67,6 +67,11 @@ type ToolbarCtx = {
   // mouse pointer shape (OSC 22 via the wiring's tty-guarded setter).
   // Absent = no pointer changes (old fakes keep working).
   setPointer?(style: PointerStyle): void;
+  // live type-to-search box (see ./search): absent = legacy direct toggle (old
+  // fakes keep working). Hiding MUST clear the query + blur through the search
+  // module, or the hidden-but-focused Input keeps filtering invisibly.
+  searchVisible?(): boolean;
+  clearSearch?(): void;
 };
 
 // path-bar commit check: virtual places always navigate; real paths must be
@@ -275,6 +280,14 @@ export const makeToolbar = (ctx: ToolbarCtx) => {
   // crumbs, going up animates nothing, same-target rebuilds (retheme,
   // watcher, search, path edit) stay instant.
   let lastCrumbTargets: string[] | null = null;
+  // renderAll calls renderCrumbs on EVERY repaint (plus the retheme hooks):
+  // without this guard an unchanged path cleared and recreated every crumb and
+  // slot (fallback-glyph flash + raster churn), and an in-progress path edit
+  // had its value/cursor reset each pass. Same signature guard as renderSidebar.
+  let lastCrumbsSig: string | null = null;
+  // the container the signature describes: a remounted row must rebuild even
+  // when the cwd/theme are unchanged
+  let lastCrumbsBox: MaybeNode = null;
 
   const exitPathEdit = () => {
     if (!pathEditMode) return;
@@ -296,6 +309,19 @@ export const makeToolbar = (ctx: ToolbarCtx) => {
   const renderCrumbs = () => {
     const box = ctx.byId(id("crumbs"));
     if (!box) return;
+    // hostname (the base crumb outside $HOME) is process-stable, so it is not
+    // part of the signature
+    const sig = JSON.stringify([
+      ctx.cwd(),
+      pathEditMode,
+      ctx.uiStyle(),
+      ctx.colors(),
+      ctx.transparentForce?.() ?? false,
+      ctx.home,
+    ]);
+    if (sig === lastCrumbsSig && box === lastCrumbsBox) return;
+    lastCrumbsSig = sig;
+    lastCrumbsBox = box;
 
     if (pathEditMode) {
       ctx.destroyChildren(box);
@@ -484,10 +510,25 @@ export const makeToolbar = (ctx: ToolbarCtx) => {
         ctx.blurTerminal();
         const el = ctx.byId(id("search"));
         if (!el) return;
-        el.visible = !el.visible;
+        const shown = ctx.searchVisible ? ctx.searchVisible() : !!el.visible;
+        if (shown) {
+          // hide through the search module: clear the query and blur the box.
+          // Hiding only the node left renderer focus on a hidden Input, which
+          // kept filtering the folder with no visible box and no escape.
+          if (ctx.clearSearch) ctx.clearSearch();
+          else {
+            el.visible = false;
+            try {
+              el.blur?.();
+            } catch {}
+          }
+          ctx.setPointer?.("default");
+          return;
+        }
+        el.visible = true;
         // the input owns the keyboard while visible — text pointer until then
-        ctx.setPointer?.(el.visible ? "text" : "default");
-        if (el.visible) el.focus();
+        ctx.setPointer?.("text");
+        el.focus();
       }),
     );
     wrap.add(input);

@@ -1,11 +1,12 @@
 // --- Directory listing + sort: pure fs/dir-entry logic. No renderer, no UI
 // state — sort mode arrives as params so callers (grid, tests) own state.
 // Virtual places (Recent/Starred) resolve through the registries in ./recent. ---
-import { lstat, readdir, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, stat } from "node:fs/promises";
 import { lstatSync, statSync } from "node:fs";
 import path from "node:path";
 import { RECENT_URI, STARRED_URI } from "./uri";
-import { readRecentXbelAsync, readStarredList } from "./recent";
+import { readRecentXbelAsync, readStarredList, recentListingGen } from "./recent";
+import { isTrashFilesDir, isTrashMetaItem, pruneTrashMeta } from "./fsutil";
 import type { SortMode } from "../lib/sort";
 import { extOf } from "./filetype";
 
@@ -93,22 +94,35 @@ const starredEntries = async (): Promise<Entry[]> => statEntries(readStarredList
 
 // --- [ui] listings-cache: reuse a folder's raw entry list across repaints
 // (yazi's folder cache + dir-signature revalidate). Every renderAll used to
-// pay a full readdir (+ a stat per row under size/mtime sorts); back/forward,
-// tab switches and selection changes re-asked the disk for identical data.
-// The dir's own stat is the validity key: create/delete/rename ALWAYS bump
-// its mtime, so the set of names can't go stale. Content edits don't touch
-// it, and with [ui] listings-cache-stats (default on) the size/mtime fill
-// rides along IN the cached entries — sorts stop re-statting every file on
-// every repaint, so displayed stats (and everything keyed off them, e.g.
-// thumbnail cache keys) can lag a live edit by up to the TTL window. With stats caching off the fill re-stats per call instead, and
-// nothing ever goes stale — so no watcher per-file patching is ever needed
-// (unlike yazi). The TTL ([ui] listings-cache-ttl) caps the worst case for
-// stale stats AND for exotic filesystems whose dir mtimes freeze (some
-// fuse/exFAT mounts, yazi's "soundless" partitions) — it is the only thing
-// that must re-validate on a slow clock. One known hole: a symlink's isDir
-// FOLLOWS ITS TARGET, and retargeting a link (dir↔file) bumps no directory
-// mtime, so routing can lie until the TTL.
-type CachedDir = { sig: string; entries: Entry[]; t: number };
+// pay a full readdir (+ a stat per row for the list view / size/mtime sorts);
+// back/forward, tab switches and selection changes re-asked the disk for
+// identical data. The dir's own stat is the validity key: create/delete/rename
+// ALWAYS bump its mtime, so the set of names can't go stale. Content edits
+// don't touch it, and with [ui] listings-cache-stats (default on) the
+// size/mtime fill rides along IN the cached entries for EVERY sort — the list
+// view shows both columns whatever the sort is, so sorting no longer decides
+// whether a stat is cached. Sorts stop re-statting every file on every
+// repaint, so displayed stats (and everything keyed off them, e.g. thumbnail
+// cache keys) can lag a live edit by up to the TTL window. With stats caching
+// off the fill re-stats per call instead, and nothing ever goes stale — so no
+// watcher per-file patching is ever needed (unlike yazi). The TTL
+// ([ui] listings-cache-ttl) caps the worst case for stale stats AND for
+// exotic filesystems whose dir mtimes freeze (some fuse/exFAT mounts, yazi's
+// "soundless" partitions) — it is the only thing that must re-validate on a
+// slow clock. One known hole: a symlink's isDir FOLLOWS ITS TARGET, and
+// retargeting a link (dir↔file) bumps no directory mtime, so routing can lie
+// until the TTL.
+type CachedDir = {
+  sig: string;
+  entries: Entry[];
+  t: number;
+  // the (sortBy, sortAsc) order `entries` is currently in. An unchanged
+  // repaint reuses it instead of re-running the n log n comparator (the
+  // collator compares are the expensive half of a big folder's repaint).
+  // Invalidated whenever the stat fill lands new size/mtime values, because
+  // those can move a size/mtime sort.
+  order?: { by: SortMode; asc: boolean };
+};
 const LISTINGS_CAP = 64;
 const LISTINGS_TTL_MS = 2000;
 const listings = new Map<string, CachedDir>();
@@ -152,12 +166,13 @@ export const fillStatsInto = async (
   entries: Entry[],
   dir: string,
   deps?: { stat?: (p: string) => Promise<{ size: number; mtimeMs: number }>; concurrency?: number },
-): Promise<void> => {
+): Promise<number> => {
   // default follows NOTHING (lstat): the Size/mtime columns show link-own
   // bytes (on-disk cost, ls -l semantics) — a following default is how the
   // link row ended up repeating its target's size. Injected fakes keep working.
   const statFn = deps?.stat ?? ((p: string) => lstat(p));
   const workers = Math.max(1, Math.min(deps?.concurrency ?? 32, entries.length));
+  let filled = 0;
   let i = 0;
   const worker = async (): Promise<void> => {
     while (i < entries.length) {
@@ -168,10 +183,14 @@ export const fillStatsInto = async (
         const st = await statFn(e.abs ?? path.join(dir, e.name));
         e.size = st.size;
         e.mtimeMs = st.mtimeMs ?? 0;
+        filled++;
       } catch {}
     }
   };
   await Promise.all(Array.from({ length: workers }, worker));
+  // count of rows that got a stat: callers invalidate derived state (the
+  // cached sort order) only when something actually moved
+  return filled;
 };
 
 // raw scan (hidden INCLUDED — listDir filters per call so the showHidden
@@ -179,25 +198,69 @@ export const fillStatsInto = async (
 // copies: the caller's sort must never mutate the cache.
 const loadEntries = async (
   dir: string,
-  o: { cache: boolean; now: () => number; ttlMs: number; fillStats: boolean },
+  o: {
+    cache: boolean;
+    now: () => number;
+    ttlMs: number;
+    // listings-cache-stats: fill EVERY row's size/mtime on a miss/hit (not just
+    // for size/mtime sorts). The list view shows both columns whatever the
+    // active sort is, and it used to re-lstat the whole folder on every paint
+    // because the copies it got never wrote back into the cache.
+    fillStats: boolean;
+    sortBy: SortMode;
+    sortAsc: boolean;
+  },
 ): Promise<Entry[]> => {
-  if (!o.cache) return (await scanDir(dir)).map((e) => ({ ...e }));
+  // a trash directory removed mid-session (Finder emptied it, the user deleted
+  // it) must behave as an empty trash, not "can't open this folder"
+  if (isTrashFilesDir(dir)) {
+    try {
+      await mkdir(dir, { recursive: true });
+    } catch {}
+  }
+  // name/type orders don't depend on stats, so the cache owns them even with
+  // stats caching off. size/mtime need the fill first: with fillStats off,
+  // listDir fills its own copies and sorts after, so the cache order (and the
+  // marker below) must not claim those modes.
+  const ownsSort = o.fillStats || o.sortBy === "name" || o.sortBy === "type";
+  const cmp = compareEntries(o.sortBy, o.sortAsc);
+  const orderNow = (list: Entry[], cached: CachedDir | null): void => {
+    if (cached?.order?.by === o.sortBy && cached.order.asc === o.sortAsc) return;
+    list.sort(cmp);
+    if (cached) cached.order = { by: o.sortBy, asc: o.sortAsc };
+  };
+  if (!o.cache) {
+    const fresh = await scanDir(dir);
+    if (o.fillStats) await fillStatsInto(fresh, dir);
+    if (ownsSort) fresh.sort(cmp);
+    return fresh.map((e) => ({ ...e }));
+  }
   const key = path.resolve(dir);
   // mtime ONLY: a dir's st_size is block-granular and lies on most filesystems
-  const sig = String(statSync(dir).mtimeMs);
+  // async dir stat: on a FUSE/SMB cwd a sync stat here blocks the frame loop
+  // before the cache check can even short-circuit
+  const sig = String((await stat(dir)).mtimeMs);
   const hit = listings.get(key);
   if (hit && hit.sig === sig && o.now() - hit.t < o.ttlMs) {
     // re-insert so the LRU evicts the least-recently-USED dir; `t` is
     // deliberately NOT refreshed (absolute staleness cap, not idle expiry)
     listings.delete(key);
     listings.set(key, hit);
-    if (o.fillStats) await fillStatsInto(hit.entries, dir);
+    if (o.fillStats) {
+      // rows that failed last time are retried; complete rows are skipped
+      // without an fs call, so a settled listing pays only the O(n) scan
+      const filled = await fillStatsInto(hit.entries, dir);
+      // new size/mtime values can reorder a size/mtime sort
+      if (filled > 0) hit.order = undefined;
+    }
+    if (ownsSort) orderNow(hit.entries, hit);
     return hit.entries.map((e) => ({ ...e }));
   }
   const entries = await scanDir(dir);
   if (o.fillStats) await fillStatsInto(entries, dir);
+  if (ownsSort) entries.sort(cmp);
   listings.delete(key);
-  listings.set(key, { sig, entries, t: o.now() });
+  listings.set(key, { sig, entries, t: o.now(), ...(ownsSort ? { order: { by: o.sortBy, asc: o.sortAsc } } : {}) });
   while (listings.size > LISTINGS_CAP) {
     // Map iteration survives deletes; the first key is the least-recently-used
     for (const k of listings.keys()) {
@@ -208,37 +271,87 @@ const loadEntries = async (
   return entries.map((e) => ({ ...e }));
 };
 
+// Recent/Starred are rebuilt through Spotlight + a stat per row; a renderAll
+// (theme flip, pane focus, drawer settle) must not pay that each time. Keyed by
+// URI + registry generation + TTL, so a star/open updates immediately.
+const virtualListings = new Map<string, { at: number; gen: number; entries: Entry[] }>();
+
 export const listDir = async (
   dir: string,
   showHidden: boolean,
   sortBy: SortMode,
   sortAsc: boolean,
-  opts?: { cache?: boolean; cacheStats?: boolean; ttlMs?: number; now?: () => number },
+  opts?: {
+    cache?: boolean;
+    cacheStats?: boolean;
+    ttlMs?: number;
+    now?: () => number;
+    platform?: string;
+    // the caller displays size/date columns (list view): fill stats even for
+    // name/type sorts. Grid-only callers leave it off and stay stat-free.
+    needStats?: boolean;
+  },
 ): Promise<Entry[]> => {
   let out: Entry[];
+  const cacheOn = opts?.cache ?? true;
+  const now = opts?.now?.() ?? Date.now();
+  const ttl = opts?.ttlMs ?? LISTINGS_TTL_MS;
+  const virtual = dir === RECENT_URI || dir === STARRED_URI;
+  if (virtual && cacheOn) {
+    const hit = virtualListings.get(dir);
+    if (hit && hit.gen === recentListingGen() && now - hit.at < ttl) return hit.entries.map((e) => ({ ...e }));
+  }
+  const rememberVirtual = (entries: Entry[]): Entry[] => {
+    if (virtual && cacheOn) virtualListings.set(dir, { at: now, gen: recentListingGen(), entries });
+    return entries.map((e) => ({ ...e }));
+  };
   if (dir === RECENT_URI) {
     out = await recentEntries();
     // recency order wins over the global sort mode, like nautilus
-    return out.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));
+    return rememberVirtual(out.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0)));
   }
   // stats-cached reads only apply to real dirs (virtual places are rebuilt
   // per call anyway) and need the listing cache itself on
-  const fillAtLoad = dir !== STARRED_URI && (opts?.cache ?? true) && (opts?.cacheStats ?? true);
-  if (dir === STARRED_URI) out = await starredEntries();
-  else {
+  const fillAtLoad =
+    dir !== STARRED_URI &&
+    (opts?.cache ?? true) &&
+    (opts?.cacheStats ?? true) &&
+    (opts?.needStats === true || sortBy === "size" || sortBy === "mtime");
+  if (dir === STARRED_URI) {
+    out = (await starredEntries()).sort(compareEntries(sortBy, sortAsc));
+    return rememberVirtual(out);
+  } else {
     const all = await loadEntries(dir, {
       cache: opts?.cache ?? true,
       now: opts?.now ?? Date.now,
       ttlMs: opts?.ttlMs ?? LISTINGS_TTL_MS,
-      fillStats: fillAtLoad && (sortBy === "size" || sortBy === "mtime"),
+      // stats caching is on for EVERY sort: a name-sorted listing still feeds
+      // the list view's size/date columns and the thumbnail keys, and filling
+      // only on size/mtime sorts made the list view re-lstat the folder on
+      // every repaint (its copies never wrote back into the cache)
+      fillStats: fillAtLoad,
+      sortBy,
+      sortAsc,
     });
-    out = showHidden ? all : all.filter((e) => !e.name.startsWith("."));
+    // the native-darwin trash root holds tfm's own .tfm-info sidecar dir next
+    // to the entries: never an item, even with show-hidden on
+    const platform = opts?.platform ?? process.platform;
+    const trashMeta = isTrashFilesDir(dir, platform);
+    // a Finder Put Back / manual deletion removes the landing but not our
+    // origin sidecar; prune it here so a later same-name item cannot inherit
+    // the old path (best-effort, never fails the listing)
+    if (trashMeta) pruneTrashMeta(dir, platform);
+    out = all.filter(
+      (e) => (showHidden || !e.name.startsWith(".")) && !(trashMeta && isTrashMetaItem(e.name, platform)),
+    );
   }
   if ((sortBy === "size" || sortBy === "mtime") && !fillAtLoad) {
     // async + bounded concurrency (was a sync statSync loop that froze the UI
     // on a 10k-folder with cacheStats off); fillStatsInto skips rows that
-    // already carry size/mtimeMs (virtual places filled above).
+    // already carry size/mtimeMs (virtual places filled above). loadEntries
+    // left the sort to this branch: the stats have to land first.
     await fillStatsInto(out, dir);
+    out.sort(compareEntries(sortBy, sortAsc));
   }
-  return out.sort(compareEntries(sortBy, sortAsc));
+  return out;
 };

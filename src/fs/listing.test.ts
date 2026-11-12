@@ -3,6 +3,8 @@ import { lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utime
 import os from "node:os";
 import path from "node:path";
 import { compareEntries, fillStatsInto, listDir, type Entry } from "./listing";
+import { writeStarredList } from "./recent";
+import { trashFilesDir } from "./fsutil";
 import { extOf } from "./filetype";
 import { RECENT_URI, STARRED_URI } from "./uri";
 
@@ -139,6 +141,22 @@ describe("listDir", () => {
     }
   });
 
+  test("a darwin trash root hides .tfm-info even with show-hidden on", async () => {
+    const dir = trashFilesDir("darwin");
+    try {
+      mkdirSync(path.join(dir, ".tfm-info"), { recursive: true });
+      W(path.join(dir, ".hidden"));
+      W(path.join(dir, "note.txt"));
+      const darwin = await listDir(dir, true, "name", true, { platform: "darwin" });
+      expect(darwin.map((x) => x.name)).toEqual([".hidden", "note.txt"]);
+      // Linux never writes the sidecar dir, so the same name is an ordinary item
+      const linux = await listDir(dir, true, "name", true, { platform: "linux" });
+      expect(linux.map((x) => x.name)).toContain(".tfm-info");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("scanDir marks symlinks via isLink (broken links included)", async () => {
     const dir = mktmp("tfm-ld-link-");
     try {
@@ -248,6 +266,25 @@ describe("listDir", () => {
       expect(out.map((x) => x.name)).toEqual(["a-star.txt", "b-star.txt"]);
     } finally {
       rmSync(path.join(stateHome, "tfm", "starred.list"), { force: true });
+    }
+  });
+
+  test("STARRED_URI: virtual listings cache by TTL and registry generation", async () => {
+    const f = path.join(SANDBOX, "cached-star.txt");
+    W(f);
+    await writeStarredList([f]);
+    try {
+      const t0 = 1_000;
+      expect((await listDir(STARRED_URI, false, "name", true, { now: () => t0 })).length).toBe(1);
+      // vanish behind the registry's back: within the TTL the cached row stays
+      rmSync(f, { force: true });
+      expect((await listDir(STARRED_URI, false, "name", true, { now: () => t0 + 100 })).length).toBe(1);
+      // a registry write bumps the generation and invalidates immediately
+      await writeStarredList([]);
+      expect((await listDir(STARRED_URI, false, "name", true, { now: () => t0 + 200 })).length).toBe(0);
+    } finally {
+      await writeStarredList([]);
+      rmSync(f, { force: true });
     }
   });
 });
@@ -362,6 +399,42 @@ describe("listings cache", () => {
       expect(stale[0]!.size).toBe(500); // next hit serves the cached stat…
       const aged = await listDir(dir, false, "size", true, { now: () => 3000 });
       expect(aged[0]!.size).toBe(900); // …TTL expiry re-scans and re-stats
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The list view shows both stat columns whatever the active sort is, so a
+  // name-sorted listing must cache stats too: its per-paint fill used to
+  // re-lstat the whole folder because the copies the grid got never wrote back
+  // into the cache.
+  test("with listings-cache-stats on, a name-sorted listing caches stats as well", async () => {
+    const dir = mktmp("tfm-lc7-");
+    try {
+      const f = path.join(dir, "a.txt");
+      W(f, "x".repeat(500));
+      const warm = await listDir(dir, false, "name", true, { now: () => 500, needStats: true });
+      expect(warm[0]!.size).toBe(500);
+      expect(warm[0]!.mtimeMs).toBeGreaterThan(0);
+      // in-place edit on a cache HIT serves the cached stat (no per-paint lstat)
+      writeFileSync(f, "x".repeat(900));
+      const stale = await listDir(dir, false, "name", true, { now: () => 1000, needStats: true });
+      expect(stale[0]!.size).toBe(500);
+      // …and the TTL rescan refreshes it, same contract as the stat sorts
+      const aged = await listDir(dir, false, "name", true, { now: () => 3000, needStats: true });
+      expect(aged[0]!.size).toBe(900);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("with listings-cache-stats off, a name-sorted listing stays statless (grid fills per paint)", async () => {
+    const dir = mktmp("tfm-lc8-");
+    try {
+      W(path.join(dir, "a.txt"), "x".repeat(100));
+      const out = await listDir(dir, false, "name", true, { now: T0, cacheStats: false });
+      expect(out[0]!.size).toBeUndefined();
+      expect(out[0]!.mtimeMs).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

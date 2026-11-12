@@ -103,9 +103,14 @@ export const makeInfoSidebar = (ctx: InfoCtx) => {
       }
     }
     if (dirPaths.length) {
-      const walks = await Promise.all(dirPaths.map((d) => dirWalkStats(d)));
-      if (gen !== infoGen) return;
-      for (const s of walks) {
+      // one 32-worker walk per directory, but never all of them at once: a
+      // rubber-band over 100 folders used to spawn 3200 concurrent stats that
+      // kept running after the selection moved. Sequential + gen check aborts
+      // between directories.
+      for (const d of dirPaths) {
+        if (gen !== infoGen) return;
+        const s = await dirWalkStats(d);
+        if (gen !== infoGen) return;
         if (s) {
           bytes += s.bytes;
           files += s.files;

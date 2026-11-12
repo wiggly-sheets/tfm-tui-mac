@@ -92,6 +92,33 @@ describe("dirWalkStats", () => {
     }
   });
 
+  test("per-file stats run through a bounded pool (not one sequential await)", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "tfm-props-"));
+    try {
+      const N = 24;
+      for (let i = 0; i < N; i++) writeFileSync(path.join(root, `f${i}.txt`), "x");
+      let inFlight = 0;
+      let peak = 0;
+      let ino = 0;
+      const s = await dirWalkStats(root, {
+        concurrency: 4,
+        stat: async () => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          await Bun.sleep(0);
+          inFlight--;
+          return { dev: 1, ino: ++ino, size: 1 };
+        },
+      });
+      expect(s!.files).toBe(N);
+      expect(s!.bytes).toBe(N);
+      expect(peak).toBeGreaterThan(1); // really overlapped…
+      expect(peak).toBeLessThanOrEqual(4); // …and bounded
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("missing root yields zeros, not a throw", async () => {
     const s = await dirWalkStats(path.join(os.tmpdir(), `tfm-props-nonexistent-${process.pid}`));
     expect(s).toEqual({ bytes: 0, files: 0, folders: 0 });

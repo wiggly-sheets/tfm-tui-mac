@@ -166,6 +166,15 @@ export const makeToolbarStrip = (ctx: ToolbarStripCtx) => {
   // Rebuild the buttons from the live [ui] toolbar list. The strip el is a
   // VNode, so post-mount writes must go through the instantiated node by id —
   // the first refresh before the mount (or without one) is a no-op.
+  //
+  // renderAll calls this on every repaint: rebuilding unconditionally cleared
+  // the row and created a fresh icon slot per item every time (fallback glyph
+  // flash, raster drain churn). Same signature guard as renderSidebar — only a
+  // real input change rebuilds. The signature is written only after the strip
+  // resolves, so a pre-mount call never poisons the first real build.
+  let lastRefreshSig: string | null = null;
+  // the node the signature describes: a remounted strip must rebuild
+  let lastStrip: MaybeNode = null;
   const refresh = (): void => {
     const ids = sanitizeToolbar(ctx.ui().toolbar);
     const editing = !!ctx.editor?.isActive();
@@ -178,6 +187,20 @@ export const makeToolbarStrip = (ctx: ToolbarStripCtx) => {
     } catch {}
     const strip = ctx.byId(TOOLBAR_STRIP_ID);
     if (!strip) return;
+    // everything the buttons bake at build time: the item list, edit mode and
+    // its focus, the view-cycle icon's mode, and the theme/style surfaces
+    const sig = JSON.stringify([
+      ids,
+      editing,
+      ctx.editor?.focusIndex() ?? -1,
+      ctx.viewMode(),
+      ctx.uiStyle(),
+      ctx.colors(),
+      ctx.transparentForce?.() ?? false,
+    ]);
+    if (sig === lastRefreshSig && strip === lastStrip) return;
+    lastRefreshSig = sig;
+    lastStrip = strip;
     destroyChildren(strip);
     if (editing) {
       ids.forEach((itemId, i) => {

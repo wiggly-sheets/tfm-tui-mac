@@ -104,14 +104,54 @@ export const mimeLabelFor = (name: string): string => {
 // the link's own inode, always distinct.
 export const inodeKey = (st: { dev: number; ino: number }): string => `${st.dev}:${st.ino}`;
 
-// recursive dir totals; null when the tree is absurdly large
-export const dirWalkStats = async (root: string): Promise<{ bytes: number; files: number; folders: number } | null> => {
+// recursive dir totals; null when the tree is absurdly large.
+// The walk itself is sequential (one readdir per dir), but the per-file stats
+// are independent: they run through a bounded worker pool instead of paying one
+// stat round-trip per entry before the next one starts. `deps` is a test seam;
+// production uses node's stat/lstat.
+export type WalkStat = { dev: number; ino: number; size: number };
+const WALK_STAT_WORKERS = 32;
+
+export const dirWalkStats = async (
+  root: string,
+  deps?: {
+    stat?: (p: string) => Promise<WalkStat>;
+    lstat?: (p: string) => Promise<{ size: number }>;
+    concurrency?: number;
+  },
+): Promise<{ bytes: number; files: number; folders: number } | null> => {
   let bytes = 0,
     files = 0,
     folders = 0,
     count = 0;
   const seen = new Set<string>();
   const stack: string[] = [root];
+  const statFn = deps?.stat ?? ((p: string) => stat(p));
+  const lstatFn = deps?.lstat ?? ((p: string) => lstat(p));
+  const workers = Math.max(1, deps?.concurrency ?? WALK_STAT_WORKERS);
+  const inflight = new Set<Promise<void>>();
+  const queueStat = (p: string, link: boolean): void => {
+    const job = (async () => {
+      try {
+        // symlinks: report the link's own size, never follow (cycles / dupes).
+        // NOTE: the add must happen AFTER the await — `bytes += await …`
+        // reads `bytes` before yielding and loses every concurrent increment.
+        if (link) {
+          const st = await lstatFn(p);
+          bytes += st.size;
+          return;
+        }
+        const st = await statFn(p);
+        // names are counted per entry, bodies once (hardlink pair = 2 files, 1x bytes)
+        const k = inodeKey(st);
+        if (seen.has(k)) return;
+        seen.add(k);
+        bytes += st.size;
+      } catch {}
+    })();
+    inflight.add(job);
+    void job.finally(() => inflight.delete(job));
+  };
   while (stack.length) {
     const dir = stack.pop();
     if (dir === undefined) break;
@@ -124,29 +164,21 @@ export const dirWalkStats = async (root: string): Promise<{ bytes: number; files
     for (const d of dirents) {
       if (++count > 200000) return null;
       const p = path.join(dir, d.name);
-      // symlinks: report the link's own size, never follow (cycles / dupes)
       if (d.isSymbolicLink()) {
         files++;
-        try {
-          bytes += (await lstat(p)).size;
-        } catch {}
-        continue;
-      }
-      if (d.isDirectory()) {
+        queueStat(p, true);
+      } else if (d.isDirectory()) {
         folders++;
         stack.push(p);
         continue;
+      } else {
+        files++;
+        queueStat(p, false);
       }
-      files++;
-      try {
-        const st = await stat(p);
-        // names are counted per entry, bodies once (hardlink pair = 2 files, 1x bytes)
-        const k = inodeKey(st);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        bytes += st.size;
-      } catch {}
+      // backpressure: at the cap, wait for one job before queueing more
+      if (inflight.size >= workers) await Promise.race(inflight);
     }
   }
+  await Promise.all(inflight);
   return { bytes, files, folders };
 };

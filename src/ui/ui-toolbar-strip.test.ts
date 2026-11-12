@@ -123,6 +123,17 @@ describe("makeToolbarStrip", () => {
     h.t.renderer.destroy();
   });
 
+  test("an unchanged refresh does not rebuild the row (no slot churn)", async () => {
+    // renderAll calls refresh on every repaint; a rebuild clears every button
+    // and creates a fresh icon slot per item (fallback flash + raster drain)
+    const h = await harness({ toolbar: ["back", "view-cycle"] });
+    const built = h.names.length;
+    h.strip.refresh();
+    h.strip.refresh();
+    expect(h.names.length).toBe(built);
+    h.t.renderer.destroy();
+  });
+
   test("click runs the matching command; a missing one is swallowed", async () => {
     const h = await harness({
       toolbar: ["refresh"],
