@@ -40,6 +40,11 @@ const EMPTY_ERROR = "\u00A0";
 const STYLES: BulkRenameStyle[] = ["plain", "pad", "paren"];
 const STYLE_LABELS: Record<BulkRenameStyle, string> = { plain: "1", pad: "01", paren: "(1)" };
 
+// fixed-width modal, clamped to the terminal (the preview names ellipsize);
+// the preview row count shrinks on short terminals instead of overflowing.
+export const bulkRenamePanelWidth = (termW: number): number => Math.max(24, Math.min(PANEL_W, termW - 2));
+export const bulkRenameRows = (termH: number): number => Math.max(1, Math.min(MAX_PREVIEW, termH - 10));
+
 const trunc = (s: string, w: number): string => (s.length > w ? `${s.slice(0, w - 1)}…` : s);
 
 export const makeBulkRename = (ctx: BulkRenameCtx) => {
@@ -48,6 +53,8 @@ export const makeBulkRename = (ctx: BulkRenameCtx) => {
   let value = "";
   let style: BulkRenameStyle = "plain";
   let focusTimer: ReturnType<typeof setTimeout> | null = null;
+  let panelW = PANEL_W;
+  let previewRows = MAX_PREVIEW;
 
   const setError = (msg: string): void => {
     const el = ctx.byId("tfm-bulkrename-error");
@@ -61,8 +68,8 @@ export const makeBulkRename = (ctx: BulkRenameCtx) => {
     ctx.destroyChildren(box);
     const stem = value.trim();
     const names = stem ? bulkRenameNames(items, stem, style) : [];
-    const nameW = Math.floor((PANEL_W - 4 - 3 - 2) / 2);
-    items.slice(0, MAX_PREVIEW).forEach((it, i) => {
+    const nameW = Math.floor((panelW - 4 - 3 - 2) / 2);
+    items.slice(0, previewRows).forEach((it, i) => {
       const oldName = path.basename(it.path);
       // no stem yet: list the files being renamed, no arrow column
       if (!stem) {
@@ -85,11 +92,11 @@ export const makeBulkRename = (ctx: BulkRenameCtx) => {
         ),
       );
     });
-    if (items.length > MAX_PREVIEW) {
+    if (items.length > previewRows) {
       box.add(
         Box(
           { height: 1, paddingLeft: 2 },
-          Text({ content: `… ${items.length - MAX_PREVIEW} more`, fg: c.sidebarFgMuted }),
+          Text({ content: `… ${items.length - previewRows} more`, fg: c.sidebarFgMuted }),
         ),
       );
     }
@@ -211,14 +218,16 @@ export const makeBulkRename = (ctx: BulkRenameCtx) => {
     ctx.setPointer?.("text");
     value = "";
     style = "plain";
+    panelW = bulkRenamePanelWidth(ctx.renderer().terminalWidth);
+    previewRows = bulkRenameRows(ctx.renderer().terminalHeight);
     const c = ctx.colors();
-    const inputW = PANEL_W - 2 - 2 - LABEL_W - 1;
+    const inputW = panelW - 2 - 2 - LABEL_W - 1;
     const scrim = makeModalScrim(
       { uiStyle: ctx.uiStyle, colors: ctx.colors },
       {
         id: "tfm-bulkrename",
         zIndex: FLOAT_Z.bulkrename,
-        panelWidth: PANEL_W,
+        panelWidth: panelW,
         onClose: () => close(),
       },
       Box(

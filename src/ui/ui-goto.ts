@@ -82,10 +82,15 @@ type GoToCtx = {
 const PANEL_W = 60;
 const MAX_ROWS = 6;
 
+// fixed-width popup, clamped to the terminal so a narrow window never overflows
+export const gotoPanelWidth = (termW: number): number => Math.max(20, Math.min(PANEL_W, termW - 2));
+export const gotoRows = (termH: number): number => Math.max(1, Math.min(MAX_ROWS, termH - 8));
+
 export const makeGoToFolder = (ctx: GoToCtx) => {
   let opened = false;
   let suggestions: string[] = [];
   let selIdx = -1;
+  let maxRows = MAX_ROWS;
 
   const lister = (): DirLister => ctx.list ?? defaultDirLister;
   const navigable = (target: string): boolean => (ctx.isNavigable ?? isNavigableTarget)(target);
@@ -119,7 +124,7 @@ export const makeGoToFolder = (ctx: GoToCtx) => {
     if (!list) return;
     const colors = ctx.colors();
     ctx.destroyChildren(list);
-    suggestions.slice(0, MAX_ROWS).forEach((dir, i) => {
+    suggestions.slice(0, maxRows).forEach((dir, i) => {
       const active = i === selIdx;
       list.add(
         Box(
@@ -191,12 +196,14 @@ export const makeGoToFolder = (ctx: GoToCtx) => {
     suggestions = [];
     selIdx = -1;
     const c = ctx.colors();
+    const panelW = gotoPanelWidth(ctx.renderer().terminalWidth);
+    maxRows = gotoRows(ctx.renderer().terminalHeight);
     const scrim = makeModalScrim(
       { uiStyle: ctx.uiStyle, colors: ctx.colors },
       {
         id: "tfm-goto",
         zIndex: 3750,
-        panelWidth: PANEL_W,
+        panelWidth: panelW,
         onClose: () => close(),
       },
       Box(
@@ -210,7 +217,7 @@ export const makeGoToFolder = (ctx: GoToCtx) => {
         { width: "100%", paddingLeft: 2, paddingRight: 2, paddingTop: 1 },
         Input({
           id: "tfm-goto-input",
-          width: PANEL_W - 6,
+          width: panelW - 6,
           placeholder: "Path (Tab completes)",
           backgroundColor: c.accentBg,
           focusedBackgroundColor: c.accentBg,

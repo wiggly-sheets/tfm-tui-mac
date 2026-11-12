@@ -3,7 +3,7 @@ import { Box } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { defaultConfig } from "../config/config-schema";
 import type { Theme } from "../config/config";
-import { HELP_W, QUICK_TIPS, helpBodyHeight, renderHelpPanel } from "./ui-help";
+import { HELP_W, QUICK_TIPS, helpBodyHeight, helpPanelWidth, renderHelpPanel, tipsFor } from "./ui-help";
 
 const colors = defaultConfig.theme as Theme;
 
@@ -35,6 +35,9 @@ describe("quick tips", () => {
   test("tip pool carries the approved copy, minus the cut tips", () => {
     const problems = QUICK_TIPS.map((tip) => tip.problem);
     expect(QUICK_TIPS.length).toBe(10);
+    // the Linux-console gpm tip never reaches macOS users
+    expect(tipsFor("darwin").some((t) => t.problem.includes("tty"))).toBe(false);
+    expect(tipsFor("linux").some((t) => t.problem.includes("tty"))).toBe(true);
     expect(problems).toContain("shift+clicks highlights tui not files?");
     expect(problems).toContain("ctrl+tab dead in kitty?");
     expect(problems).toContain("icons are boxes?");
@@ -47,6 +50,13 @@ describe("quick tips", () => {
   test("viewport height stays usable on short terminals", () => {
     expect(helpBodyHeight(24)).toBe(16);
     expect(helpBodyHeight(10)).toBe(8);
+  });
+
+  test("panel width never exceeds the terminal (narrow terminals shrink)", () => {
+    expect(helpPanelWidth(200)).toBe(HELP_W);
+    expect(helpPanelWidth(100)).toBe(HELP_W);
+    expect(helpPanelWidth(60)).toBe(56); // termW - 4, above the 48 floor
+    expect(helpPanelWidth(40)).toBe(38); // termW - 2, below the floor
   });
 });
 

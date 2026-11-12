@@ -23,6 +23,7 @@ import type { ListEntry } from "./ui-menu";
 import type { IconSlotHandle, IconState, IconSpec, SlotElement } from "./ui-slots";
 import type { MaybeNode } from "../lib/node-like";
 import type { PointerStyle } from "../lib/pointer";
+import type { NotifyLevel } from "../lib/notify-level";
 
 export const TAB_CHIP_MAX_W = 24; // roomy width, kept whenever the strip fits
 export const TAB_CHIP_MIN_W = 6; // pad + 1-2 title cells + close; below this the tail clips
@@ -70,6 +71,8 @@ type ChromeCtx = {
   transparentForce?(): boolean;
   renderAll(): void;
   navigate(target: string): void;
+  // honest failure toasts for mount/eject; optional so test fakes stay light
+  notify?(msg: string, title?: string, level?: NotifyLevel): void;
   blurTerminal(): void;
   closeFileMenu(): void;
   openContextMenu(x: number, y: number, title: string, entries: ListEntry[]): void;
@@ -164,13 +167,18 @@ export const makeChrome = (ctx: ChromeCtx) => {
     const [bin, ...args] = isDarwin()
       ? ([diskutilBin(), ...diskutilMountArgv(device)] as [string, ...string[]])
       : (["udisksctl", "mount", "-b", device] as [string, ...string[]]);
-    const child = spawnSafe(bin, args, { stdio: "ignore", timeoutMs: 10_000 }, (err) =>
-      ctx.dlog(`mount ${device}: ${err.message}`),
-    );
+    const child = spawnSafe(bin, args, { stdio: "ignore", timeoutMs: 10_000 }, (err) => {
+      ctx.dlog(`mount ${device}: ${err.message}`);
+      ctx.notify?.(`Can't mount ${device}`, "mount failed", "error");
+    });
     // a failing mount (bad device, policy) used to be silent — the reload
-    // below fires either way, so log the exit for the --debug trail
+    // below fires either way, so report it instead of leaving the sidebar
+    // unchanged with no explanation
     child.on("close", (code) => {
-      if (code !== 0) ctx.dlog(`mount ${device} exit ${code}`);
+      if (code !== 0) {
+        ctx.dlog(`mount ${device} exit ${code}`);
+        ctx.notify?.(`Can't mount ${device}`, "mount failed", "error");
+      }
     });
     scheduleDeviceReload(1200);
   };
@@ -295,11 +303,15 @@ export const makeChrome = (ctx: ChromeCtx) => {
     const [bin, ...args] = isDarwin()
       ? ([diskutilBin(), ...diskutilEjectArgv(device)] as [string, ...string[]])
       : (["udisksctl", "unmount", "-b", device] as [string, ...string[]]);
-    const child = spawnSafe(bin, args, { stdio: "ignore", timeoutMs: 10_000 }, (err) =>
-      ctx.dlog(`eject ${device}: ${err.message}`),
-    );
+    const child = spawnSafe(bin, args, { stdio: "ignore", timeoutMs: 10_000 }, (err) => {
+      ctx.dlog(`eject ${device}: ${err.message}`);
+      ctx.notify?.(`Can't eject ${device}`, "eject failed", "error");
+    });
     child.on("close", (code) => {
-      if (code !== 0) ctx.dlog(`eject ${device} exit ${code}`);
+      if (code !== 0) {
+        ctx.dlog(`eject ${device} exit ${code}`);
+        ctx.notify?.(`Can't eject ${device}`, "eject failed", "error");
+      }
     });
     scheduleDeviceReload(1500);
   };
@@ -454,6 +466,10 @@ export const makeChrome = (ctx: ChromeCtx) => {
               const first = keys?.length === 1 ? keys[0] : undefined;
               ctx.dlog(`tab drop pane=${pane} chip=${i} keys=${keys?.length ?? -1} dir=${first?.isDir ?? "-"}`);
               if (!first?.isDir) return;
+              // focus the chip's pane first: switchTab/navigate act on the
+              // ACTIVE pane, so a drop on the other side must not retarget this
+              // one (same rule as a chip press)
+              ctx.focusPane(pane);
               ctx.switchTab(pane, i);
               ctx.navigate(first.path);
             },

@@ -29,6 +29,8 @@ export type ResizeBounds = { min: number; max: number };
 export const EDGE_COLS = 2;
 // cells each pane keeps on its side of the divider
 export const MIN_PANE_COLS = 20;
+// rows each pane keeps on its side of a stacked divider (layoutGeometry's floor)
+export const MIN_PANE_ROWS = 3;
 
 export const clampResize = (v: number, min: number, max: number): number => Math.min(max, Math.max(min, Math.round(v)));
 
@@ -42,14 +44,27 @@ export const sidebarWidthAt = (x: number, left: number, min: number, max: number
 export const previewWidthAt = (x: number, termW: number, min: number, max: number): number =>
   clampResize(termW - x, min, max);
 
-// percent of the free width (the split area minus the 1-cell divider) the LEFT
-// pane keeps — a percent, not a cell count, so a terminal resize keeps the
-// proportion. A split area too narrow for two minimum panes keeps `current`.
-export const splitPctAt = (x: number, mainLeft: number, mainW: number, minCols: number, current: number): number => {
-  const inner = mainW - 1;
-  if (inner < minCols * 2) return current;
-  const left = clampResize(x - mainLeft, minCols, inner - minCols);
-  return (left / inner) * 100;
+// percent of the split's free extent (the split area minus the 1-cell divider)
+// the pane before the divider keeps — a percent, not a cell count, so a
+// terminal resize keeps the proportion. Axis-agnostic: x for a side-by-side
+// split, y for a stacked one (`origin`/`extent` are along that axis). A split
+// area too narrow/short for two minimum panes keeps `current`.
+export const splitPctAt = (pos: number, origin: number, extent: number, minCells: number, current: number): number => {
+  const inner = extent - 1;
+  if (inner < minCells * 2) return current;
+  const before = clampResize(pos - origin, minCells, inner - minCells);
+  return (before / inner) * 100;
+};
+
+// the split divider under the pointer: which event axis moves it and the live
+// extent of the split it divides (resolved by the wiring from the rendered
+// tree, so hit-test/ratio follow the dragged split node, not just p0/p1)
+export type SplitHandle = {
+  axis: "x" | "y";
+  origin: number;
+  extent: number;
+  min: number;
+  current: number;
 };
 
 export type MouseResizeCtx = {
@@ -58,15 +73,15 @@ export type MouseResizeCtx = {
   // live [ui] mouse-resize-* toggles, one per target (all default off)
   enabled(t: ResizeTarget): boolean;
   termW(): number;
-  // the split area's width (terminal minus both side panels)
-  mainW(): number;
+  // the divider under a press (null = no divider there). The wiring owns the
+  // tree lookup so a row split and a nested/3-pane split resize correctly.
+  splitAt(x: number, y: number): SplitHandle | null;
   // the settings steppers' own bounds, so a drag can never leave the range
   bounds(t: ResizeTarget): ResizeBounds;
   // live geometry writes — the same cells the hover drawer owns
   setSidebarWidth(w: number): void;
   setPreviewWidth(w: number): void;
-  setSplitPct(pct: number): void;
-  splitPct(): number;
+  setSplitPct(h: SplitHandle, pct: number): void;
   // release: one rebuild/persist per gesture, never per frame
   commit(t: ResizeTarget): void;
   // modal / file-drag / rename / live-resize suppression
@@ -78,8 +93,8 @@ export type MouseResizeWiring = {
   // a resize gesture is in flight (the drawer must not tween the same width)
   active(): boolean;
   // is this press on that target's moveable edge? (the sidebar rows ask before
-  // treating a press as a place click)
-  edgePress(t: ResizeTarget, x: number): boolean;
+  // treating a press as a place click; y matters for a stacked split divider)
+  edgePress(t: ResizeTarget, x: number, y?: number): boolean;
   // the root handlers, exposed for tests
   onMouseDown(ev: MouseEvent): void;
   onMouseDrag(ev: MouseEvent): void;
@@ -93,6 +108,7 @@ const shown = (n: MaybeNode): boolean => !!n && n.visible !== false;
 
 export const makeMouseResize = (ctx: MouseResizeCtx): MouseResizeWiring => {
   let target: ResizeTarget | null = null;
+  let split: SplitHandle | null = null;
 
   // right panel: preview and the info sidebar share one column (info wins
   // when both are on), so the first visible one owns the edge
@@ -104,7 +120,9 @@ export const makeMouseResize = (ctx: MouseResizeCtx): MouseResizeWiring => {
 
   // is x on the target's moveable edge? Node screen coords, so the check
   // follows every width write (drawer, applyConfig, a live drag) for free.
-  const onEdge = (t: ResizeTarget, x: number): boolean => {
+  // A split divider is axis-aware: the wiring resolves the divider and the
+  // event axis (`y` matters for a stacked split).
+  const onEdge = (t: ResizeTarget, x: number, y = 0): boolean => {
     if (t === "sidebar") {
       const n = ctx.byId("tfm-sidebar-root");
       const left = leftOf(n);
@@ -118,47 +136,47 @@ export const makeMouseResize = (ctx: MouseResizeCtx): MouseResizeWiring => {
       if (left === null) return false;
       return x >= left && x < left + EDGE_COLS;
     }
-    const d = ctx.byId("tfm-pane-divider");
-    const left = leftOf(d);
-    if (left === null || !shown(d)) return false;
-    return x >= left - 1 && x <= left + 1;
+    split = ctx.splitAt(x, y);
+    return split !== null;
   };
 
-  const edgePress = (t: ResizeTarget, x: number): boolean => ctx.enabled(t) && onEdge(t, x);
+  const edgePress = (t: ResizeTarget, x: number, y = 0): boolean => ctx.enabled(t) && onEdge(t, x, y);
 
-  const apply = (t: ResizeTarget, x: number): void => {
+  const apply = (t: ResizeTarget, ev: MouseEvent): void => {
     if (t === "sidebar") {
       const left = leftOf(ctx.byId("tfm-sidebar-root"));
       if (left === null) return;
       const b = ctx.bounds("sidebar");
-      ctx.setSidebarWidth(sidebarWidthAt(x, left, b.min, b.max));
+      ctx.setSidebarWidth(sidebarWidthAt(ev.x, left, b.min, b.max));
       return;
     }
     if (t === "preview") {
       const b = ctx.bounds("preview");
-      ctx.setPreviewWidth(previewWidthAt(x, ctx.termW(), b.min, b.max));
+      ctx.setPreviewWidth(previewWidthAt(ev.x, ctx.termW(), b.min, b.max));
       return;
     }
-    const mainLeft = leftOf(ctx.byId("tfm-panes"));
-    if (mainLeft === null) return;
-    ctx.setSplitPct(splitPctAt(x, mainLeft, ctx.mainW(), MIN_PANE_COLS, ctx.splitPct()));
+    if (!split) return;
+    const pos = split.axis === "x" ? ev.x : ev.y;
+    ctx.setSplitPct(split, splitPctAt(pos, split.origin, split.extent, split.min, split.current));
   };
 
   const onMouseDown = (ev: MouseEvent): void => {
     target = null;
+    split = null;
     if (ev.button !== 0 || ctx.blocked()) return;
     for (const t of ["sidebar", "preview", "split"] as ResizeTarget[]) {
-      if (edgePress(t, ev.x)) {
+      if (edgePress(t, ev.x, ev.y)) {
         target = t;
-        ctx.log(`arm ${t} at x=${ev.x}`);
+        ctx.log(`arm ${t} at x=${ev.x} y=${ev.y}`);
         return;
       }
     }
+    split = null;
   };
 
   const onMouseDrag = (ev: MouseEvent): void => {
     if (!target || ctx.blocked()) return;
-    apply(target, ev.x);
+    apply(target, ev);
   };
 
   // release: apply the final column (the click-to-set-width path for
@@ -167,8 +185,9 @@ export const makeMouseResize = (ctx: MouseResizeCtx): MouseResizeWiring => {
     const t = target;
     if (!t) return;
     target = null;
-    apply(t, ev.x);
-    ctx.log(`commit ${t} at x=${ev.x}`);
+    apply(t, ev);
+    split = null;
+    ctx.log(`commit ${t} at x=${ev.x} y=${ev.y}`);
     ctx.commit(t);
   };
 

@@ -59,7 +59,9 @@ describe("panel geometry (room for the description footer)", () => {
     expect(settingsPanelWidth(200)).toBe(80);
     expect(settingsPanelWidth(90)).toBe(80);
     expect(settingsPanelWidth(80)).toBe(76);
-    expect(settingsPanelWidth(40)).toBe(64);
+    // narrow terminal: the panel follows the screen (termW - 2), no overflow
+    expect(settingsPanelWidth(40)).toBe(38);
+    expect(settingsPanelWidth(64)).toBe(62);
   });
 
   test("columns widen with the panel so labels/values stop truncating", () => {

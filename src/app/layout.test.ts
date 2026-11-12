@@ -7,12 +7,18 @@ import {
   findParent,
   layoutGeometry,
   leafIds,
+  leafRectsOf,
   moveActiveTo,
   nextPaneId,
   normalizeTree,
+  paneInDirection,
+  splitChildGrows,
+  splitDividers,
   splitPane,
   type LayoutNode,
+  type SplitNode,
 } from "./layout";
+import { presetThreePane } from "./layout-presets";
 
 describe("layout tree - invariants & leaf lookup", () => {
   test("defaultTree produces 2 leaves (p0 and p1)", () => {
@@ -93,6 +99,14 @@ describe("layout tree - split, close, cycle, reorient", () => {
     if (updated.kind === "split") {
       expect(updated.orientation).toBe("h");
     }
+  });
+
+  test("moveActiveTo is pure: the input tree is not mutated", () => {
+    const tree = splitPane(defaultTree(), "p1", "v").tree; // h[p0, v[p1,p2]]
+    const before = JSON.stringify(tree);
+    const updated = moveActiveTo(tree, "p1", "h");
+    expect(JSON.stringify(tree)).toBe(before);
+    expect(updated).not.toBe(tree);
   });
 
   test("normalizeTree merges adjacent splits with same orientation", () => {
@@ -256,5 +270,115 @@ describe("layout→geometry min-size clamp", () => {
 
     expect(p0?.rect).toEqual({ x: 0, y: 0, w: 50, h: 40 });
     expect(p1?.rect).toEqual({ x: 50, y: 0, w: 51, h: 40 });
+  });
+
+  test("too many panes never produce a negative child size", () => {
+    const leaves = (): LayoutNode[] => Array.from({ length: 10 }, (_, i) => ({ kind: "leaf" as const, id: `p${i}` }));
+    const hTree: LayoutNode = { kind: "split", orientation: "h", children: leaves() };
+    layoutGeometry(hTree, { x: 0, y: 0, w: 20, h: 10 });
+    for (const id of leafIds(hTree)) expect(findLeaf(hTree, id)?.rect?.w ?? 0).toBeGreaterThanOrEqual(1);
+
+    const vTree: LayoutNode = { kind: "split", orientation: "v", children: leaves() };
+    layoutGeometry(vTree, { x: 0, y: 0, w: 100, h: 10 });
+    for (const id of leafIds(vTree)) expect(findLeaf(vTree, id)?.rect?.h ?? 0).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("directional pane focus (geometry, not document order)", () => {
+  const rectsOf = (tree: LayoutNode) => leafRectsOf(tree, { x: 0, y: 0, w: 100, h: 40 });
+
+  test("the 2-pane row: right/left cross, up/down have nowhere to go", () => {
+    const rects = rectsOf(defaultTree());
+    expect(paneInDirection(rects, "p0", "right")).toBe("p1");
+    expect(paneInDirection(rects, "p1", "left")).toBe("p0");
+    expect(paneInDirection(rects, "p0", "up")).toBeNull();
+    expect(paneInDirection(rects, "p0", "down")).toBeNull();
+  });
+
+  test("the 3-pane preset: down/up step between the stacked right panes", () => {
+    const rects = rectsOf(presetThreePane());
+    // p0 is the full-height left column; p1/p2 split the right column
+    expect(paneInDirection(rects, "p1", "down")).toBe("p2");
+    expect(paneInDirection(rects, "p2", "up")).toBe("p1");
+    expect(paneInDirection(rects, "p0", "right")).toBe("p1");
+    // the full-height left pane has nothing directly above/below it, and the
+    // right column has no pane further right nor the left column none left
+    expect(paneInDirection(rects, "p0", "up")).toBeNull();
+    expect(paneInDirection(rects, "p0", "down")).toBeNull();
+    expect(paneInDirection(rects, "p1", "right")).toBeNull();
+    expect(paneInDirection(rects, "p0", "left")).toBeNull();
+  });
+
+  test("a 2-row stack: down/up cross, left/right have nowhere to go", () => {
+    const tree: LayoutNode = {
+      kind: "split",
+      orientation: "v",
+      children: [
+        { kind: "leaf", id: "p0" },
+        { kind: "leaf", id: "p1" },
+      ],
+    };
+    const rects = rectsOf(tree);
+    expect(paneInDirection(rects, "p0", "down")).toBe("p1");
+    expect(paneInDirection(rects, "p1", "up")).toBe("p0");
+    expect(paneInDirection(rects, "p0", "right")).toBeNull();
+  });
+
+  test("unknown source / no panes resolve to null", () => {
+    expect(paneInDirection(new Map(), "p0", "right")).toBeNull();
+    expect(paneInDirection(rectsOf(defaultTree()), "p9", "left")).toBeNull();
+  });
+});
+
+describe("session split sizing", () => {
+  test("splitDividers walks in buildPaneTree's divider order", () => {
+    const tree = presetThreePane(); // h[p0, v[p1,p2]]
+    const dividers = splitDividers(tree);
+    expect(dividers).toHaveLength(2);
+    expect(dividers[0]?.split.orientation).toBe("h");
+    expect(dividers[0]?.index).toBe(1);
+    expect(dividers[1]?.split.orientation).toBe("v");
+    expect(dividers[1]?.index).toBe(1);
+  });
+
+  test("no sizing means even shares (no ratio leaks across splits)", () => {
+    const tree = presetThreePane();
+    if (tree.kind !== "split") throw new Error("preset is a split");
+    expect(splitChildGrows(tree)).toEqual([50, 50]);
+    const vSplit = splitDividers(tree)[1]?.split;
+    expect(vSplit && splitChildGrows(vSplit)).toEqual([50, 50]);
+  });
+
+  test("a dragged boundary moves its own children proportionally", () => {
+    const split: SplitNode = {
+      kind: "split",
+      orientation: "h",
+      children: [
+        { kind: "leaf", id: "p0" },
+        { kind: "leaf", id: "p1" },
+        { kind: "leaf", id: "p2" },
+      ],
+    };
+    split.sizing = { index: 2, pct: 60 };
+    // two children before the divider share 60%, the one after keeps 40%
+    expect(splitChildGrows(split)).toEqual([30, 30, 40]);
+    split.sizing = { index: 1, pct: 70 };
+    expect(splitChildGrows(split)).toEqual([70, 15, 15]);
+  });
+
+  test("sizing survives normalizeTree/close (spread-copied nodes)", () => {
+    const two = presetThreePane(); // h[p0, v[p1,p2]]
+    if (two.kind === "split") two.sizing = { index: 1, pct: 30 };
+    // closing p1 collapses the nested v-split but keeps the root node (and its
+    // session sizing) as the same shaped split
+    const kept = closePane(two, "p1");
+    expect(kept.kind).toBe("split");
+    if (kept.kind === "split") expect(kept.sizing).toEqual({ index: 1, pct: 30 });
+    // closing p2 leaves h[p0,p1] with the same preserved sizing
+    const two2 = presetThreePane();
+    if (two2.kind === "split") two2.sizing = { index: 1, pct: 30 };
+    const kept2 = closePane(two2, "p2");
+    expect(leafIds(kept2)).toEqual(["p0", "p1"]);
+    if (kept2.kind === "split") expect(kept2.sizing).toEqual({ index: 1, pct: 30 });
   });
 });

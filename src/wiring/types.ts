@@ -83,7 +83,7 @@ export type ChromeWiring = {
   launchAppAsRoot: (desktopFile: string, appName: string, p: string) => Promise<void>;
   dialogs: ReturnType<typeof makeDialogs>;
   connectServer: (raw?: string) => void;
-  disconnectServer: (mountPath: string) => void;
+  disconnectServer: (mountPath: string, uri?: string) => void;
   stopGpm: () => void;
   stopChromeTimers: () => void;
 };

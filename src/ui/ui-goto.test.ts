@@ -9,6 +9,8 @@ import {
   completeGotoPath,
   defaultDirLister,
   expandTilde,
+  gotoPanelWidth,
+  gotoRows,
   makeGoToFolder,
   resolveGotoPath,
   type DirEntry,
@@ -64,6 +66,13 @@ describe("resolveGotoPath", () => {
 });
 
 describe("completeGotoPath", () => {
+  test("panel width/rows clamp to the terminal on narrow/short windows", () => {
+    expect(gotoPanelWidth(120)).toBe(60);
+    expect(gotoPanelWidth(48)).toBe(46); // termW - 2
+    expect(gotoRows(40)).toBe(6);
+    expect(gotoRows(12)).toBe(4);
+  });
+
   test("tilde prefix lists matching home dirs, files dropped", () => {
     const { base, dirs } = completeGotoPath("~/Do", HOME, CWD, list);
     expect(base).toBe("/home/zeb");

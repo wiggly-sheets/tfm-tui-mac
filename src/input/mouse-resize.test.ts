@@ -13,6 +13,7 @@ import {
   type MouseResizeWiring,
   type ResizeBounds,
   type ResizeTarget,
+  type SplitHandle,
 } from "./mouse-resize";
 import type { MaybeNode } from "../lib/node-like";
 
@@ -46,6 +47,13 @@ describe("resize solvers", () => {
     // too narrow for two minimum panes: the current ratio stands
     expect(splitPctAt(56, 26, 30, 20, 42)).toBe(42);
   });
+
+  test("splitPctAt is axis-agnostic: the same math drives a stacked divider", () => {
+    // rows: origin 2, extent 22 → inner 21; y 2+10 → 10 rows above the divider
+    expect(splitPctAt(12, 2, 22, 3, 50)).toBeCloseTo((10 / 21) * 100, 6);
+    // too short for two 3-row panes keeps the current ratio
+    expect(splitPctAt(3, 0, 5, 3, 50)).toBe(50);
+  });
 });
 
 describe("makeMouseResize", () => {
@@ -70,6 +78,10 @@ describe("makeMouseResize", () => {
     };
   };
 
+  // the default divider handle: the fake's h-split at x 50 inside the 74-wide
+  // pane area (the wiring resolves this from the rendered tree at press time)
+  const sideBySide: SplitHandle = { axis: "x", origin: 26, extent: 74, min: 20, current: 50 };
+
   const makeCtx = (over: Partial<MouseResizeCtx> = {}) => {
     const { nodes, sidebar, preview } = makeNodes();
     const events: string[] = [];
@@ -86,7 +98,7 @@ describe("makeMouseResize", () => {
       byId: (id) => (nodes[id] ?? undefined) as MaybeNode,
       enabled: () => true,
       termW: () => 100,
-      mainW: () => 74,
+      splitAt: (x, y) => (y === 1 && x >= 49 && x <= 51 ? sideBySide : null),
       bounds: (t) => bounds[t],
       setSidebarWidth: (w) => {
         events.push(`sidebar=${w}`);
@@ -96,17 +108,16 @@ describe("makeMouseResize", () => {
         events.push(`preview=${w}`);
         preview.width = w;
       },
-      setSplitPct: (pct) => {
+      setSplitPct: (_h, pct) => {
         events.push(`split=${Math.round(pct)}`);
         split = pct;
       },
-      splitPct: () => split,
       commit: (t) => events.push(`commit:${t}`),
       blocked: () => false,
       log: () => {},
       ...over,
     };
-    return { ctx, events, wiring: makeMouseResize(ctx) };
+    return { ctx, events, wiring: makeMouseResize(ctx), split: () => split };
   };
 
   const down = (x: number) => ({ x, y: 1, button: 0 }) as never;
@@ -150,6 +161,39 @@ describe("makeMouseResize", () => {
     splitOn.wiring.onMouseUp({ x: 56, y: 1 } as never);
     // 30 of inner 73 → 41%
     expect(splitOn.events).toEqual(["split=41", "split=41", "commit:split"]);
+  });
+
+  test("a stacked divider follows the EVENT Y axis, not x", () => {
+    // rows: the split area is 22 tall starting at y 2, the divider sits at y 12
+    const stacked: SplitHandle = { axis: "y", origin: 2, extent: 22, min: 3, current: 50 };
+    const { events, wiring } = makeCtx({
+      enabled: (t) => t === "split",
+      splitAt: (_x, y) => (y >= 11 && y <= 13 ? stacked : null),
+    });
+    wiring.onMouseDown({ x: 40, y: 12, button: 0 } as never);
+    // a huge X sweep with the row unchanged still reads the Y ratio (10/21)
+    wiring.onMouseDrag({ x: 90, y: 12 } as never);
+    wiring.onMouseDrag({ x: 90, y: 20 } as never);
+    wiring.onMouseUp({ x: 90, y: 20 } as never);
+    // 10/21 → 48%, 18/21 → 86%
+    expect(events).toEqual(["split=48", "split=86", "split=86", "commit:split"]);
+  });
+
+  test("each split is armed from its own handle (nested/3-pane trees)", () => {
+    // the wiring resolves the split under the press; the machine must pass
+    // THAT handle through untouched (no p0/p1 assumption)
+    const nested: SplitHandle = { axis: "x", origin: 60, extent: 44, min: 20, current: 75 };
+    const seen: SplitHandle[] = [];
+    const { wiring } = makeCtx({
+      enabled: (t) => t === "split",
+      splitAt: () => nested,
+      setSplitPct: (h) => {
+        seen.push(h);
+      },
+    });
+    wiring.onMouseDown({ x: 80, y: 5, button: 0 } as never);
+    wiring.onMouseUp({ x: 80, y: 5 } as never);
+    expect(seen[0]).toBe(nested);
   });
 
   test("a blocked gesture never arms, and edgePress reports the toggles", () => {

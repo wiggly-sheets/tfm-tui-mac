@@ -76,8 +76,11 @@ type SettingsPanelHooks = {
 // that (the old 100 pooled ~20 dead cells in the middle spacer).
 export const SETTINGS_MAX_W = 80;
 const SETTINGS_MIN_W = 64;
+// Clamped to the terminal (termW - 2) as well as to the 64-column floor: on a
+// narrow terminal the panel shrinks with the screen instead of overflowing it
+// (the value/key columns then ellipsize).
 export const settingsPanelWidth = (termW: number): number =>
-  Math.min(SETTINGS_MAX_W, Math.max(SETTINGS_MIN_W, termW - 4));
+  Math.min(SETTINGS_MAX_W, termW - 2, Math.max(SETTINGS_MIN_W, termW - 4));
 
 const CAT_W = 20;
 // value-box widths (text room = box - 1 for the paddingRight); the shell's

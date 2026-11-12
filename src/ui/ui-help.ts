@@ -12,11 +12,16 @@ export type HelpDeps = {
   keybinds(a: KeyAction): string[];
   renderer(): CliRenderer;
   termH(): number;
+  // optional so existing test fakes keep the full tip pool; wiring passes the
+  // live platform so macOS does not advertise a Linux-console tool (gpm)
+  platform?(): string;
 };
 
-// wide poster width, clamped to the terminal by the shell
+// wide poster width, clamped to the terminal by the shell. The 48-column
+// floor only applies while the terminal is wide enough; narrow terminals
+// shrink the panel instead of letting it overflow (termW - 2).
 export const HELP_W = 96;
-export const helpPanelWidth = (termW: number): number => Math.min(HELP_W, Math.max(48, termW - 4));
+export const helpPanelWidth = (termW: number): number => Math.min(HELP_W, termW - 2, Math.max(48, termW - 4));
 
 // live binds with a defaults fallback (the shell passes real remaps; the
 // fallback keeps the panel renderable without wiring)
@@ -135,6 +140,10 @@ const FOOTER = "F1 opens or closes this · ↑/↓ or wheel to scroll";
 // exactly like the key column, the fix in white. The whole pool renders —
 // no rotation, the body below scrolls instead of hiding tips.
 export type QuickTip = { problem: string; fix: string };
+// gpm is a Linux-console input daemon; macOS has no equivalent, so that tip is
+// filtered out there (the pool itself stays platform-neutral for the docs/tests)
+export const tipsFor = (platform: string): QuickTip[] =>
+  platform === "darwin" ? QUICK_TIPS.filter((t) => !t.problem.includes("tty")) : QUICK_TIPS;
 export const QUICK_TIPS: QuickTip[] = [
   { problem: "icons artifacting/buggy?", fix: "turn on force glyph, Settings -> appearance" },
   { problem: "shift+clicks highlights tui not files?", fix: "do alt+click or edit your terminal config" },
@@ -268,7 +277,7 @@ export const renderHelpPanel = (c: Theme, panel: NodeLike, deps: HelpDeps): void
     scrollY: true,
     viewportCulling: true,
   });
-  scroller.add(shell(hero(c), cards, mouseStrip(c), tipsStrip(c, QUICK_TIPS)));
+  scroller.add(shell(hero(c), cards, mouseStrip(c), tipsStrip(c, tipsFor(deps.platform?.() ?? "linux"))));
   panel.add(scroller);
   // pinned below the scroller: always visible, never scrolls away
   panel.add(footerNote(c));

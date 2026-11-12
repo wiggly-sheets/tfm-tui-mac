@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Box } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
-import { filterItems, fuzzyScore, makePick, type PickItem } from "./ui-pick";
+import { filterItems, fuzzyScore, makePick, pickPanelWidth, pickRows, type PickItem } from "./ui-pick";
 import { destroyChildren } from "../lib/uiutil";
 import { makeFloats } from "./floats";
 import { defaultConfig } from "../config/config-schema";
@@ -43,6 +43,13 @@ describe("fuzzyScore", () => {
     expect(filterItems(items, "quit").map((i) => i.label)).toEqual(["quit tfm", "quickly update items table"]);
     expect(filterItems(items, "")).toHaveLength(3);
     expect(filterItems(items, "zzz")).toEqual([]);
+  });
+
+  test("panel width/rows clamp to the terminal on narrow/short windows", () => {
+    expect(pickPanelWidth(120)).toBe(60);
+    expect(pickPanelWidth(50)).toBe(48); // termW - 2
+    expect(pickRows(40)).toBe(12);
+    expect(pickRows(12)).toBe(4);
   });
 });
 

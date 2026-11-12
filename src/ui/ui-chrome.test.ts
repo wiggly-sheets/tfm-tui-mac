@@ -37,6 +37,7 @@ let calls: {
   navigate: string[];
   switchTab: number[];
   closeTab: number[];
+  focusPane: number[];
   newTab: number;
   trashPaths: string[][];
   moveInto: Array<[string, { path: string; isDir: boolean }[]]>;
@@ -79,6 +80,7 @@ beforeAll(async () => {
     navigate: [],
     switchTab: [],
     closeTab: [],
+    focusPane: [],
     newTab: 0,
     trashPaths: [],
     moveInto: [],
@@ -151,7 +153,9 @@ beforeAll(async () => {
     kbActive: () => kbActive,
     kbIdx: () => kbIdx,
     tabs: (pane: 0 | 1) => (pane === 1 ? tabModel1 : tabModel),
-    focusPane: () => {},
+    focusPane: (pane: 0 | 1) => {
+      calls.focusPane.push(pane);
+    },
     closeTab: (_pane: 0 | 1, i: number) => {
       calls.closeTab.push(i);
     },
@@ -521,6 +525,9 @@ describe("renderTabbar", () => {
     });
     expect(calls.switchTab).toContain(1);
     expect(calls.navigate).toContain("/x/afolder");
+    // the drop focuses the chip's pane first (switchTab/navigate act on the
+    // ACTIVE pane; a drop on the other pane's chip must retarget THAT pane)
+    expect(calls.focusPane).toContain(0);
     // a file (non-dir) never triggers chip navigation
     const navBefore = calls.navigate.length;
     gridDrag.keys = [{ path: "/x/afile", isDir: false }];

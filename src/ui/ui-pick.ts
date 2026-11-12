@@ -78,6 +78,11 @@ export const filterItems = (items: PickItem[], query: string): PickItem[] => {
 
 const PANEL_W = 60;
 const MAX_ROWS = 12;
+// The panel is a fixed 60 columns on roomy terminals, but a narrow one must
+// not overflow: clamp to termW - 2 (the rows ellipsize/clip inside).
+export const pickPanelWidth = (termW: number): number => Math.max(20, Math.min(PANEL_W, termW - 2));
+// list rows that fit the terminal (title + input + panel padding = 8 rows)
+export const pickRows = (termH: number): number => Math.max(1, Math.min(MAX_ROWS, termH - 8));
 
 export const makePick = (ctx: PickCtx) => {
   let opened = false;
@@ -86,6 +91,7 @@ export const makePick = (ctx: PickCtx) => {
   let query = "";
   let idx = -1;
   let results: PickItem[] = [];
+  let maxRows = MAX_ROWS;
 
   let focusTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -116,7 +122,7 @@ export const makePick = (ctx: PickCtx) => {
     const list = ctx.byId("tfm-pick-list");
     if (!list) return;
     const colors = ctx.colors();
-    results = filterItems(items, query).slice(0, MAX_ROWS);
+    results = filterItems(items, query).slice(0, maxRows);
     if (idx >= results.length) idx = results.length - 1;
     ctx.destroyChildren(list);
     if (!results.length) {
@@ -175,12 +181,14 @@ export const makePick = (ctx: PickCtx) => {
     query = "";
     idx = -1;
     const colors = ctx.colors();
+    const panelW = pickPanelWidth(ctx.renderer().terminalWidth);
+    maxRows = pickRows(ctx.renderer().terminalHeight);
     const scrim = makeModalScrim(
       { uiStyle: ctx.uiStyle, colors: ctx.colors },
       {
         id: "tfm-pick",
         zIndex: 3700,
-        panelWidth: PANEL_W,
+        panelWidth: panelW,
         onClose: () => close(),
       },
       Box(
@@ -194,7 +202,7 @@ export const makePick = (ctx: PickCtx) => {
         { width: "100%", paddingLeft: 2, paddingRight: 2, paddingTop: 1 },
         Input({
           id: "tfm-pick-input",
-          width: PANEL_W - 6,
+          width: panelW - 6,
           placeholder: opts.placeholder ?? "Type a command…",
           backgroundColor: colors.accentBg,
           focusedBackgroundColor: colors.accentBg,

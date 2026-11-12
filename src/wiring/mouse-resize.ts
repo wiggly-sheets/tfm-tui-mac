@@ -12,7 +12,17 @@ import { sideInnerWidth } from "../ui/style";
 import { gridDrag } from "../input/grid-input";
 import { toolbarDrag } from "../input/toolbar-drag";
 import { dlog } from "../app/log";
-import { makeMouseResize, type MouseResizeWiring, type ResizeBounds, type ResizeTarget } from "../input/mouse-resize";
+import {
+  makeMouseResize,
+  MIN_PANE_COLS,
+  MIN_PANE_ROWS,
+  type MouseResizeWiring,
+  type ResizeBounds,
+  type ResizeTarget,
+  type SplitHandle,
+} from "../input/mouse-resize";
+import { splitChildGrows, splitDividers, type SplitDivider } from "../app/layout";
+import type { NodeLike } from "../lib/node-like";
 import type { CoreWiring } from "./core";
 import type { RethemeWiring } from "./settings";
 import type { ChromeWiring, GridFoundationWiring, GridWiring } from "./types";
@@ -66,15 +76,85 @@ export const wireMouseResize = (deps: {
     }
   };
 
-  const setSplitPct = (pct: number): void => {
-    const p = Math.round(pct);
+  // The divider node id carries its document-order index (`tfm-pane-divider`,
+  // `tfm-pane-divider-1`, …), which splitDividers() maps back to the split
+  // node + child boundary it divides. A press stores that pair so the ratio
+  // write lands on the DRAGGED split's own children.
+  const dividerIndex = (id: string): number => {
+    const m = /^tfm-pane-divider(?:-(\d+))?$/.exec(id);
+    if (!m) return -1;
+    return m[1] ? Number(m[1]) : 0;
+  };
+
+  const dividerNodes = (): NodeLike[] => {
+    const out: NodeLike[] = [];
+    const walk = (n: NodeLike | null | undefined): void => {
+      if (!n) return;
+      if (typeof n.id === "string" && n.id.startsWith("tfm-pane-divider")) out.push(n);
+      for (const c of n.getChildren?.() ?? []) walk(c as NodeLike);
+    };
+    walk(core.lookup.byId("tfm-panes") as NodeLike | null | undefined);
+    return out;
+  };
+
+  let armedSplit: SplitDivider | null = null;
+  let armedParent: NodeLike | null = null;
+
+  // resolve the divider under (x, y): the rendered divider is 1 cell wide for
+  // a side-by-side split and 1 row tall for a stacked one, and its parent box
+  // is the split's live extent on that axis.
+  const splitAt = (x: number, y: number): SplitHandle | null => {
+    armedSplit = null;
+    armedParent = null;
+    if (core.panes.leafIds().length < 2) return null;
+    const dividers = splitDividers(core.panes.tree);
+    for (const node of dividerNodes()) {
+      const idx = dividerIndex(node.id ?? "");
+      const info = idx >= 0 ? dividers[idx] : undefined;
+      if (!info || !node.parent) continue;
+      const axis = node.width === 1 ? "x" : node.height === 1 ? "y" : null;
+      if (!axis) continue;
+      const dw = typeof node.width === "number" ? node.width : 0;
+      const dh = typeof node.height === "number" ? node.height : 0;
+      const onLine =
+        axis === "x"
+          ? x >= node.screenX - 1 && x <= node.screenX + 1 && y >= node.screenY && y < node.screenY + dh
+          : y >= node.screenY - 1 && y <= node.screenY + 1 && x >= node.screenX && x < node.screenX + dw;
+      if (!onLine) continue;
+      const parent = node.parent;
+      const origin = axis === "x" ? parent.screenX : parent.screenY;
+      const extent = axis === "x" ? parent.width : parent.height;
+      if (typeof origin !== "number" || typeof extent !== "number" || extent <= 0) continue;
+      armedSplit = info;
+      armedParent = parent;
+      return {
+        axis,
+        origin,
+        extent,
+        min: axis === "x" ? MIN_PANE_COLS : MIN_PANE_ROWS,
+        current: info.split.sizing?.pct ?? 50,
+      };
+    }
+    return null;
+  };
+
+  const setSplitPct = (_h: SplitHandle, pct: number): void => {
+    const info = armedSplit;
+    const parent = armedParent;
+    if (!info || !parent) return;
+    const p = Math.round(Math.min(99, Math.max(1, pct)));
     core.geometry.splitPct = p;
-    core.lookup.setOnId("tfm-pane-col-0", (n) => {
-      n.flexGrow = p;
-    });
-    core.lookup.setOnId("tfm-pane-col-1", (n) => {
-      n.flexGrow = 100 - p;
-    });
+    info.split.sizing = { index: info.index, pct: p };
+    // live write: the split's rendered children sit at the even indices of its
+    // box (the odd ones are the divider cells)
+    const grows = splitChildGrows(info.split);
+    const kids = parent.getChildren?.() ?? [];
+    let child = 0;
+    for (let i = 0; i < kids.length; i += 2) {
+      const n = kids[i];
+      if (n) n.flexGrow = grows[child] ?? 1;
+      child++;
+    }
   };
 
   return makeMouseResize({
@@ -84,15 +164,15 @@ export const wireMouseResize = (deps: {
       const u = ui();
       if (t === "sidebar") return u.mouseResizeSidebar && u.sidebarVisible && !u.sidebarAutoHide;
       if (t === "preview") return u.mouseResizePreview && (u.previewEnabled || u.infoSidebar) && !u.previewAutoHide;
+      if (t === "split") return u.mouseResizeSplit && core.panes.leafIds().length > 1;
       return u.mouseResizeSplit && u.dualPane;
     },
     termW: () => chrome.renderer.terminalWidth,
-    mainW: () => chrome.renderer.terminalWidth - core.geometry.sidebarEff - core.geometry.previewEff,
+    splitAt,
     bounds: (t) => boundsOf(PROP[t]),
     setSidebarWidth,
     setPreviewWidth,
     setSplitPct,
-    splitPct: () => core.geometry.splitPct,
     commit: (t) => {
       // the split has no config key: one repaint reads the new ratio
       if (t === "split") {

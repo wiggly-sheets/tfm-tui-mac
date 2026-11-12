@@ -17,11 +17,17 @@ export type LeafPane = {
   rect?: Rect;
 };
 
+// Session-only sizing for one split: the divider right after child
+// `index - 1` keeps `pct` percent of the split on its left/top side. The pane
+// tree is IN-MEMORY ONLY, so this rides the node and is never persisted.
+export type SplitSizing = { index: number; pct: number };
+
 export type SplitNode = {
   kind: "split";
   orientation: SplitOrientation;
   children: LayoutNode[];
   rect?: Rect;
+  sizing?: SplitSizing;
 };
 
 export type LayoutNode = SplitNode | LeafPane;
@@ -236,12 +242,17 @@ export const cyclePane = (tree: LayoutTree, currentActive: PaneId, delta: 1 | -1
 
 /**
  * Re-orients the split containing the active leaf (or root split if applicable).
+ * Pure: the input tree is never mutated.
  */
 export const moveActiveTo = (tree: LayoutTree, activeId: PaneId, orientation: SplitOrientation): LayoutTree => {
   const parentInfo = findParent(tree, activeId);
   if (parentInfo) {
-    parentInfo.parent.orientation = orientation;
-    return normalizeTree(tree);
+    const replaceParent = (node: LayoutNode): LayoutNode => {
+      if (node.kind === "leaf") return node;
+      if (node === parentInfo.parent) return { ...node, orientation };
+      return { ...node, children: node.children.map(replaceParent) };
+    };
+    return normalizeTree(replaceParent(tree));
   }
   if (tree.kind === "split") {
     return {
@@ -280,7 +291,9 @@ export const layoutGeometry = (tree: LayoutNode, rect: Rect): void => {
     for (let i = 0; i < count; i++) {
       const child = tree.children[i];
       if (!child) continue;
-      const childH = floor + base + (i === count - 1 ? rem : 0);
+      // clamp: a terminal too short for floor*count would otherwise hand the
+      // last child a negative height (unpaintable rect)
+      const childH = Math.max(1, floor + base + (i === count - 1 ? rem : 0));
       const childRect: Rect = {
         x: rect.x,
         y: curY,
@@ -306,7 +319,9 @@ export const layoutGeometry = (tree: LayoutNode, rect: Rect): void => {
     for (let i = 0; i < count; i++) {
       const child = tree.children[i];
       if (!child) continue;
-      const childW = floor + base + (i === count - 1 ? rem : 0);
+      // clamp: a terminal too narrow for floor*count would otherwise hand the
+      // last child a negative width (unpaintable rect)
+      const childW = Math.max(1, floor + base + (i === count - 1 ? rem : 0));
       const childRect: Rect = {
         x: curX,
         y: rect.y,
@@ -336,6 +351,84 @@ export const leafRectsOf = (tree: LayoutNode, rect: Rect): Map<PaneId, Rect> => 
   };
   walk(tree);
   return out;
+};
+
+// --- Session split sizing + directional focus: pure helpers shared by the
+// mouse-resize writers and the keymap's pane focus actions. ---
+
+// Dividers in the order buildPaneTree (ui-boot-layout) creates them: depth
+// first, one divider before every child after the first. `index` is the child
+// boundary the divider sits on (1 = between children 0 and 1).
+export type SplitDivider = { split: SplitNode; index: number };
+
+export const splitDividers = (tree: LayoutNode): SplitDivider[] => {
+  const out: SplitDivider[] = [];
+  const walk = (node: LayoutNode): void => {
+    if (node.kind === "leaf") return;
+    node.children.forEach((child, i) => {
+      if (i > 0) out.push({ split: node, index: i });
+      walk(child);
+    });
+  };
+  walk(tree);
+  return out;
+};
+
+// flexGrow weights for a split's children. `sizing.index` is the boundary the
+// user dragged; the children before it share `pct`, the rest share the
+// remainder (proportional across the whole split, not just the first pair).
+// No sizing = even shares, so a fresh/preset tree never inherits a ratio the
+// user set on a different split.
+export const splitChildGrows = (split: SplitNode): number[] => {
+  const count = split.children.length;
+  if (count === 0) return [];
+  const sizing = split.sizing;
+  if (!sizing) return Array.from({ length: count }, () => 100 / count);
+  const index = Math.min(Math.max(1, sizing.index), count - 1);
+  const before = index;
+  const after = count - index;
+  const pct = Math.min(Math.max(1, sizing.pct), 99);
+  return Array.from({ length: count }, (_, i) => (i < before ? pct / before : (100 - pct) / after));
+};
+
+// Nearest pane whose rect center sits in the given direction from `from`'s
+// center. Candidates must also overlap the source on the perpendicular axis
+// (a full-height left pane has nothing "above"/"below" it just because the
+// right column has a top/bottom half). Ties favor the least perpendicular
+// drift. null = no pane that way (directional focus must not wrap).
+export const paneInDirection = (
+  rects: Map<PaneId, Rect>,
+  from: PaneId,
+  dir: "up" | "down" | "left" | "right",
+): PaneId | null => {
+  const src = rects.get(from);
+  if (!src) return null;
+  const cx = src.x + src.w / 2;
+  const cy = src.y + src.h / 2;
+  const dx = dir === "left" ? -1 : dir === "right" ? 1 : 0;
+  const dy = dir === "up" ? -1 : dir === "down" ? 1 : 0;
+  let best: PaneId | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const [id, r] of rects) {
+    if (id === from) continue;
+    const rx = r.x + r.w / 2;
+    const ry = r.y + r.h / 2;
+    const along = dx !== 0 ? (rx - cx) * dx : (ry - cy) * dy;
+    if (along <= 0) continue;
+    // perpendicular overlap: shared edge (0 cells) does not count
+    const overlap =
+      dx !== 0
+        ? Math.min(src.y + src.h, r.y + r.h) - Math.max(src.y, r.y)
+        : Math.min(src.x + src.w, r.x + r.w) - Math.max(src.x, r.x);
+    if (overlap <= 0) continue;
+    const drift = dx !== 0 ? Math.abs(ry - cy) : Math.abs(rx - cx);
+    const score = along + drift * 2;
+    if (score < bestScore) {
+      best = id;
+      bestScore = score;
+    }
+  }
+  return best;
 };
 
 // --- DOM id helpers: p0 and p1 keep their byte-identical legacy ids so the

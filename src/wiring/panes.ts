@@ -10,7 +10,7 @@ import { hookScrollerScroll } from "../ui/ui-grid";
 import type { SlotElement } from "../ui/ui-slots";
 import { destroyChildren, destroyNode } from "../lib/uiutil";
 import type { NodeLike } from "../lib/node-like";
-import type { LayoutNode, PaneId } from "../app/layout";
+import { splitChildGrows, type LayoutNode, type PaneId } from "../app/layout";
 import type { CoreWiring } from "./core";
 import type { ChromeWiring, FileopsWiring, GridFoundationWiring, GridWiring, NavWiring } from "./types";
 
@@ -79,31 +79,28 @@ export const wirePanes = (deps: {
     scrollers.delete(id);
   };
 
-  // the session split ratio rides each leaf column's flexGrow (mouse-resize-split
-  // writes the same cells by id). The default 2-pane h-split was the only case
-  // that got a ratio — a v-split, a 3-pane tree, or any split whose leaves
-  // aren't p0/p1 left the divider fixed 50/50 and drag did nothing visible.
-  // Walk the tree: every h-split node distributes its width across its leaf
-  // descendants proportionally, so nested splits all follow the gesture.
-  const applySplitRatio = (): void => {
-    const walk = (node: LayoutNode, pct: number): void => {
-      if (node.kind === "leaf") {
-        const col = columns.get(node.id) as unknown as NodeLike | undefined;
-        if (col) col.flexGrow = pct;
-        return;
-      }
-      if (node.orientation !== "h") return;
-      const count = node.children.length;
-      if (count === 0) return;
-      // the last child absorbs the rounding remainder (same as layoutGeometry)
-      const base = Math.floor(pct / count);
-      const rem = pct - base * count;
-      for (let i = 0; i < count; i++) {
-        const child = node.children[i];
-        if (child) walk(child, base + (i === count - 1 ? rem : 0));
+  // the session split ratio rides each split node's `sizing` (see app/layout):
+  // the last dragged boundary keeps its percentage across rebuilds, and every
+  // h/v split distributes its own children proportionally. The rendered split
+  // boxes carry no id, so the walk mirrors buildPaneTree's child/divider order
+  // (even indices are children, odd ones are divider cells).
+  const applySplitRatio = (root: NodeLike): void => {
+    const walk = (node: LayoutNode, dom: NodeLike): void => {
+      if (node.kind === "leaf") return;
+      const grows = splitChildGrows(node);
+      const kids = dom.getChildren?.() ?? [];
+      let child = 0;
+      for (let i = 0; i < kids.length; i += 2) {
+        const childNode = node.children[child];
+        const childDom = kids[i];
+        if (childNode && childDom) {
+          childDom.flexGrow = grows[child] ?? 1;
+          walk(childNode, childDom);
+        }
+        child++;
       }
     };
-    walk(core.panes.tree, 100);
+    walk(core.panes.tree, root);
   };
 
   const collectDividers = (): NodeLike[] => {
@@ -145,7 +142,7 @@ export const wirePanes = (deps: {
       core.colors.divider,
     );
     host.add(root);
-    applySplitRatio();
+    applySplitRatio(root as unknown as NodeLike);
     retheme();
   };
 

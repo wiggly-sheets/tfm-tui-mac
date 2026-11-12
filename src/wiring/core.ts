@@ -268,7 +268,11 @@ export const wireCore = (deps: {
       setActiveId(next);
     },
     moveActiveTo: (orientation: SplitOrientation): void => {
-      moveActiveTo(layout.current, activeId, orientation);
+      const next = moveActiveTo(layout.current, activeId, orientation);
+      if (next !== layout.current) {
+        layout.current = next;
+        fireTreeChange();
+      }
     },
     leafIds: (): PaneId[] => leafIds(layout.current),
     stateOf: (id: PaneId): AppState => stateMap.get(id) ?? activeStateFor(),

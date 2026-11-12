@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Text } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { makeFloats } from "./floats";
-import { makeBulkRename } from "./ui-bulk-rename";
+import { makeBulkRename, bulkRenamePanelWidth, bulkRenameRows } from "./ui-bulk-rename";
 import { defaultConfig } from "../config/config-schema";
 import type { Theme } from "../config/config";
 import { destroyChildren } from "../lib/uiutil";
@@ -48,6 +48,13 @@ const TEN = Array.from({ length: 10 }, (_, i) => `/tfm-bulk/f${i}.txt`);
 const pointers: string[] = [];
 
 describe("bulk rename widget", () => {
+  test("panel width/rows clamp to the terminal on narrow/short windows", () => {
+    expect(bulkRenamePanelWidth(120)).toBe(76);
+    expect(bulkRenamePanelWidth(60)).toBe(58); // termW - 2
+    expect(bulkRenameRows(40)).toBe(14);
+    expect(bulkRenameRows(14)).toBe(4);
+  });
+
   test("open mounts the input; typing shows live generated names", async () => {
     const t = await createTestRenderer({ width: 100, height: 26 });
     try {
