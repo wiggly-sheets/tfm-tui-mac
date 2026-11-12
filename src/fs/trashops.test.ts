@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { trashDir } from "./fsutil";
+import { trashDir, trashFilesDir, xdgTrashMove, xdgTrashMoveToRoot } from "./fsutil";
 import { makeTrashConfirms, makeTrashOps, trashOrigPath, trashOrigPathForFile, type TrashOpsSink } from "./trashops";
 
 const oldDataHome = process.env.XDG_DATA_HOME;
@@ -209,6 +209,106 @@ describe("restoreFromTrash", () => {
       await settleUntil(() => existsSync(path.join(origDir, "gone (copy).txt")));
       expect(readFileSync(path.join(origDir, "gone.txt"), "utf8")).toBe("current-data");
       expect(readFileSync(path.join(origDir, "gone (copy).txt"), "utf8")).toBe("restored-data");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("darwin native trash (origin sidecar)", () => {
+  // a native root is shape-based (.Trash), so the sandbox needs no real
+  // ~/.Trash: the trash lane and the restore read the same sidecar next to it
+  const nativeRoot = (root: string): string => {
+    const trashRoot = path.join(root, ".Trash");
+    mkdirSync(trashRoot, { recursive: true });
+    return trashRoot;
+  };
+
+  test("parity: trash -> trashOrigPathForFile -> restore round-trips the origin", async () => {
+    const root = sandbox();
+    try {
+      const trashRoot = nativeRoot(root);
+      const origDir = path.join(root, "orig-darwin");
+      mkdirSync(origDir, { recursive: true });
+      const src = path.join(origDir, "note.txt");
+      writeFileSync(src, "restore-me");
+      const landing = await xdgTrashMoveToRoot(src, trashRoot, undefined, "darwin");
+      const sidecar = path.join(trashRoot, ".tfm-info", "note.txt.trashinfo");
+      expect(landing).toBe(path.join(trashRoot, "note.txt"));
+      expect(existsSync(src)).toBe(false);
+      expect(existsSync(sidecar)).toBe(true);
+      expect(await trashOrigPathForFile(landing, "darwin")).toBe(src);
+
+      const sink = recordingSink();
+      await makeTrashOps(sink, "darwin").restoreFromTrash([landing]);
+      expect(readFileSync(src, "utf8")).toBe("restore-me");
+      expect(existsSync(landing)).toBe(false);
+      expect(existsSync(sidecar)).toBe(false);
+      expect(sink.batches.length).toBe(1);
+      expect(sink.batches[0]!.label).toBe("restore 1 item");
+      expect(sink.notes.some((n) => n === "notify:restore:success:Restored 1 item · ctrl+z to undo")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an item with no recorded origin never reports a restore that did not happen", async () => {
+    const root = sandbox();
+    try {
+      const trashRoot = nativeRoot(root);
+      const landing = path.join(trashRoot, "finder.txt");
+      writeFileSync(landing, "no origin here");
+      const sink = recordingSink();
+      await makeTrashOps(sink, "darwin").restoreFromTrash([landing]);
+      expect(existsSync(landing)).toBe(true); // nothing moved
+      expect(sink.batches.length).toBe(0); // no undo unit
+      expect(sink.notes.some((n) => n.startsWith("notify:restore failed:error:Restored 0 of 1"))).toBe(true);
+      expect(sink.notes.some((n) => n.includes("ctrl+z"))).toBe(false);
+      expect(sink.notes.some((n) => n.includes("Finder-trashed"))).toBe(false);
+      expect(sink.notes.some((n) => n.includes("no recorded origin"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("emptyTrash skips .tfm-info and prunes stale sidecars", async () => {
+    const root = sandbox();
+    try {
+      const homeFiles = path.join(trashDir(), "files");
+      mkdirSync(homeFiles, { recursive: true });
+      writeFileSync(path.join(homeFiles, "home.txt"), "h");
+      const trashRoot = nativeRoot(root);
+      writeFileSync(path.join(trashRoot, "usb.txt"), "u");
+      mkdirSync(path.join(trashRoot, ".tfm-info"), { recursive: true });
+      writeFileSync(path.join(trashRoot, ".tfm-info", "usb.txt.trashinfo"), "[Trash Info]\nPath=/x/usb.txt\n");
+      writeFileSync(path.join(trashRoot, ".tfm-info", "stale.txt.trashinfo"), "[Trash Info]\nPath=/x/stale.txt\n");
+      const sink = recordingSink();
+      (sink as Record<string, unknown>).trashFilesDirs = () => [homeFiles, trashRoot];
+      await makeTrashOps(sink, "darwin").emptyTrash();
+      await settleUntil(() => !existsSync(path.join(trashRoot, "usb.txt")));
+      expect(existsSync(path.join(trashRoot, "usb.txt"))).toBe(false);
+      // the metadata dir is not an item: it survives, holding nothing stale
+      expect(existsSync(path.join(trashRoot, ".tfm-info"))).toBe(true);
+      expect(existsSync(path.join(trashRoot, ".tfm-info", "usb.txt.trashinfo"))).toBe(false);
+      expect(existsSync(path.join(trashRoot, ".tfm-info", "stale.txt.trashinfo"))).toBe(false);
+      expect(sink.notes.some((n) => n === "notify:empty:success:Emptied 2 items · cannot be undone")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("darwin + XDG_DATA_HOME uses the XDG lane so listing/empty/sidebar agree", async () => {
+    const root = sandbox();
+    try {
+      const src = path.join(root, "xdg.txt");
+      writeFileSync(src, "x");
+      // the sidebar/empty/count path and the move lane resolve the same root
+      expect(trashFilesDir("darwin")).toBe(path.join(trashDir(), "files"));
+      const loc = await xdgTrashMove(src, "darwin");
+      expect(loc).toBe(path.join(trashDir(), "files", "xdg.txt"));
+      expect(existsSync(path.join(trashDir(), "info", "xdg.txt.trashinfo"))).toBe(true);
+      expect(await trashOrigPathForFile(loc, "darwin")).toBe(src);
+      expect(existsSync(path.join(root, ".Trash"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

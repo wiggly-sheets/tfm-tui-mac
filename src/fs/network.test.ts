@@ -3,10 +3,13 @@ import {
   buildMountArgs,
   buildUnmountArgs,
   gvfsRoot,
+  isMountableUri,
   isNetworkPath,
   parseGvfsName,
+  parseMountableServerInput,
   parseServerInput,
   takeGioPrompt,
+  uriScheme,
 } from "./network";
 
 const oldRuntime = process.env.XDG_RUNTIME_DIR;
@@ -118,10 +121,45 @@ describe("takeGioPrompt", () => {
 });
 
 describe("darwin network root", () => {
-  test("gvfsRoot is /Volumes and the path gate stays off", async () => {
-    const { gvfsRoot: root, isNetworkPath: isNet } = await import("./network");
+  const MOUNTS = [
+    "/dev/disk7s1 on /Volumes/Crucial X9 (apfs, local, journaled)",
+    "//ZEB@nas/share on /Volumes/share (smbfs, nobrowse)",
+    "host:/export on /Volumes/nfs (nfs, nodev)",
+  ].join("\n");
+
+  test("gvfsRoot is /Volumes", async () => {
+    const { gvfsRoot: root } = await import("./network");
     expect(root("darwin")).toBe("/Volumes");
-    expect(isNet("/Volumes/share/file", "darwin")).toBe(false);
-    expect(isNet("/Volumes/USB/file", "darwin")).toBe(false);
+  });
+
+  test("only smb/afp/nfs targets count as network; local USB stays local", () => {
+    expect(isNetworkPath("/Volumes/share/file", "darwin", MOUNTS)).toBe(true);
+    expect(isNetworkPath("/Volumes/nfs/file", "darwin", MOUNTS)).toBe(true);
+    expect(isNetworkPath("/Volumes/Crucial X9/file", "darwin", MOUNTS)).toBe(false);
+    expect(isNetworkPath("/Volumes/USB/file", "darwin", MOUNTS)).toBe(false);
+    expect(isNetworkPath("/Users/bob", "darwin", MOUNTS)).toBe(false);
+  });
+
+  test("a share mount outside /Volumes never counts", () => {
+    const text = "//nas/pub on /mnt/pub (smbfs, nobrowse)";
+    expect(isNetworkPath("/mnt/pub/file", "darwin", text)).toBe(false);
+  });
+});
+
+describe("platform-aware server input", () => {
+  test("darwin accepts only smb/afp/nfs", () => {
+    expect(parseMountableServerInput("smb://nas/pub", "darwin")?.uri).toBe("smb://nas/pub");
+    expect(parseMountableServerInput("afp://nas/pub", "darwin")?.uri).toBe("afp://nas/pub");
+    expect(parseMountableServerInput("nfs://nas/export", "darwin")?.uri).toBe("nfs://nas/export");
+    // gvfs-only schemes and scp→sftp have no /Volumes mount on macOS
+    expect(parseMountableServerInput("sftp://bob@host/srv", "darwin")).toBeNull();
+    expect(parseMountableServerInput("bob@host:/srv", "darwin")).toBeNull();
+    expect(parseMountableServerInput("dav://host/x", "darwin")).toBeNull();
+  });
+
+  test("linux keeps the gvfs scheme set", () => {
+    expect(parseMountableServerInput("sftp://bob@host/srv", "linux")?.uri).toBe("sftp://bob@host/srv");
+    expect(isMountableUri("sftp://x/", "linux")).toBe(true);
+    expect(uriScheme("SMB://nas/pub")).toBe("smb");
   });
 });

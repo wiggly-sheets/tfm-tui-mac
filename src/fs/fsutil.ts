@@ -1,5 +1,5 @@
 import { chmod, cp, mkdir, rename as fsRename, rm, writeFile, open } from "node:fs/promises";
-import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToUri } from "./uri";
@@ -9,7 +9,9 @@ import {
   darwinTrashMove,
   darwinVolumeTrash,
   isDarwin,
+  isDarwinTrashRoot,
   parseMountTable,
+  TRASH_META_DIR,
   type XattrDeps,
   type XattrRun,
 } from "./darwin";
@@ -81,6 +83,15 @@ export const preserveXattrsShallow = (src: string, dest: string, deps: XattrDeps
 // cosmetic macOS metadata, an unbounded chain is a leak.
 export const XATTR_QUEUE_MAX = 4096;
 
+// fstypes whose volumes never hold user trash on macOS: network shares,
+// autofs stubs and kernel pseudo-mounts. Probing them in empty/count can hang
+// on a dead server (Linux's PROC_MOUNT_SKIP_FSTYPES is the same idea).
+const DARWIN_TRASH_SKIP_FSTYPE = new Set(["smbfs", "afpfs", "nfs", "autofs", "devfs", "devicefs", "fskit"]);
+
+// Finder-maintained metadata inside ~/.Trash: never user items, so the count
+// must not include them (empty may still remove them).
+const FINDER_TRASH_NOISE = new Set([".DS_Store", ".localized", ".Spotlight-V100", ".fseventsd"]);
+
 let xattrLane: Promise<void> = Promise.resolve();
 let xattrQueued = 0;
 
@@ -105,19 +116,23 @@ export const awaitXattrQueue = (): Promise<void> => xattrLane;
 // Trash root (spec: $XDG_DATA_HOME/Trash, default ~/.local/share/Trash —
 // which is where the monolith hardcoded it). Darwin: ~/.Trash (the Finder's
 // own root, so emptied/listed entries match what Finder shows). The XDG
-// override is honored on both (test sandboxes redirect through it).
-// Resolved per call, not at import, so env redirection works.
+// override is honored on both (test sandboxes redirect through it); on darwin
+// it also switches the lanes to the XDG layout, so the root named here is the
+// same one trash/restore/empty/sidebar all use. Resolved per call, not at
+// import, so env redirection works.
 export const trashDir = (): string => {
   if (process.env.XDG_DATA_HOME) return path.join(process.env.XDG_DATA_HOME, "Trash");
   if (isDarwin()) return path.join(os.homedir(), ".Trash");
   return path.join(os.homedir(), ".local/share", "Trash");
 };
 
-// trash FILES dir: the xdg files/ subdir on Linux, the root itself on darwin
-// (native trash lands entries at the root — a files/ subdir would hide them
-// from Finder and from the empty/count/listing passes below)
-export const trashFilesDir = (platform: string = process.platform): string =>
-  isDarwin(platform) ? trashDir() : path.join(trashDir(), "files");
+// trash FILES dir: the xdg files/ subdir for an XDG-shaped root, the root
+// itself for a native darwin trash (.Trash / .Trashes/<uid> — a files/ subdir
+// would hide entries from Finder and from the empty/count/listing passes)
+export const trashFilesDir = (platform: string = process.platform): string => {
+  const root = trashDir();
+  return isDarwin(platform) && isDarwinTrashRoot(root) ? root : path.join(root, "files");
+};
 
 // is a cwd the trash FILES dir? (virtual URIs like recent:// resolve to junk
 // paths, never the trash root, so no guard needed at the call site)
@@ -161,23 +176,54 @@ export const isWithinOrEqual = (inner: string, outer: string): boolean => {
   }
 };
 
-// files dir under a trash ROOT (per-mount or home): files/ subdir on Linux,
-// the root itself on darwin (native trash lands entries at the root)
+// files dir under a trash ROOT (per-mount or home): the root itself for a
+// native darwin trash (.Trash / .Trashes/<uid>), the files/ subdir otherwise
 export const trashFilesSubdir = (root: string, platform: string = process.platform): string =>
-  isDarwin(platform) ? root : path.join(root, "files");
+  isDarwin(platform) && isDarwinTrashRoot(root) ? root : path.join(root, "files");
+
+// hidden sidecar dir tfm writes next to a native-darwin trash landing (see
+// darwin.ts) — never an item itself: skip it in counts/empties
+export const isTrashMetaItem = (name: string, platform: string = process.platform): boolean =>
+  isDarwin(platform) && name === TRASH_META_DIR;
+
+// drop sidecars whose landing disappeared (a native-darwin trash emptied by
+// Finder, an item deleted behind tfm's back). Best-effort: a stale sidecar is
+// cosmetic until the same name is trashed again, and a failed prune must never
+// fail the listing/empty pass. Darwin-only (Linux has no .tfm-info dir).
+export const pruneTrashMeta = (filesDir: string, platform: string = process.platform): void => {
+  if (!isDarwin(platform)) return;
+  const metaDir = path.join(filesDir, TRASH_META_DIR);
+  let names: string[];
+  try {
+    names = readdirSync(metaDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".trashinfo")) continue;
+    const landing = path.join(filesDir, name.slice(0, -".trashinfo".length));
+    if (existsSync(landing)) continue;
+    try {
+      rmSync(path.join(metaDir, name), { force: true });
+    } catch {}
+  }
+};
 
 // best-effort count of home-trash entries for the empty-trash confirm
 // prompt. -1 when the trash is unreadable (prompt omits the count then).
 // Async on darwin because the mount probe must never block the TUI (a hung
 // network mount could freeze the event loop for up to 10 seconds with execSync).
 export const countTrashItems = async (mountsText?: string, platform: string = process.platform): Promise<number> => {
+  const visible = (names: string[]): number =>
+    names.filter((n) => !isTrashMetaItem(n, platform) && !FINDER_TRASH_NOISE.has(n)).length;
   let home: string[];
   try {
     home = readdirSync(trashFilesDir(platform));
   } catch {
     return -1;
   }
-  let n = home.length;
+  pruneTrashMeta(trashFilesDir(platform), platform);
+  let n = visible(home);
   // per-mount trashes hold real entries too — the confirm count must not
   // under-report them ($topdir/.Trash-$uid on Linux, /Volumes/.Trashes on mac)
   for (const dir of await allTrashFilesDirs(mountsText, platform)) {
@@ -187,7 +233,8 @@ export const countTrashItems = async (mountsText?: string, platform: string = pr
       continue;
     }
     try {
-      n += readdirSync(dir).length;
+      pruneTrashMeta(dir, platform);
+      n += visible(readdirSync(dir));
     } catch {
       // yanked device mid-count — home count still stands
     }
@@ -240,6 +287,9 @@ export const allTrashFilesDirs = async (
     for (const m of parseMountTable(text ?? "")) {
       // user volumes only — system/private mounts never hold user trash
       if (m.target !== "/Volumes" && !m.target.startsWith("/Volumes/")) continue;
+      // never probe network/autofs roots: a dead share freezes readdir and
+      // Finder never puts user trash on a remote volume
+      if (DARWIN_TRASH_SKIP_FSTYPE.has(m.fstype)) continue;
       const dir = darwinVolumeTrash(m.target, uid);
       try {
         const r = path.resolve(dir);
@@ -422,6 +472,10 @@ export const fsMove = async (src: string, dest: string): Promise<void> => {
       throw new Error(`source partially removed: ${fsErrText(err)}`);
     }
   }
+  // a file leaving a trash root (cut/paste out, drag out, Finder Put Back via
+  // tfm) no longer has a restore origin; a stale sidecar would later hand its
+  // Path to an unrelated same-name item
+  if (trashInfoPathForTrashFile(src)) await rmTrashInfoForPath(src);
 };
 
 // undo/restore moves must never clobber whatever now occupies the target —
@@ -446,16 +500,27 @@ export const rmTrashInfo = async (name: string, log?: (msg: string) => void): Pr
   }
 };
 
-// sibling info path for per-mount trashes ($topdir/.Trash-$uid): a trash
-// location already encodes its root (<root>/files/<name>), so its sidecar is
-// <root>/info/<name>.trashinfo. Null unless the path is absolute and inside a
-// files dir (relative paths fall back to home lookup).
-export const trashInfoPathForTrashFile = (trashFilePath: string): string | null => {
+// sibling info path for a trash landing. XDG-shaped landings already encode
+// their root (<root>/files/<name>) → <root>/info/<name>.trashinfo. Native
+// darwin landings encode theirs too (<root>/<name> under .Trash or
+// .Trashes/<uid>) → <root>/.tfm-info/<name>.trashinfo — the sidecar tfm writes
+// because Finder's lanes leave no .trashinfo. Null for relative paths and any
+// other dir (callers then fall back to the home lookup).
+export const trashInfoPathForTrashFile = (
+  trashFilePath: string,
+  platform: string = process.platform,
+): string | null => {
   try {
     if (!path.isAbsolute(trashFilePath)) return null;
     const abs = path.resolve(trashFilePath);
-    if (path.basename(path.dirname(abs)) !== "files") return null;
-    return path.join(path.dirname(path.dirname(abs)), "info", `${path.basename(abs)}.trashinfo`);
+    const parent = path.dirname(abs);
+    if (path.basename(parent) === "files") {
+      return path.join(path.dirname(parent), "info", `${path.basename(abs)}.trashinfo`);
+    }
+    if (isDarwin(platform) && isDarwinTrashRoot(parent)) {
+      return path.join(parent, TRASH_META_DIR, `${path.basename(abs)}.trashinfo`);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -463,13 +528,18 @@ export const trashInfoPathForTrashFile = (trashFilePath: string): string | null 
 
 // sibling-aware cleanup for per-mount trashes ($topdir/.Trash-$uid): the
 // trash location already encodes its root (<root>/files/<name>), so delete
-// <root>/info/<name>.trashinfo instead of assuming home trash. Falls back to
-// home lookup ONLY when the path isn't inside a files dir (relative callers).
-// A missing sibling sidecar is NOT a home lookup: a home entry with the same
-// basename belongs to a different file, and deleting its .trashinfo would
-// orphan it (restore reads Path= from that sidecar).
-export const rmTrashInfoForPath = async (trashFilePath: string, log?: (msg: string) => void): Promise<void> => {
-  const sibling = trashInfoPathForTrashFile(trashFilePath);
+// <root>/info/<name>.trashinfo instead of assuming home trash. Native darwin
+// landings (see trashInfoPathForTrashFile) delete their .tfm-info sidecar the
+// same way. Falls back to home lookup ONLY when the path isn't a trash landing
+// (relative callers). A missing sibling sidecar is NOT a home lookup: a home
+// entry with the same basename belongs to a different file, and deleting its
+// .trashinfo would orphan it (restore reads Path= from that sidecar).
+export const rmTrashInfoForPath = async (
+  trashFilePath: string,
+  log?: (msg: string) => void,
+  platform: string = process.platform,
+): Promise<void> => {
+  const sibling = trashInfoPathForTrashFile(trashFilePath, platform);
   if (sibling) {
     try {
       await rm(sibling);
@@ -547,24 +617,54 @@ const trashRootsFor = (target: string, platform: string = process.platform): str
 // Path=/DeletionDate=. If the move fails the placeholder is removed (no
 // orphan entry); if the final info write fails the move rolls back.
 // Trash `p`, returning the final path. Linux: XDG move (`gio trash` fails on
-// tmpfs, so the .trashinfo is written by hand). Darwin: native lane
-// (/usr/bin/trash → JXA → Finder delete) so Finder stays the bookkeeper —
-// entries land at the trash root with no .trashinfo, and Trash-view restore
-// of such entries honestly reports "no trashinfo" like Finder-trashed files.
+// tmpfs, so the .trashinfo is written by hand). Darwin: native lane (/usr/bin/
+// trash → JXA → Finder delete) so Finder stays the bookkeeper — entries land at
+// the trash root with no .trashinfo, so writeDarwinTrashInfo records the origin
+// next to each landing. With $XDG_DATA_HOME set, trashDir() (and therefore the
+// sidebar, listing, count and empty passes) points at the XDG tree, so darwin
+// uses the XDG lane there too: a native move would land in a directory nothing
+// else looks at.
 export const xdgTrashMove = async (p: string, platform: string = process.platform): Promise<string> => {
   const absSrc = path.resolve(p);
-  if (isDarwin(platform)) return darwinTrashRun(absSrc);
+  if (isDarwin(platform) && !process.env.XDG_DATA_HOME) {
+    const loc = await darwinTrashRun(absSrc);
+    await writeDarwinTrashInfo(loc, absSrc, platform);
+    return loc;
+  }
   const roots = trashRootsFor(absSrc, platform);
   let lastErr: unknown = null;
   for (const root of roots) {
     try {
-      return await xdgTrashMoveToRoot(absSrc, root);
+      return await xdgTrashMoveToRoot(absSrc, root, undefined, platform);
     } catch (err) {
       lastErr = err;
       // topdir may be read-only/unwritable — fall through to home trash
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+};
+
+// Record the original path of a native-darwin trash landing in its sidecar
+// (see trashInfoPathForTrashFile). Best-effort: the move already happened, and
+// a missing sidecar only costs the after-restart restore — never fail/reverse
+// the trash over it. Skipped when the lane could not locate the landing (the
+// caller's guessed path is not proof the file is there) or when the path is
+// not a native trash landing.
+export const writeDarwinTrashInfo = async (
+  landing: string,
+  orig: string,
+  platform: string = process.platform,
+): Promise<void> => {
+  if (!existsSync(landing)) return;
+  const infoPath = trashInfoPathForTrashFile(landing, platform);
+  if (!infoPath) return;
+  const stamp = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  try {
+    await mkdir(path.dirname(infoPath), { recursive: true });
+    await writeFile(infoPath, `[Trash Info]\nPath=${encodeTrashPath(orig)}\nDeletionDate=${stamp}\n`);
+  } catch (err) {
+    swallow("darwin trash origin sidecar", err);
+  }
 };
 
 // darwin native-trash runner: one spawn, exit code only (trash output is
@@ -601,9 +701,15 @@ export const xdgTrashMoveToRoot = async (
   // injectable move (default fsMove): the sudo replace-stash runs the SAME
   // claim/rename/finalize loop with sudo-mv — one loop, not a near-clone.
   move: (src: string, dest: string) => Promise<void> = fsMove,
+  platform: string = process.platform,
 ): Promise<string> => {
-  const filesDir = path.join(root, "files");
-  const infoDir = path.join(root, "info");
+  // Layout follows the root's shape: a native darwin trash keeps Finder's flat
+  // layout (entries at the root, tfm's origin sidecars in .tfm-info), any
+  // XDG-shaped root keeps <root>/files + <root>/info. Shape-based so the sudo
+  // replace-stash (fileops) stays consistent when handed trashDir() = ~/.Trash.
+  const native = isDarwin(platform) && isDarwinTrashRoot(root);
+  const filesDir = native ? root : path.join(root, "files");
+  const infoDir = native ? path.join(root, TRASH_META_DIR) : path.join(root, "info");
   await mkdir(filesDir, { recursive: true });
   await mkdir(infoDir, { recursive: true });
   const base = path.basename(absSrc);
@@ -611,12 +717,20 @@ export const xdgTrashMoveToRoot = async (
   const encoded = encodeTrashPath(absSrc);
   let name = base;
   for (let i = 2; ; i++) {
+    // never claim a name whose landing already exists without a sidecar (a
+    // hand-placed entry, or one from another trasher): the wx claim below only
+    // protects the info file, so a bare existsSync BEFORE the claim is what
+    // keeps the move from overwriting it
+    if (existsSync(path.join(filesDir, name))) {
+      name = `${base}.${i}`;
+      continue;
+    }
     const infoPath = path.join(infoDir, `${name}.trashinfo`);
     // atomic claim: fails with EEXIST when another trasher owns this name
     try {
       await writeFile(infoPath, `[Trash Info]\nPath=${encoded}\nDeletionDate=${stamp}\n`, { flag: "wx" });
     } catch (err) {
-      if (errCode(err) === "EEXIST" || existsSync(path.join(filesDir, name))) {
+      if (errCode(err) === "EEXIST") {
         name = `${base}.${i}`;
         continue;
       }

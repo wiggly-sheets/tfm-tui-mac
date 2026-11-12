@@ -17,6 +17,7 @@ import {
   findTrashedPath,
   hasFinderFileRefs,
   isDarwin,
+  isDarwinTrashRoot,
   jxaTrashArgs,
   MACOS_FFMPEG_SIDECARS,
   mdlsTagsArgs,
@@ -37,6 +38,7 @@ import {
   tagSetArgs,
   trashCliArgs,
   TRASH_CLI,
+  TRASH_META_DIR,
   writeFinderTags,
   XATTR_CLI,
   xattrListArgs,
@@ -124,6 +126,21 @@ describe("findTrashedPath", () => {
       ),
     ).toBe("/T/a.txt 12-05-00-000.txt");
   });
+  test("a pre-existing direct name is never this op's landing", () => {
+    const before = new Set(["a.txt"]);
+    const now = new Set(["a.txt", "a.txt 12-05-00-000.txt"]);
+    expect(
+      findTrashedPath(
+        "/T",
+        "a.txt",
+        (p) => now.has(p.split("/").pop() ?? ""),
+        () => [...now],
+        () => 100,
+        before,
+        200,
+      ),
+    ).toBe("/T/a.txt 12-05-00-000.txt");
+  });
   test("no match yields null (caller guesses home)", () => {
     expect(
       findTrashedPath(
@@ -133,6 +150,17 @@ describe("findTrashedPath", () => {
         () => ["b.txt"],
       ),
     ).toBeNull();
+  });
+});
+
+describe("native trash origins", () => {
+  test("home .Trash and per-volume .Trashes/<uid> are native roots; plain dirs are not", () => {
+    expect(TRASH_META_DIR).toBe(".tfm-info");
+    expect(isDarwinTrashRoot("/Users/me/.Trash")).toBe(true);
+    expect(isDarwinTrashRoot("/Volumes/USB/.Trashes/501")).toBe(true);
+    expect(isDarwinTrashRoot("/Users/me/.local/share/Trash")).toBe(false);
+    expect(isDarwinTrashRoot("/Volumes/USB/.Trashes")).toBe(false);
+    expect(isDarwinTrashRoot("/tmp/Trash")).toBe(false);
   });
 });
 
@@ -191,9 +219,15 @@ describe("mount parsing", () => {
     </dict><dict>
       <key>DeviceIdentifier</key><string>disk3s1</string>
       <key>VolumeName</key><string>NoMount</string>
+    </dict><dict>
+      <key>DeviceIdentifier</key><string>disk3s2</string>
+      <key>VolumeName</key><string>Recovery</string>
     </dict>`;
     expect(parseDiskutilListPlist(xml)).toEqual([
       { device: "/dev/disk7s1", mountPoint: "/Volumes/Crucial X9", volumeName: "Crucial X9" },
+      // an unmounted volume keeps its identity so the sidebar can offer Mount;
+      // system pseudo volumes stay out
+      { device: "/dev/disk3s1", mountPoint: "", volumeName: "NoMount" },
     ]);
   });
   test("darwinMountEntries prefers diskutil labels, skips system/autofs/smbfs", () => {
@@ -209,8 +243,13 @@ describe("mount parsing", () => {
     // mount-table-only target degrades to its basename
     expect(entries.some((e) => e.target === "/dev")).toBe(false);
   });
+  test("an unmounted diskutil volume becomes a Mount row (target empty)", () => {
+    const entries = darwinMountEntries([{ device: "/dev/disk9s1", mountPoint: "", volumeName: "Backup" }], []);
+    expect(entries).toEqual([{ label: "Backup", target: "", removable: false, device: "/dev/disk9s1" }]);
+  });
   test("diskutil argv shapes", () => {
     expect(diskutilMountArgv("/dev/disk7")).toEqual(["mountDisk", "/dev/disk7"]);
+    expect(diskutilMountArgv("/dev/disk3s1")).toEqual(["mount", "/dev/disk3s1"]);
     expect(diskutilUnmountArgv("/Volumes/X")).toEqual(["unmount", "/Volumes/X"]);
     expect(diskutilEjectArgv("/dev/disk7")).toEqual(["eject", "/dev/disk7"]);
   });
@@ -341,10 +380,12 @@ describe("finder tags (read + write)", () => {
   test("writeFinderTags: no CLI or off darwin is a silent no-op", () => {
     const calls: Array<[string, string[]]> = [];
     const deps = { which: () => null, exec: (b: string, a: string[]) => void calls.push([b, a]) };
-    writeFinderTags({ ...deps, platform: "darwin" }, [["-a", "Red", "/x"]]);
-    writeFinderTags({ which: () => "/opt/homebrew/bin/tag", exec: deps.exec, platform: "linux" }, [
-      ["-a", "Red", "/x"],
-    ]);
+    expect(writeFinderTags({ ...deps, platform: "darwin" }, [["-a", "Red", "/x"]])).toBe(false);
+    expect(
+      writeFinderTags({ which: () => "/opt/homebrew/bin/tag", exec: deps.exec, platform: "linux" }, [
+        ["-a", "Red", "/x"],
+      ]),
+    ).toBe(false);
     expect(calls).toEqual([]);
   });
 
@@ -355,7 +396,7 @@ describe("finder tags (read + write)", () => {
       exec: (b: string, a: string[]) => void calls.push([b, a]),
       platform: "darwin",
     };
-    writeFinderTags(deps, [tagAddArgs("Red", "/x/a"), tagAddArgs("Red", "/x/b")]);
+    expect(writeFinderTags(deps, [tagAddArgs("Red", "/x/a"), tagAddArgs("Red", "/x/b")])).toBe(true);
     expect(calls).toEqual([
       ["/opt/homebrew/bin/tag", ["-a", "Red", "/x/a"]],
       ["/opt/homebrew/bin/tag", ["-a", "Red", "/x/b"]],

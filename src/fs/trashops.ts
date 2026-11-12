@@ -8,6 +8,8 @@ import {
   fileIdOf,
   fileIdMatches,
   fsErrText,
+  isTrashMetaItem,
+  pruneTrashMeta,
   rmTrashInfoForPath,
   trashDir,
   trashFilesDir,
@@ -20,8 +22,8 @@ import { rmTreeProgress, scanTree, type TransferSink } from "./transfer";
 import { sharedOpQueue } from "../lib/op-queue";
 import { checkPluginVeto, sharedPluginHooks } from "../lib/plugin-hooks";
 import type { NotifyLevel } from "../lib/notify-level";
-import { isNetworkPath } from "./network";
-import { isDarwin, darwinTrashPutBack } from "./darwin";
+import { isNetworkPathAsync } from "./network";
+import { isDarwin } from "./darwin";
 import type { UndoJournalData, UndoStep, UndoUnit } from "../app/undo";
 
 // --- Trash operations: trash / restore / delete-forever / empty. The fs
@@ -92,12 +94,17 @@ export const trashOrigPath = async (name: string): Promise<string | null> => {
 };
 
 // sibling-aware original-path lookup for per-mount trashes: <root>/files/<name>
-// resolves via <root>/info/<name>.trashinfo. No home fallback when the sibling
-// exists but is unreadable — a home entry with the same basename belongs to a
-// different file, and restoring the per-mount file to the home file's Path=
-// would misplace it. Home lookup serves bare names (backwards compat) only.
-export const trashOrigPathForFile = async (trashFilePath: string): Promise<string | null> => {
-  const sibling = trashInfoPathForTrashFile(trashFilePath);
+// resolves via <root>/info/<name>.trashinfo. Native darwin landings resolve via
+// their <root>/.tfm-info/<name>.trashinfo sidecar (see fsutil's
+// trashInfoPathForTrashFile). No home fallback when the sibling exists but is
+// unreadable — a home entry with the same basename belongs to a different file,
+// and restoring the per-mount file to the home file's Path= would misplace it.
+// Home lookup serves bare names (backwards compat) only.
+export const trashOrigPathForFile = async (
+  trashFilePath: string,
+  platform: string = process.platform,
+): Promise<string | null> => {
+  const sibling = trashInfoPathForTrashFile(trashFilePath, platform);
   if (sibling) {
     try {
       return await readFile(sibling, "utf8").then(parseTrashOrig);
@@ -136,13 +143,20 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
   const trashPaths = (paths: string[]): Promise<void> => {
     // network shares have no usable trash: xdgTrashMove would write a LOCAL
     // .trashinfo pointing at a FUSE path that dies on unmount (unrestorable,
-    // remote file gone) — refuse instead of pretending it worked
-    if (paths.some((p) => isNetworkPath(p, platform))) {
-      sink.notify("Trash isn't available on network locations", "trash", "error");
-      return Promise.resolve();
-    }
+    // remote file gone) — refuse instead of pretending it worked. Awaited on
+    // darwin so a cold mount-table cache can't let a share through.
+    const veto = async (): Promise<boolean> => {
+      for (const p of paths) {
+        if (await isNetworkPathAsync(p, platform)) return true;
+      }
+      return false;
+    };
     if (vetoedByPlugin("trash", paths)) return Promise.resolve();
     const run = queue.enqueue(async () => {
+      if (await veto()) {
+        sink.notify("Trash isn't available on network locations", "trash", "error");
+        return;
+      }
       const units: UndoUnit[] = [];
       const redos: UndoUnit[] = [];
       const dUnits: UndoStep[] = [];
@@ -159,7 +173,7 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
           const from = path.join(path.dirname(loc), hit);
           units.push(async () => {
             await safeRestoreMove(from, p);
-            await rmTrashInfoForPath(from, sink.log?.bind(sink));
+            await rmTrashInfoForPath(from, sink.log?.bind(sink), platform);
           });
           dUnits.push({ op: "restore-move", from, to: p });
           dUnits.push({ op: "rm-trashinfo", name: hit, path: from });
@@ -210,26 +224,19 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
       let ok = 0;
       const failWhy = new Set<string>();
       for (const src of paths) {
-        const orig = await trashOrigPathForFile(src);
+        const orig = await trashOrigPathForFile(src, platform);
         if (!orig) {
-          // darwin: Finder-trashed files lack .trashinfo — try Finder Put Back
-          if (isDarwin(platform)) {
-            const putBack = await darwinTrashPutBack([src]);
-            if (putBack) {
-              ok++;
-              continue;
-            }
-            failWhy.add("no trashinfo (Finder-trashed — use Finder Put Back)");
-          } else {
-            failWhy.add("no trashinfo");
-          }
+          // No recorded origin: Finder-trashed items have no "Put Back" API
+          // (the old osascript did not compile and claimed success anyway), so
+          // this is an honest failure — never a success toast with no move.
+          failWhy.add(isDarwin(platform) ? "no recorded origin (Finder or an older tfm version)" : "no trashinfo");
           continue;
         }
         try {
           // safeRestoreMove owns the occupied-target bump (never clobbers)
           // and returns the final dest for the journal + cleanup below
           const restoredDest = await safeRestoreMove(src, orig);
-          await rmTrashInfoForPath(src, sink.log?.bind(sink));
+          await rmTrashInfoForPath(src, sink.log?.bind(sink), platform);
           const rid = fileIdOf(restoredDest);
           // undo = re-trash the restored file. The actual trash landing path is
           // generated at undo time (xdgTrashMove picks a name on collision),
@@ -260,9 +267,9 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
                 sink.log?.(`redo restore ${restoredDest}: nothing to redo (undo skipped)`);
                 return;
               }
-              const back = await trashOrigPathForFile(loc);
+              const back = await trashOrigPathForFile(loc, platform);
               await safeRestoreMove(loc, back ?? restoredDest);
-              await rmTrashInfoForPath(loc, sink.log?.bind(sink));
+              await rmTrashInfoForPath(loc, sink.log?.bind(sink), platform);
             } catch (err) {
               sink.log?.(`redo restore ${restoredDest}: ${fsErrText(err)}`);
             }
@@ -332,7 +339,7 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
         try {
           if (dp) await rmTreeProgress(p, dp.sink);
           else await rm(p, { recursive: true });
-          await rmTrashInfoForPath(p, sink.log?.bind(sink));
+          await rmTrashInfoForPath(p, sink.log?.bind(sink), platform);
           ok++;
         } catch (err) {
           // cancel raced the last file: the checkpoint threw, not the fs
@@ -354,7 +361,7 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
             if (sudoOk) {
               try {
                 await sudoRm(p);
-                await rmTrashInfoForPath(p, sink.log?.bind(sink));
+                await rmTrashInfoForPath(p, sink.log?.bind(sink), platform);
                 ok++;
                 continue;
               } catch (sudoErr) {
@@ -409,6 +416,11 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
         emit("empty", []);
         return;
       }
+      // a native-darwin root holds tfm's .tfm-info sidecar dir NEXT TO the
+      // entries: never an item to delete, and stale sidecars (landing gone) are
+      // pruned here so the metadata can't outlive what it describes
+      pruneTrashMeta(homeFiles, platform);
+      names = names.filter((k) => !isTrashMetaItem(k, platform));
       const items = names.map((k) => path.join(homeFiles, k));
       // per-mount trashes ($topdir/.Trash-$uid) accumulate entries with no
       // other UI path to empty them — include every mounted one. Extra roots
@@ -430,7 +442,11 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
           continue;
         }
         try {
-          for (const k of await readdir(dir)) items.push(path.join(dir, k));
+          pruneTrashMeta(dir, platform);
+          for (const k of await readdir(dir)) {
+            if (isTrashMetaItem(k, platform)) continue;
+            items.push(path.join(dir, k));
+          }
         } catch {
           // unreadable extra root — skip it, home items still empty
         }

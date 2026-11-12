@@ -1,6 +1,8 @@
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { isWithinOrEqual } from "./fsutil";
-import { DARWIN_NETWORK_ROOT, isDarwin } from "./darwin";
+import { DARWIN_NETWORK_ROOT, isDarwin, parseMountTable, type DarwinMount } from "./darwin";
 
 // --- Network locations: pure primitives for the gvfs bridge. tfm does not
 // implement a remote VFS — `gio mount` mounts the share through GVFS and the
@@ -10,6 +12,10 @@ import { DARWIN_NETWORK_ROOT, isDarwin } from "./darwin";
 
 // schemes `gio mount` can handle out of the box
 export const NETWORK_SCHEMES = ["sftp", "ssh", "ftp", "smb", "dav", "davs", "nfs", "afp", "mtp", "gphoto2"] as const;
+
+// schemes Finder/`open` can actually mount on macOS: /Volumes targets only
+// exist for these, so accepting a gvfs-only scheme would fail after prompting
+export const DARWIN_NETWORK_SCHEMES = ["smb", "afp", "nfs"] as const;
 
 export type ServerInput = { uri: string; label: string };
 
@@ -32,11 +38,83 @@ export const gvfsRoot = (platform: string = process.platform): string => {
   return `/run/user/${uid}/gvfs`;
 };
 
-// darwin always false: /Volumes mixes local USB + smb shares (indistinguishable
-// by path), and both deserve live watchers + volume-trash behavior — the smb
-// share list comes from the mount table (parseSmbMounts), not the path gate
-export const isNetworkPath = (p: string, platform: string = process.platform): boolean =>
-  isDarwin(platform) ? false : isWithinOrEqual(p, gvfsRoot(platform));
+// fstypes that mount from the network on macOS: a /Volumes target with one of
+// these is a share; a local USB volume is apfs/exfat/hfs and stays trashable.
+const DARWIN_NETWORK_FSTYPES = new Set(["smbfs", "afpfs", "nfs"]);
+
+// is `p` inside a mount-table network share? Pure so tests pin the darwin
+// branch without shelling out.
+export const isDarwinNetworkPath = (p: string, mounts: DarwinMount[]): boolean => {
+  if (!isWithinOrEqual(p, DARWIN_NETWORK_ROOT)) return false;
+  return mounts.some(
+    (m) =>
+      DARWIN_NETWORK_FSTYPES.has(m.fstype) &&
+      (m.target === DARWIN_NETWORK_ROOT || m.target.startsWith(`${DARWIN_NETWORK_ROOT}/`)) &&
+      isWithinOrEqual(p, m.target),
+  );
+};
+
+// `mount` is cheap but this gate runs per trash op and per watcher sync, so
+// the table is sampled at most once per window. The probe is ASYNC: a hung
+// autofs/network mount must never block the render loop (isNetworkPath is
+// called from the watcher sync path). A cold cache answers "local" and warms
+// in the background; boot's loadSystemPlaces() warms it before user actions.
+const DARWIN_MOUNT_CACHE_MS = 2000;
+let darwinMountCache: { at: number; text: string } | null = null;
+let darwinMountWarm: Promise<void> | null = null;
+
+export const resetNetworkMountCache = (): void => {
+  darwinMountCache = null;
+  darwinMountWarm = null;
+};
+
+export const warmNetworkMountCache = (): Promise<void> => {
+  const now = Date.now();
+  if (darwinMountCache && now - darwinMountCache.at < DARWIN_MOUNT_CACHE_MS) return Promise.resolve();
+  if (darwinMountWarm) return darwinMountWarm;
+  darwinMountWarm = (async () => {
+    let text = "";
+    try {
+      text = String((await promisify(execFile)("mount", [], { timeout: 5000 })).stdout ?? "");
+    } catch {}
+    darwinMountCache = { at: Date.now(), text };
+  })().finally(() => {
+    darwinMountWarm = null;
+  });
+  return darwinMountWarm;
+};
+
+const darwinMountText = (): string => {
+  const now = Date.now();
+  if (darwinMountCache && now - darwinMountCache.at < DARWIN_MOUNT_CACHE_MS) return darwinMountCache.text;
+  // never spawn synchronously on this path — warm asynchronously and answer
+  // from the last snapshot (empty = not a network path yet)
+  void warmNetworkMountCache();
+  return darwinMountCache?.text ?? "";
+};
+
+// Linux: gvfs FUSE dirs. Darwin: /Volumes mixes local USB + smb/afp/nfs shares,
+// and only the mount table can tell them apart (USB stays trashable, shares
+// refuse trash and skip the watcher). `mountText` is the test seam.
+export const isNetworkPath = (p: string, platform: string = process.platform, mountText?: string): boolean => {
+  if (!isDarwin(platform)) return isWithinOrEqual(p, gvfsRoot(platform));
+  // cheap gate before the mount-table sample: only /Volumes targets can be shares
+  if (!isWithinOrEqual(p, DARWIN_NETWORK_ROOT)) return false;
+  return isDarwinNetworkPath(p, parseMountTable(mountText ?? darwinMountText()));
+};
+
+// correctness lane for trash: await the (async) mount-table probe once so a
+// trashed share can never slip through a cold cache
+export const isNetworkPathAsync = async (
+  p: string,
+  platform: string = process.platform,
+  mountText?: string,
+): Promise<boolean> => {
+  if (!isDarwin(platform)) return isNetworkPath(p, platform, mountText);
+  if (!isWithinOrEqual(p, DARWIN_NETWORK_ROOT)) return false;
+  if (mountText === undefined) await warmNetworkMountCache();
+  return isNetworkPath(p, platform, mountText);
+};
 
 const prettify = (uri: string): string => {
   const withoutScheme = uri.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
@@ -71,6 +149,23 @@ export const parseServerInput = (raw: string): ServerInput | null => {
   let rest = scp[3] ?? "";
   if (rest && !rest.startsWith("/")) rest = `/${rest}`;
   return { uri: `sftp://${user ? `${user}@` : ""}${host}${rest || "/"}`, label: host };
+};
+
+// schemes the platform's mounter can turn into a navigable local path.
+export const networkSchemesFor = (platform: string = process.platform): readonly string[] =>
+  isDarwin(platform) ? DARWIN_NETWORK_SCHEMES : NETWORK_SCHEMES;
+
+export const uriScheme = (uri: string): string => uri.slice(0, Math.max(0, uri.indexOf(":"))).toLowerCase();
+
+export const isMountableUri = (uri: string, platform: string = process.platform): boolean =>
+  (networkSchemesFor(platform) as readonly string[]).includes(uriScheme(uri));
+
+// Platform-aware parse: on darwin only smb/afp/nfs survive (scp-like input
+// becomes sftp and is rejected there). Linux keeps parseServerInput's set.
+export const parseMountableServerInput = (raw: string, platform: string = process.platform): ServerInput | null => {
+  const parsed = parseServerInput(raw);
+  if (!parsed || !isMountableUri(parsed.uri, platform)) return null;
+  return parsed;
 };
 
 export const buildMountArgs = (uri: string): string[] => ["mount", uri];

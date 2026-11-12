@@ -12,6 +12,11 @@ export type CopiedFiles = { op: "copy" | "move"; paths: string[] };
 
 export const isDarwin = (platform: string = process.platform): boolean => platform === "darwin";
 
+// macOS bundles are directories on disk but single launchable objects to
+// Finder. Shared by every open path so double-click, Enter and the context
+// menu agree.
+export const isAppBundle = (p: string): boolean => /\.(app|pkg)$/i.test(p);
+
 // absolute diskutil (ships at /usr/sbin, outside minimal PATH)
 export const diskutilBin = (which: (bin: string) => string | null = Bun.which): string =>
   which("diskutil") ?? "/usr/sbin/diskutil";
@@ -73,19 +78,30 @@ export const findTrashedPath = (
   exists: (p: string) => boolean = () => false,
   readdir: (dir: string) => string[] = () => [],
   mtimeMs: (p: string) => number | null = () => null,
+  // snapshot of the root before the trash op: a pre-existing same-name entry
+  // must never be mistaken for THIS file's landing (restoring it to the new
+  // path would move the wrong file).
+  before?: ReadonlySet<string>,
+  sinceMs?: number,
 ): string | null => {
   const direct = `${trashRoot}/${base}`;
   try {
-    if (exists(direct)) return direct;
+    if (!before?.has(base) && exists(direct)) return direct;
   } catch {}
-  // collision rename keeps base as a prefix ("a.txt 12-04-44-650.txt"):
-  // take the newest sibling with that prefix
+  // collision rename keeps the base as a prefix ("a.txt 12-04-44-650.txt");
+  // Finder may use "<stem> 2.<ext>". Only names that appeared during this op
+  // qualify when a snapshot/timestamp is available.
+  const stem = base.replace(/\.[^.]+$/, "");
+  const prefixed = (name: string): boolean =>
+    name.startsWith(`${base} `) || (stem !== base && name.startsWith(`${stem} `));
   try {
     let best: string | null = null;
     let bestMs = -1;
     for (const name of readdir(trashRoot)) {
-      if (name !== base && !name.startsWith(`${base} `)) continue;
+      if (name === base || !prefixed(name)) continue;
+      if (before?.has(name)) continue;
       const ms = mtimeMs(`${trashRoot}/${name}`) ?? -1;
+      if (sinceMs !== undefined && ms >= 0 && ms < sinceMs - 5_000) continue;
       if (ms >= bestMs) {
         bestMs = ms;
         best = `${trashRoot}/${name}`;
@@ -114,6 +130,18 @@ export const darwinTrashMove = async (
 ): Promise<string> => {
   const base = path.basename(absSrc);
   const roots = opts?.trashRoots ?? [path.join(os.homedir(), ".Trash")];
+  const started = Date.now();
+  const before = new Map<string, Set<string>>();
+  const readdir = opts?.readdir;
+  if (readdir) {
+    for (const root of roots) {
+      try {
+        before.set(root, new Set(readdir(root)));
+      } catch {
+        before.set(root, new Set());
+      }
+    }
+  }
   const lanes: Array<[string, string[]]> = [
     [TRASH_CLI, trashCliArgs(absSrc)],
     ["/usr/bin/osascript", jxaTrashArgs(absSrc)],
@@ -124,12 +152,15 @@ export const darwinTrashMove = async (
       const r = await run(bin, args);
       if (r.code !== 0) continue;
       for (const root of roots) {
-        const hit = findTrashedPath(root, base, opts?.exists, opts?.readdir, opts?.mtimeMs);
+        const hit = findTrashedPath(root, base, opts?.exists, opts?.readdir, opts?.mtimeMs, before.get(root), started);
         if (hit) return hit;
       }
-      // trashed but unlocatable (raced listing): guess home so undo at least
-      // aims at the right root instead of silently pairing nothing
-      return `${roots[0] ?? path.join(os.homedir(), ".Trash")}/${base}`;
+      // trashed but unlocatable (raced listing): never guess a path that
+      // already existed — that would overwrite an unrelated entry's origin and
+      // restore the wrong file. Throwing is safer than a wrong undo pairing.
+      const guess = `${roots[0] ?? path.join(os.homedir(), ".Trash")}/${base}`;
+      if (!(opts?.exists?.(guess) ?? false)) return guess;
+      throw new Error(`trash landed but could not be located: ${base}`);
     } catch {}
   }
   throw new Error(`trash failed for ${base} (no native lane worked)`);
@@ -140,17 +171,33 @@ export const darwinTrashMove = async (
 // removable = mounted under /Volumes (macOS convention). ---
 export type DiskVolume = { device: string; mountPoint: string; volumeName: string };
 
-// one <dict>…</dict> chunk → volume when it carries a MountPoint; keys arrive
-// DeviceIdentifier, MountPoint, VolumeName in that order but each is matched
-// independently so reordered payloads still parse.
+// one <dict>…</dict> chunk → volume when it carries a VolumeName (and a
+// DeviceIdentifier); MountPoint is optional because an UNMOUNTED volume still
+// belongs in the sidebar as a Mount row. keys arrive DeviceIdentifier,
+// MountPoint, VolumeName in that order but each is matched independently so
+// reordered payloads still parse.
+const PSEUDO_VOLUME_NAMES = new Set([
+  "Recovery",
+  "VM",
+  "Preboot",
+  "Update",
+  "xarts",
+  "booter",
+  "iSCPreboot",
+  "Hardware",
+]);
+
 export const parseDiskutilListPlist = (xml: string): DiskVolume[] => {
   const out: DiskVolume[] = [];
   for (const chunk of xml.split("<dict>")) {
-    const mp = chunk.match(/<key>MountPoint<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
-    if (!mp) continue;
-    const device = chunk.match(/<key>DeviceIdentifier<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "";
-    const volumeName = chunk.match(/<key>VolumeName<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "";
-    out.push({ device: device ? `/dev/${device}` : "", mountPoint: mp, volumeName });
+    const volumeName = chunk.match(/<key>VolumeName<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+    const mp = chunk.match(/<key>MountPoint<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "";
+    // pseudo volumes (Recovery/VM/Preboot…) are never user-mountable entries;
+    // their mounted siblings are already dropped by target in darwinMountEntries
+    if (!volumeName || PSEUDO_VOLUME_NAMES.has(volumeName)) continue;
+    const device = chunk.match(/<key>DeviceIdentifier<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+    if (!device) continue;
+    out.push({ device: `/dev/${device}`, mountPoint: mp, volumeName });
   }
   return out;
 };
@@ -183,22 +230,26 @@ export const parseMountTable = (text: string): DarwinMount[] => {
 };
 
 const MOUNT_SKIP_PREFIX = ["/System/", "/private/", "/dev", "/Library/Developer/"];
-const MOUNT_SKIP_FSTYPE = new Set(["devfs", "autofs", "nfs", "smbfs"]);
+const MOUNT_SKIP_FSTYPE = new Set(["devfs", "autofs", "nfs", "smbfs", "afpfs", "devicefs", "fskit"]);
 
 export type DarwinMountEntry = { label: string; target: string; removable: boolean; device: string };
 
 // diskutil volumes preferred (real VolumeName labels); mount-table fallback
 // covers diskutil failure. System/private/dev mounts never list; / stays the
-// "This Device" row owned by places.ts, not a device entry.
+// "This Device" row owned by places.ts, not a device entry. Volumes with a
+// name but no MountPoint keep target "" + device so the existing Mount action
+// (diskutilMountArgv) becomes reachable for unmounted drives.
 export const darwinMountEntries = (volumes: DiskVolume[], mounts: DarwinMount[]): DarwinMountEntry[] => {
   const byTarget = new Map(mounts.map((m) => [m.target, m]));
   const out: DarwinMountEntry[] = [];
   const push = (label: string, target: string, device: string): void => {
-    if (!target || target === "/") return;
-    if (MOUNT_SKIP_PREFIX.some((p) => target.startsWith(p))) return;
-    const m = byTarget.get(target);
+    if (target === "/") return;
+    if (target && MOUNT_SKIP_PREFIX.some((p) => target.startsWith(p))) return;
+    if (!target && !label) return;
+    const m = target ? byTarget.get(target) : undefined;
     if (m && MOUNT_SKIP_FSTYPE.has(m.fstype)) return;
-    if (out.some((o) => o.target === target)) return;
+    const key = target || device || label;
+    if (out.some((o) => (o.target || o.device || o.label) === key)) return;
     out.push({
       label: label || target.split("/").pop() || target,
       target,
@@ -221,7 +272,10 @@ export const darwinMountEntries = (volumes: DiskVolume[], mounts: DarwinMount[])
 export const darwinVolumeTrash = (mountTarget: string, uid: number): string => `${mountTarget}/.Trashes/${uid}`;
 
 // diskutil device ops for the sidebar mount/eject rows
-export const diskutilMountArgv = (device: string): string[] => ["mountDisk", device];
+export const diskutilMountArgv = (device: string): string[] =>
+  // a volume slice (`disk3s1`) is mounted directly; `mountDisk` is for whole
+  // disks and would mount every volume on the device
+  /\ds\d+$/.test(device) ? ["mount", device] : ["mountDisk", device];
 export const diskutilUnmountArgv = (target: string): string[] => ["unmount", target];
 export const diskutilEjectArgv = (device: string): string[] => ["eject", device];
 
@@ -232,11 +286,27 @@ export const DARWIN_NETWORK_ROOT = "/Volumes";
 
 export type SmbMount = { target: string; uri: string; label: string };
 
-// mount-table rows with smbfs fstype: device is //user@host/share
+// mount-table rows for network filesystems: smbfs/afpfs devices look like
+// `//user@host/share`, nfs like `host:/export/path`. The URI never carries the
+// connecting user (the table does not expose it), so comparisons normalize it
+// away. Name kept for callers/tests; it covers all schemes `open` can mount.
 export const parseSmbMounts = (mounts: DarwinMount[]): SmbMount[] => {
   const out: SmbMount[] = [];
   for (const m of mounts) {
-    if (m.fstype !== "smbfs") continue;
+    if (m.fstype === "nfs") {
+      const dev = m.device.replace(/^\/\//, "");
+      const colon = dev.indexOf(":");
+      if (colon <= 0) continue;
+      const host = dev.slice(0, colon).toLowerCase();
+      const sharePath = dev.slice(colon + 1);
+      if (!host) continue;
+      const uri = `nfs://${host}${sharePath.startsWith("/") ? "" : "/"}${sharePath}`;
+      const label = sharePath.split("/").filter(Boolean).pop() ?? host;
+      out.push({ target: m.target, uri, label: sharePath ? `${host}/${label}` : host });
+      continue;
+    }
+    if (m.fstype !== "smbfs" && m.fstype !== "afpfs") continue;
+    const scheme = m.fstype === "afpfs" ? "afp" : "smb";
     const dev = m.device.replace(/^\/\//, "");
     const at = dev.indexOf("@");
     const hostShare = at >= 0 ? dev.slice(at + 1) : dev;
@@ -244,7 +314,7 @@ export const parseSmbMounts = (mounts: DarwinMount[]): SmbMount[] => {
     const host = (slash >= 0 ? hostShare.slice(0, slash) : hostShare).toLowerCase();
     const share = slash >= 0 ? hostShare.slice(slash + 1) : "";
     if (!host) continue;
-    const uri = `smb://${host}${share ? `/${share}` : "/"}`;
+    const uri = `${scheme}://${host}${share ? `/${share}` : "/"}`;
     out.push({ target: m.target, uri, label: share ? `${host}/${share}` : host });
   }
   return out;
@@ -312,16 +382,19 @@ export const readFinderTags = async (deps: TagReadDeps, p: string): Promise<stri
 export type TagWriteDeps = StarTagDeps & { platform?: string };
 
 // apply one `tag` CLI argv per target. No-op off darwin or when the CLI is
-// absent; each failure is swallowed (best-effort — never throws).
-export const writeFinderTags = (deps: TagWriteDeps, argvs: string[][]): void => {
-  if (!isDarwin(deps.platform ?? process.platform)) return;
+// absent; each failure is swallowed (best-effort — never throws). Returns
+// false when nothing was written (CLI missing / wrong platform) so the tag
+// editor can say so instead of optimistically showing an edit that never landed.
+export const writeFinderTags = (deps: TagWriteDeps, argvs: string[][]): boolean => {
+  if (!isDarwin(deps.platform ?? process.platform)) return false;
   const tagBin = deps.which("tag");
-  if (!tagBin) return;
+  if (!tagBin) return false;
   for (const args of argvs) {
     try {
       void deps.exec(tagBin, args);
     } catch {}
   }
+  return true;
 };
 
 export type TagMergeOp = {
@@ -461,38 +534,28 @@ export const parseDarwinFileUrls = (out: string, fileUriToPath: (u: string) => s
   return paths.length ? { op: "copy", paths: [...new Set(paths)] } : null;
 };
 
-// --- Trash restore (darwin): Finder Put Back via osascript for files
-// trashed outside tfm (no .trashinfo sidecar). Returns true when handled.
-// Same argv-passed-path pattern as finderDeleteArgs: the path is a script
-// parameter, never interpolated into the AppleScript source.
-export const darwinTrashPutBack = async (paths: string[]): Promise<boolean> => {
-  if (!isDarwin()) return false;
-  for (const p of paths) {
-    try {
-      await Bun.spawn(
-        [
-          "/usr/bin/osascript",
-          "-e",
-          "on run {f}",
-          "-e",
-          'tell application "Finder" to move POSIX file f to original location',
-          "-e",
-          "end run",
-          "--",
-          p,
-        ],
-        {
-          stdout: "ignore",
-          stderr: "ignore",
-          stdin: "ignore",
-          timeout: 10_000,
-        },
-      ).exited;
-    } catch {
-      return false;
-    }
-  }
-  return true;
+// --- Native-trash origin sidecars (darwin): the native trash lanes (/usr/bin/
+// trash → JXA → Finder delete) land entries at the trash root with NO
+// .trashinfo — Finder stays the bookkeeper — so tfm records the original path
+// itself in a hidden metadata dir NEXT TO the landing:
+//   ~/.Trash/<name>                  → ~/.Trash/.tfm-info/<name>.trashinfo
+//   /Volumes/X/.Trashes/<uid>/<name> → …/.Trashes/<uid>/.tfm-info/<name>.trashinfo
+// XDG-shaped roots (<root>/files/, used on Linux and whenever $XDG_DATA_HOME
+// overrides the darwin root) keep their standard <root>/info sidecar. The body
+// is the XDG [Trash Info] format, so the same Path= parser reads it.
+//
+// Finder-trashed items (trashed outside tfm) have no origin recorded anywhere:
+// Finder exposes no "Put Back" API (`original item` is an alias property, and
+// `move … to original location` does not even compile), and no xattr or
+// .DS_Store entry carries the old path. Restore therefore reports failure for
+// them instead of claiming a move that never happened.
+export const TRASH_META_DIR = ".tfm-info";
+
+// native macOS trash root: the home trash (.Trash) or a per-volume
+// .Trashes/<uid> dir — the two shapes the native lanes land entries under
+export const isDarwinTrashRoot = (dir: string): boolean => {
+  const base = path.basename(dir);
+  return base === ".Trash" || path.basename(path.dirname(dir)) === ".Trashes";
 };
 
 // --- search/shell: brew's fd is `fd` (no Debian fdfind rename); login shell

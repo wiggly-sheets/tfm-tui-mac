@@ -30,6 +30,10 @@ import {
   claimTmp,
   encodeTrashPath,
   rmTrashInfoForPath,
+  trashInfoPathForTrashFile,
+  xdgTrashMoveToRoot,
+  writeDarwinTrashInfo,
+  pruneTrashMeta,
   allTrashFilesDirs,
   countTrashItems,
   fileIdMatches,
@@ -317,6 +321,98 @@ describe("xdgTrashMove encoding", () => {
       expect(info).toContain("%20");
     } finally {
       rmSync(files, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("xdgTrashMoveToRoot collision guard", () => {
+  test("an existing files/<name> with no sidecar is never overwritten (bumps to .2)", async () => {
+    const root = mktmp("tfm-trash-guard-");
+    const src = mktmp("tfm-trash-guard-src-");
+    try {
+      W(path.join(root, "files", "clash.txt"), "already-there");
+      W(path.join(src, "clash.txt"), "incoming");
+      const loc = await xdgTrashMoveToRoot(path.join(src, "clash.txt"), root, undefined, "linux");
+      expect(loc).toBe(path.join(root, "files", "clash.txt.2"));
+      expect(readFileSync(path.join(root, "files", "clash.txt"), "utf8")).toBe("already-there");
+      expect(readFileSync(loc, "utf8")).toBe("incoming");
+      expect(readFileSync(path.join(root, "info", "clash.txt.2.trashinfo"), "utf8")).toContain("Path=");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(src, { recursive: true, force: true });
+    }
+  });
+
+  test("darwin native root keeps Finder's flat layout: entry at root, origin sidecar in .tfm-info", async () => {
+    const root = mktmp("tfm-trash-native-");
+    const src = mktmp("tfm-trash-native-src-");
+    try {
+      const trashRoot = path.join(root, ".Trash");
+      mkdirSync(trashRoot, { recursive: true });
+      const source = path.join(src, "note.txt");
+      W(source, "data");
+      const loc = await xdgTrashMoveToRoot(source, trashRoot, undefined, "darwin");
+      expect(loc).toBe(path.join(trashRoot, "note.txt"));
+      // no XDG files/ or info/ split inside a native darwin trash
+      expect(existsSync(path.join(trashRoot, "files"))).toBe(false);
+      expect(existsSync(path.join(trashRoot, "info"))).toBe(false);
+      const sidecar = path.join(trashRoot, ".tfm-info", "note.txt.trashinfo");
+      expect(trashInfoPathForTrashFile(loc, "darwin")).toBe(sidecar);
+      const info = readFileSync(sidecar, "utf8");
+      expect(info).toContain("[Trash Info]");
+      expect(info).toContain(`Path=${encodeTrashPath(source)}`);
+      expect(info).toMatch(/DeletionDate=\d{4}-\d{2}-\d{2}T/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(src, { recursive: true, force: true });
+    }
+  });
+
+  test("writeDarwinTrashInfo records the origin next to a native landing (encoded Path=)", async () => {
+    const root = mktmp("tfm-trash-origin-");
+    try {
+      const trashRoot = path.join(root, ".Trash");
+      mkdirSync(trashRoot, { recursive: true });
+      const landing = path.join(trashRoot, "a b.txt");
+      W(landing, "x");
+      await writeDarwinTrashInfo(landing, "/orig/a b.txt", "darwin");
+      const info = readFileSync(path.join(trashRoot, ".tfm-info", "a b.txt.trashinfo"), "utf8");
+      expect(info).toContain("[Trash Info]");
+      expect(info).toContain(`Path=${encodeTrashPath("/orig/a b.txt")}`);
+      expect(info).toContain("%20");
+      expect(trashInfoPathForTrashFile(landing, "darwin")).toBe(path.join(trashRoot, ".tfm-info", "a b.txt.trashinfo"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("writeDarwinTrashInfo skips a landing that is not there (guessed path)", async () => {
+    const root = mktmp("tfm-trash-guess-");
+    try {
+      const trashRoot = path.join(root, ".Trash");
+      mkdirSync(trashRoot, { recursive: true });
+      await writeDarwinTrashInfo(path.join(trashRoot, "ghost.txt"), "/orig/ghost.txt", "darwin");
+      expect(existsSync(path.join(trashRoot, ".tfm-info", "ghost.txt.trashinfo"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("pruneTrashMeta drops sidecars whose landing vanished, keeps live ones", () => {
+    const root = mktmp("tfm-trash-prune-");
+    try {
+      W(path.join(root, "live.txt"), "x");
+      W(path.join(root, ".tfm-info", "live.txt.trashinfo"), "[Trash Info]\nPath=/x/live.txt\n");
+      W(path.join(root, ".tfm-info", "gone.txt.trashinfo"), "[Trash Info]\nPath=/x/gone.txt\n");
+      pruneTrashMeta(root, "darwin");
+      expect(existsSync(path.join(root, ".tfm-info", "live.txt.trashinfo"))).toBe(true);
+      expect(existsSync(path.join(root, ".tfm-info", "gone.txt.trashinfo"))).toBe(false);
+      // Linux has no .tfm-info dir: pruning is a no-op there
+      W(path.join(root, ".tfm-info", "gone2.txt.trashinfo"), "[Trash Info]\nPath=/x/gone2.txt\n");
+      pruneTrashMeta(root, "linux");
+      expect(existsSync(path.join(root, ".tfm-info", "gone2.txt.trashinfo"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
