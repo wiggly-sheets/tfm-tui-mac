@@ -83,6 +83,7 @@ export const wireFileops = (deps: {
     uiStyle,
     byId,
     drainIconQueue,
+    termW: () => chrome.renderer.terminalWidth,
     floats: core.floats,
     setPointer,
   });
@@ -234,6 +235,7 @@ export const wireFileops = (deps: {
     colors: themeGet,
     uiStyle: () => core.config.ui.uiStyle,
     byId: core.lookup.byId,
+    termW: () => chrome.renderer.terminalWidth,
     // NO readiness gate: the old `!!renderer.resolution` predicate only became
     // true when the terminal answered OpenTUI's pixel-size query, so on the
     // Linux console / tmux Empty Trash and Delete Forever silently no-op'd.

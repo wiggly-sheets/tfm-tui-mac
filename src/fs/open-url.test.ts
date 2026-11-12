@@ -76,4 +76,21 @@ describe("makeUrlOpener", () => {
     expect(spawns[2]?.cmd).toBe("/usr/bin/osascript");
     expect(notifies).toEqual([]);
   });
+
+  test("darwin refuses a vanished file before spawning open (honest toast)", () => {
+    const spawns: string[] = [];
+    const notifies: Array<[string, string?, string?]> = [];
+    const { openUrl } = makeUrlOpener({
+      spawn: ((cmd: string) => {
+        spawns.push(cmd);
+        return { unref: () => {} };
+      }) as never,
+      notify: ((msg: string, title?: string, level?: string) => void notifies.push([msg, title, level])) as never,
+      platform: "darwin",
+    });
+    openUrl("/definitely/missing/tfm-file.txt");
+    expect(spawns).toEqual([]);
+    expect(notifies[0]?.[0]).toContain("no such file or directory");
+    expect(notifies[0]?.[2]).toBe("error");
+  });
 });

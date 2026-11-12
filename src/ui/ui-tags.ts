@@ -5,6 +5,7 @@ import { destroyChildren } from "../lib/uiutil";
 import { applySurface, btnSurface, rowSurface, type UiStyle } from "./style";
 import type { Theme } from "../config/config";
 import { isDarwin, mergeTagChange, readFinderTags, tagAddArgs, tagRemoveArgs, writeFinderTags } from "../fs/darwin";
+import { starredRegistryAdd, starredRegistryRemove } from "../fs/recent";
 import { hoverEvents } from "./ui-slots";
 import type { MaybeNode, NodeLike } from "../lib/node-like";
 import type { PointerStyle } from "../lib/pointer";
@@ -32,7 +33,7 @@ export type TagsCtx = {
 const read = (p: string): Promise<string[]> =>
   readFinderTags({ run: (bin, args) => execFileP(bin, args, { timeout: 10_000 }) }, p);
 
-const write = (argvs: string[][]): void =>
+const write = (argvs: string[][]): boolean =>
   writeFinderTags(
     {
       which: (bin) => Bun.which(bin),
@@ -51,6 +52,16 @@ export const mountTagsSection = (ctx: TagsCtx, panel: NodeLike, paths: string[])
   let tags: string[] = [];
 
   panel.add(Box({ width: "100%", height: 1, paddingLeft: 1 }, Text({ content: " tags", fg: colors.sidebarFgMuted })));
+  // without the CLI the binary-plist attribute can't be written at all (see
+  // writeFinderTags) — say so instead of letting edits no-op silently
+  if (!Bun.which("tag")) {
+    panel.add(
+      Text({
+        content: " tag CLI not installed (brew install tag) — edits are disabled",
+        fg: colors.sidebarFgMuted,
+      }),
+    );
+  }
   const list = Box({ id: TAG_LIST_ID, width: "100%", flexDirection: "column" });
   panel.add(list);
 
@@ -105,17 +116,29 @@ export const mountTagsSection = (ctx: TagsCtx, panel: NodeLike, paths: string[])
   };
 
   const removeTag = (tag: string): void => {
+    // CLI absent: the write is a no-op, so neither the optimistic list nor the
+    // mdls merge may claim the removal happened
+    if (!write(paths.map((p) => tagRemoveArgs(tag, p)))) {
+      renderList();
+      return;
+    }
     tags = tags.filter((t) => t !== tag);
-    write(paths.map((p) => tagRemoveArgs(tag, p)));
     renderList();
+    // the starred registry IS the Starred Finder tag on macOS (see
+    // syncStarTag): removing the tag must also leave the Starred view
+    if (tag === "Starred") for (const p of paths) starredRegistryRemove(p);
     syncAfterWrite([{ op: "remove", tag }]);
   };
 
   const addTag = (raw: string): void => {
     const tag = raw.trim();
     if (!tag) return;
+    if (!write(paths.map((p) => tagAddArgs(tag, p)))) {
+      renderList();
+      return;
+    }
     if (!tags.includes(tag)) tags = [...tags, tag].sort((a, b) => a.localeCompare(b));
-    write(paths.map((p) => tagAddArgs(tag, p)));
+    if (tag === "Starred") for (const p of paths) starredRegistryAdd(p);
     try {
       const input = ctx.byId(TAG_INPUT_ID);
       if (input) input.value = "";

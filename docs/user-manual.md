@@ -136,7 +136,7 @@ focused row does.
 | `alt+left` / `alt+right` | History back / forward |
 | `alt+home` | Go to your home folder |
 | `ctrl+l` | Edit the path bar and type a path to jump to |
-| `shift+cmd+g` | Go to Folder popup (see below) |
+| `shift+cmd+g` or `ctrl+shift+g` | Go to Folder popup (see below) |
 
 ## Default keybindings
 
@@ -195,7 +195,7 @@ them:
 | forward in history | `alt+right` | Step ahead through visited folders |
 | go home | `alt+home` | Jump to your home folder |
 | edit the path bar | `ctrl+l` | Type a path to jump to it |
-| go to folder | `shift+cmd+g` | Jump to a folder by path |
+| go to folder | `shift+cmd+g` or `ctrl+shift+g` | Jump to a folder by path |
 | connect to server | `ctrl+shift+s` | Mount a folder shared on the network |
 | move up | `up` | Step to the row above |
 | move down | `down` | Step to the row below |
@@ -323,9 +323,10 @@ The path bar at the top of each pane shows your current location.
 
 ### Go to Folder popup
 
-`shift+cmd+g` opens the **Go to Folder** popup — type any path to jump there.
-(`cmd` is the macOS Command key; on other keyboards it matches the `super`
-modifier only.)
+`shift+cmd+g` (or `ctrl+shift+g` on Linux terminals) opens the **Go to Folder** popup — type any path to jump there.
+`ctrl+shift+g` is the cross-terminal alternative (most Linux terminals cannot
+send the Command modifier). (`cmd` is the macOS Command key; on other keyboards
+it matches the `super` modifier only.)
 
 ### Tabs
 
@@ -369,8 +370,10 @@ menus work with the mouse. `invert-selection` ships unbound.
 - **New**: `ctrl+shift+n` makes a folder, `ctrl+alt+n` makes an empty file.
   Both are created inline.
 - **Trash**: `delete` moves the selection to the trash. Inside the trash view,
-  `delete` erases forever (with a confirmation), and `f2` restores. **Empty
-  Trash** is on the trash page's context menu.
+  `delete` erases forever (with a confirmation), and `f2` restores. Restore
+  covers items tfm itself trashed; files trashed by Finder have no Put Back
+  API, so use Finder's Put Back for those. **Empty Trash** is on the trash
+  page's context menu.
 - **Undo / redo**: `ctrl+z` walks back the last file changes, `ctrl+y` (or
   `ctrl+shift+z`) walks forward. `[ui] persist-undo` keeps the undo history
   across restarts.

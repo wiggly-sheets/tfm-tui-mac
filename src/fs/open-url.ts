@@ -36,7 +36,7 @@ export const spawnOpenTarget = (
   // check existence before spawning — on darwin `open` exits 0 even for missing
   // files, which would silently swallow the error. Skip for URLs (have scheme).
   const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(target);
-  if ((!darwin || reveal) && !isUrl) {
+  if (!isUrl) {
     try {
       const { statSync } = require("node:fs");
       if (!statSync(finalTarget).isFile() && !statSync(finalTarget).isDirectory()) {
@@ -90,8 +90,9 @@ export const makeUrlOpener = (deps: UrlOpenerDeps) => {
   const platform = deps.platform ?? process.platform;
   const bin = openerBin(platform);
   const failToast = (url: string, err: unknown): void => {
+    const reason = err instanceof Error && err.message ? err.message : `is ${bin} installed?`;
     try {
-      deps.notify(`Couldn't open ${url} — is ${bin} installed?`, "open", "error");
+      deps.notify(`Couldn't open ${url} — ${reason}`, "open", "error");
     } catch {}
     deps.log?.(`open-url failed for ${url}: ${err instanceof Error ? err.message : String(err)}`);
   };

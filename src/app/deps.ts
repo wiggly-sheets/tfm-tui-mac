@@ -23,6 +23,9 @@ export type SystemPkgSpec = {
   bins: string[];
   // Package names per package manager (key = pkg manager id)
   pkgs: Partial<Record<PkgManagerId, string>>;
+  // tools only one platform uses: rows and install plans skip the other side
+  // (a Linux apt host has no `tag`; macOS never mounts through gio)
+  platforms?: Array<"darwin" | "linux">;
 };
 
 export type PkgManagerId = "brew" | "apt" | "pacman" | "dnf" | "zypper" | "apk";
@@ -132,6 +135,7 @@ export const OPTIONAL_PACKAGES: SystemPkgSpec[] = [
       zypper: "glib2",
       apk: "glib",
     },
+    platforms: ["linux"],
   },
   {
     id: "zip",
@@ -169,8 +173,13 @@ export const OPTIONAL_PACKAGES: SystemPkgSpec[] = [
     pkgs: {
       brew: "tag",
     },
+    platforms: ["darwin"],
   },
 ];
+
+// a spec belongs on this platform when it names none (shared tool) or lists it
+export const pkgAvailableOn = (pkg: SystemPkgSpec, platform: string = process.platform): boolean =>
+  !pkg.platforms || (pkg.platforms as readonly string[]).includes(platform);
 
 export const PACKAGE_MANAGERS: PkgManagerSpec[] = [
   {
@@ -260,7 +269,10 @@ export const checkAllPkgs = (
   platform: string = process.platform,
 ): { pm: PkgManagerSpec | null; statuses: PkgStatus[] } => {
   const pm = detectPkgManager(which, platform);
-  const statuses = OPTIONAL_PACKAGES.map((pkg) => checkPkgStatus(pkg, pm, which));
+  // platform-inapplicable tools never show a free row with a dead install plan
+  const statuses = OPTIONAL_PACKAGES.filter((pkg) => pkgAvailableOn(pkg, platform)).map((pkg) =>
+    checkPkgStatus(pkg, pm, which),
+  );
   return { pm, statuses };
 };
 
@@ -283,6 +295,7 @@ export const makeInstallPlan = (
   }
 
   const pkgsToInstall: string[] = [];
+  const notHere: string[] = [];
   const validIdsOrBins = new Set<string>();
   for (const p of OPTIONAL_PACKAGES) {
     validIdsOrBins.add(p.id);
@@ -297,6 +310,12 @@ export const makeInstallPlan = (
     const isTargeted = pickAll || normTargets.includes(pkg.id) || pkg.bins.some((b) => normTargets.includes(b));
 
     if (isTargeted) {
+      // a platform-only tool asked for on the wrong OS must say why instead of
+      // silently running the package manager with nothing to install
+      if (!pkgAvailableOn(pkg, platform)) {
+        notHere.push(pkg.id);
+        continue;
+      }
       const pkgName = pkg.pkgs[pm.id];
       if (pkgName) pkgsToInstall.push(pkgName);
     }
@@ -313,6 +332,7 @@ export const makeInstallPlan = (
   }
 
   if (pkgsToInstall.length === 0) {
+    if (notHere.length > 0) throw new Error(`${notHere.join(", ")} is not available on this platform (${platform})`);
     throw new Error("No packages to install");
   }
 

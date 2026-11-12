@@ -13,9 +13,9 @@ import { readdir } from "node:fs/promises";
 import { spawnSafe } from "../fs/spawn-safe";
 import { loadSystemPlaces } from "../fs/places";
 import { buildMountArgs, buildUnmountArgs, gvfsRoot, takeGioPrompt, type GioPrompt } from "../fs/network";
-import { diskutilBin, diskutilUnmountArgv, isDarwin, parseMountTable, parseSmbMounts } from "../fs/darwin";
+import { diskutilBin, diskutilUnmountArgv, isDarwin } from "../fs/darwin";
 import { spawnOpenTarget } from "../fs/open-url";
-import { makeNetworkActions, type GioResult } from "../fs/netmount";
+import { makeNetworkActions, type GioResult, darwinNetworkMounts, watchDarwinVolumes } from "../fs/netmount";
 import { makeMenu, MENU_W } from "../ui/ui-menu";
 import { makeChrome } from "../ui/ui-chrome";
 import { makeToolbar, toolbarItemIds, crumbItemIds } from "../ui/ui-toolbar";
@@ -30,7 +30,7 @@ import { makeIconSlider } from "../ui/icon-slider";
 import { imageProtocolFor } from "../ui/ui-slots";
 import { warmEmbeddedIcons } from "../ui/icons";
 import type { NodeLike } from "../lib/node-like";
-import { makeNotify } from "../ui/notify";
+import { clearToastRepositioners, makeNotify } from "../ui/notify";
 import { rasterSigOf } from "../ui/tty";
 import { makeSidebarAnim, makeTopbarAnim } from "../ui/ui-sidebar-anim";
 import { makeSidebarHover } from "../ui/ui-sidebar-hover";
@@ -42,7 +42,7 @@ import { makeEnsureSudo } from "../fs/elevate";
 import { upsertRecentXbel } from "../fs/recent";
 import { appForFile, makeLaunchAppAsRoot, makeOpenAsRoot } from "../fs/apps";
 import { makeDialogs } from "../ui/ui-dialogs";
-import { destroyChildren, errMessage } from "../lib/uiutil";
+import { debounced, destroyChildren, errMessage } from "../lib/uiutil";
 import { dlog } from "../app/log";
 import type { CoreWiring } from "./core";
 import type { FileopsWiring, GridWiring, NavWiring } from "./types";
@@ -110,12 +110,12 @@ export const wireChrome = async (deps: {
   // assigned further down (they need notify); the wrappers only defer, and
   // nothing invokes them before the wiring returns (TDZ seam rule). ---
   let connectServerImpl: (raw?: string) => Promise<void> = async () => {};
-  let disconnectServerImpl: (mountPath: string) => Promise<void> = async () => {};
+  let disconnectServerImpl: (mountPath: string, uri?: string) => Promise<void> = async () => {};
   const connectServer = (raw?: string): void => {
     void connectServerImpl(raw);
   };
-  const disconnectServer = (mountPath: string): void => {
-    void disconnectServerImpl(mountPath);
+  const disconnectServer = (mountPath: string, uri?: string): void => {
+    void disconnectServerImpl(mountPath, uri);
   };
 
   // --- Sidebar row hover nudge (per-row icon lift for every place/pin/device
@@ -163,6 +163,7 @@ export const wireChrome = async (deps: {
       ),
     renderAll: nav.renderAll,
     navigate: nav.navigate,
+    notify: (m, t, l) => notify(m, t, l),
     blurTerminal: () => getFileops().terminal.blurTerminal(),
     closeFileMenu: menu.closeFileMenu,
     openContextMenu: menu.openContextMenu,
@@ -175,7 +176,16 @@ export const wireChrome = async (deps: {
     kbIdx: () => getKeyRouter().placeIdx(),
     tabs: (pane) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0"),
     focusPane: (pane) => getGrid().focusPane(pane === 1 ? "p1" : "p0"),
-    closeTab: (pane, i) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0").closeTab(i),
+    // the tab-chip ✕ / middle-click path bypasses the keybind wrapper, so the
+    // last-tab guard lives here too (a silent quit is irreversible)
+    closeTab: (pane, i) => {
+      const m = getMap(nav.tabModels, pane === 1 ? "p1" : "p0");
+      if (m.list.length === 1) {
+        getFileops().yesNo.confirm("Close the last tab and quit?", "Quit", nav.quitApp, true);
+        return;
+      }
+      m.closeTab(i);
+    },
     switchTab: (pane, i) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0").switchTab(i),
     newTab: (pane, dir) => getMap(nav.tabModels, pane === 1 ? "p1" : "p0").newTab(dir),
     // toolbars are built after the chrome ctx (TDZ seam) — keep the arrow
@@ -257,6 +267,13 @@ export const wireChrome = async (deps: {
       animateCrumbs: (ids: string[]) => getMap(dirBarAnims, id).playIds(ids),
       home,
       setPointer,
+      // live search-box state so the toolbar button hides through the search
+      // module (clear query + blur), not by only flipping node.visible
+      searchVisible: () => !!byId(`tfm-${id}-search`)?.visible,
+      clearSearch: () => {
+        nav.clearSearch();
+        void getGrid().renderGrid();
+      },
     });
   const toolbars = makeLeafRegistry(core.panes, (id) => makePaneToolbar(id));
 
@@ -524,6 +541,7 @@ export const wireChrome = async (deps: {
     rootAdd: (node) => renderer.root.add(node),
     stripSelectable,
     termH: () => renderer.terminalHeight,
+    termW: () => renderer.terminalWidth,
     uiStyle,
     colors: () => core.colors,
     closeFileMenu: menu.closeFileMenu,
@@ -663,16 +681,19 @@ export const wireChrome = async (deps: {
 
   // darwin unmount by URI: resolve the /Volumes path through the mount table
   // (the sink only carries URIs), then diskutil unmount
-  const runDarwinUnmountUri = async (uri: string): Promise<GioResult> => {
+  const runDarwinUnmountUri = async (uri: string, mountPath?: string): Promise<GioResult> => {
     try {
-      const proc = Bun.spawn(["mount"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 10_000 });
-      const text = await new Response(proc.stdout).text();
-      await proc.exited;
-      const norm = uri.replace(/\/+$/, "").toLowerCase();
-      const hit = parseSmbMounts(parseMountTable(text)).find((m) => m.uri.replace(/\/+$/, "").toLowerCase() === norm);
+      const norm = uri
+        .replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, "$1")
+        .replace(/\/+$/, "")
+        .toLowerCase();
+      const mounts = await darwinNetworkMounts();
+      const hit =
+        mounts.find((m) => m.uri.replace(/\/+$/, "").toLowerCase() === norm) ??
+        (mountPath ? mounts.find((m) => m.path === mountPath) : undefined);
       if (!hit) return { code: 1, stdout: "", stderr: `not mounted: ${uri}` };
       const dutil = diskutilBin();
-      const up = Bun.spawn([dutil, ...diskutilUnmountArgv(hit.target)], {
+      const up = Bun.spawn([dutil, ...diskutilUnmountArgv(hit.path)], {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
@@ -690,8 +711,12 @@ export const wireChrome = async (deps: {
       gvfsRoot,
       // mount can prompt for credentials; unmount never does
       mount: (uri) => (isDarwin() ? runDarwinOpenMount(uri) : runGio(buildMountArgs(uri), true)),
-      unmount: (uri) => (isDarwin() ? runDarwinUnmountUri(uri) : runGio(buildUnmountArgs(uri), false)),
+      unmount: (uri, mountPath) =>
+        isDarwin() ? runDarwinUnmountUri(uri, mountPath) : runGio(buildUnmountArgs(uri), false),
       readdir: readdir,
+      // darwin's registry is the mount table (already-mounted shares resolve
+      // by URI); Linux keeps gvfs dir names, so the hook is absent there
+      ...(isDarwin() ? { listMounts: () => darwinNetworkMounts() } : {}),
       notify: (m, t, l) => {
         try {
           notify(m, t, l);
@@ -701,7 +726,7 @@ export const wireChrome = async (deps: {
     },
     // `open smb://` returns once Finder takes over, well before the volume
     // lands — poll ~10s instead of the gvfs ~1s
-    { resolveAttempts: isDarwin() ? 40 : 4 },
+    { resolveAttempts: isDarwin() ? 40 : 4, platform: process.platform },
   );
 
   connectServerImpl = async (raw?: string): Promise<void> => {
@@ -716,7 +741,8 @@ export const wireChrome = async (deps: {
     if (!input) {
       const v = await deps.getPrompt().open({
         title: "Connect to Server…",
-        placeholder: "sftp://user@host/path",
+        // `open` on macOS can only mount smb/afp/nfs (see parseMountableServerInput)
+        placeholder: isDarwin() ? "smb://user@host/share" : "sftp://user@host/path",
         okLabel: "Connect",
       });
       if (!v) return;
@@ -729,7 +755,7 @@ export const wireChrome = async (deps: {
     nav.navigate(mountPath);
   };
 
-  disconnectServerImpl = async (mountPath: string): Promise<void> => {
+  disconnectServerImpl = async (mountPath: string, uri?: string): Promise<void> => {
     if (!isDarwin() && !Bun.which("gio")) {
       notify("Can't disconnect: gio not installed", "network", "error");
       return;
@@ -738,11 +764,20 @@ export const wireChrome = async (deps: {
     // leave the share before unmounting it — navigating away first avoids
     // reading a dead FUSE path
     if (cwd === mountPath || cwd.startsWith(mountPath + path.sep)) nav.navigate(core.home);
-    const ok = await network.disconnect(mountPath);
+    const ok = await network.disconnect(mountPath, uri);
     if (!ok) return;
     await loadSystemPlaces();
     nav.renderAll();
   };
+
+  // /Volumes changes (a share mounted in Finder, a USB plugged in) re-read the
+  // places sources so the sidebar's Devices/Network groups reflect reality.
+  // Debounced: one mount fires several FS events. Darwin-only (null elsewhere).
+  const stopVolumesWatch = watchDarwinVolumes(
+    debounced(500, () => {
+      void loadSystemPlaces().then(() => nav.renderAll());
+    }),
+  );
 
   return {
     renderer,
@@ -764,6 +799,10 @@ export const wireChrome = async (deps: {
     connectServer,
     disconnectServer,
     stopGpm: () => gpmInput?.stop(),
-    stopChromeTimers: () => chrome.dispose(),
+    stopChromeTimers: () => {
+      stopVolumesWatch?.();
+      clearToastRepositioners();
+      chrome.dispose();
+    },
   };
 };

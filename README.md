@@ -197,7 +197,7 @@ exists. Turn it off with `[update] check = false` in `config.toml`.
 - `ctrl+a` select all · `space` toggle · `shift+arrows` extend selection
 - `alt+left/right` history back/forward · `ctrl+shift+n` / `ctrl+alt+n` new folder/file
 - `ctrl+shift+d` dual pane · `ctrl+shift+b` sync browsing · `ctrl+=/-` zoom · `ctrl+r` reload places · `ctrl+alt+r` restart
-- `ctrl+h` hidden · `ctrl+l` path bar · `ctrl+b` sidebar · `shift+cmd+g` go to folder
+- `ctrl+h` hidden · `ctrl+l` path bar · `ctrl+b` sidebar · `shift+cmd+g` / `ctrl+shift+g` go to folder
 - `ctrl+g` cycle view (grid/list/columns) · `f3` preview · `f7` info sidebar · `alt+t` next theme
 - `alt+s` cycle sort · `alt+shift+s` reverse sort · `ctrl+\``/`f4` terminal · `ctrl+shift+s` connect to server
 - `arrows` move · `pageup`/`pagedown` page · `home`/`end` first/last
@@ -245,8 +245,9 @@ See [docs/plugins.md](docs/plugins.md).
 - Mouse on the Linux console (TTY) needs `gpm` running.
 - macOS ships for Intel, Apple Silicon and a universal binary: trash, servers,
   tags and file opens integrate with Finder natively (`trash`, `open`,
-  `diskutil`); `tty-mode` has no Linux console there, so `auto` only fires for
-  dumb/vt terms.
+  `diskutil`); restore works for items tfm trashed (Finder-trashed items have
+  no Put Back API — use Finder for those). `tty-mode` has no Linux console
+  there, so `auto` only fires for dumb/vt terms.
 - Mouse drag-resize of the sidebar, pane split and preview is opt-in
   (`[ui] mouse-resize-*`, all off by default).
 - Icons can show a black box behind open menus or while rubber-band selecting.

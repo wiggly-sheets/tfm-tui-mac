@@ -4,7 +4,7 @@
 
 import { trashFilesDir } from "../fs/fsutil";
 import { setBookmarked, loadSystemPlaces, type Place } from "../fs/places";
-import { isDarwin } from "../fs/darwin";
+import { isAppBundle, isDarwin } from "../fs/darwin";
 import { RECENT_URI, STARRED_URI, isVirtualUri } from "../fs/uri";
 import type { CompressionFormat } from "../fs/archive";
 import type { ListEntry } from "./ui-menu";
@@ -26,9 +26,10 @@ export type MenuEntriesCtx = {
   openTerminalHere(dir?: string): void;
   // network locations (gvfs): no-arg opens the "Connect to Server…" prompt,
   // a URI arg connects straight to a saved connection; disconnect takes the
-  // active mount's local path
+  // active mount's local path plus its known URI (darwin has no gvfs dir name
+  // to decode, so the row's networkUri is the only reliable source)
   connectServer(raw?: string): void;
-  disconnectServer(path: string): void;
+  disconnectServer(path: string, uri?: string): void;
   // clipboard is a mutable let in ./fileops — read live, never captured
   clipboard(): { mode: "copy" | "cut"; items: ClipItem[] } | null;
   pasteSmart(dest: string): void;
@@ -41,6 +42,9 @@ export type MenuEntriesCtx = {
   tileRefs: Map<string, GridTileRef>;
   selPaths(): ClipItem[];
   openFileDefault(p: string): void;
+  // reveal in the OS file manager: Finder select on macOS, parent folder on
+  // Linux. Optional so old fakes keep working; wiring always supplies it.
+  reveal?(p: string): void;
   // executable launches (the Run prompt's actions, shared with double-click)
   isExecutable(path: string): boolean;
   runExecutable(path: string): void;
@@ -293,12 +297,14 @@ export const makeMenuEntries = (ctx: MenuEntriesCtx) => {
       });
     } else if (place.network && place.path) {
       const mountPath = place.path;
+      // the fresh mount table is the fallback; the row usually has the URI
+      const mountUri = place.networkUri;
       entries.push({
         icon: "network",
         label: "Disconnect",
         action: () => {
           ctx.closeFileMenu();
-          ctx.disconnectServer(mountPath);
+          ctx.disconnectServer(mountPath, mountUri);
         },
       });
     } else if (place.network && place.networkUri) {
@@ -315,7 +321,13 @@ export const makeMenuEntries = (ctx: MenuEntriesCtx) => {
     return withSidebarPluginSection(entries, { path: place.path, scheme: place.scheme });
   };
 
-  const fileEntriesFor = (targetPath: string, isDir: boolean, _x: number, _y: number): ListEntry[] => {
+  const fileEntriesFor = (
+    targetPath: string,
+    isDir: boolean,
+    _x: number,
+    _y: number,
+    platform: string = process.platform,
+  ): ListEntry[] => {
     const entries: ListEntry[] = [];
     // Nautilus trash semantics: Restore / Open / delete-for-real; no rename,
     // clipboard ops or trashing inside the trash
@@ -356,40 +368,63 @@ export const makeMenuEntries = (ctx: MenuEntriesCtx) => {
     // browser/editor) — hover reveals Run in Terminal + Open With….
     const isExec = !isDir && ctx.isExecutable(targetPath);
     if (isDir) {
-      entries.push({
-        icon: "folder",
-        label: "Open",
-        action: () => {
-          ctx.closeFileMenu();
-          ctx.navigate(targetPath);
+      const folderSub: ListEntry[] = [
+        {
+          icon: "plus",
+          label: "Open in New Tab",
+          action: () => {
+            ctx.closeFileMenu();
+            ctx.newTab(targetPath);
+          },
         },
-        submenu: [
-          {
-            icon: "plus",
-            label: "Open in New Tab",
-            action: () => {
-              ctx.closeFileMenu();
-              ctx.newTab(targetPath);
-            },
+        {
+          icon: "border-vertical",
+          label: "Open in New Pane",
+          action: () => {
+            ctx.closeFileMenu();
+            ctx.openInOtherPane(targetPath);
           },
-          {
-            icon: "border-vertical",
-            label: "Open in New Pane",
-            action: () => {
-              ctx.closeFileMenu();
-              ctx.openInOtherPane(targetPath);
-            },
+        },
+        {
+          icon: "terminal",
+          label: "Open Terminal Here",
+          action: () => {
+            ctx.closeFileMenu();
+            ctx.openTerminalHere(targetPath);
           },
-          {
-            icon: "terminal",
-            label: "Open Terminal Here",
-            action: () => {
-              ctx.closeFileMenu();
-              ctx.openTerminalHere(targetPath);
-            },
+        },
+      ];
+      if (isDarwin(platform) && isAppBundle(targetPath)) {
+        // macOS: a bundle is a directory on disk but must be LAUNCHED, not
+        // entered (Finder semantics); plain folders keep the normal menu.
+        entries.push({
+          icon: "eye",
+          label: "Open",
+          action: () => {
+            ctx.closeFileMenu();
+            ctx.openFileDefault(targetPath);
           },
-        ],
-      });
+        });
+        entries.push({
+          icon: "folder",
+          label: "Open as Folder",
+          action: () => {
+            ctx.closeFileMenu();
+            ctx.navigate(targetPath);
+          },
+          submenu: folderSub,
+        });
+      } else {
+        entries.push({
+          icon: "folder",
+          label: "Open",
+          action: () => {
+            ctx.closeFileMenu();
+            ctx.navigate(targetPath);
+          },
+          submenu: folderSub,
+        });
+      }
     } else if (isExec) {
       entries.push({
         icon: "play",
@@ -435,6 +470,16 @@ export const makeMenuEntries = (ctx: MenuEntriesCtx) => {
             },
           },
         ],
+      });
+    }
+    if (ctx.reveal) {
+      entries.push({
+        icon: "eye",
+        label: isDarwin() ? "Reveal in Finder" : "Show in file manager",
+        action: () => {
+          ctx.closeFileMenu();
+          ctx.reveal?.(targetPath);
+        },
       });
     }
     // actions apply to the whole live selection when the right-clicked tile is

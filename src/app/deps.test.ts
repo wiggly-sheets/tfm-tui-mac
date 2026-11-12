@@ -80,14 +80,18 @@ describe("checkPkgStatus", () => {
     expect(resApt.pkgName).toBe("fd-find");
   });
 
-  test("checks all packages", () => {
+  test("checks all packages, skipping tools the platform never uses", () => {
     const which = (b: string) => (b === "rg" || b === "ffmpeg" ? `/bin/${b}` : null);
     const { statuses } = checkAllPkgs(which, "darwin");
-    expect(statuses).toHaveLength(10);
+    // gio is a Linux mounter; its row would have no working install path here
+    expect(statuses).toHaveLength(9);
+    expect(statuses.some((s) => s.spec.id === "gio")).toBe(false);
     const rg = statuses.find((s) => s.spec.id === "ripgrep")!;
     expect(rg.installed).toBe(true);
     const fd = statuses.find((s) => s.spec.id === "fd")!;
     expect(fd.installed).toBe(false);
+    // tag is macOS-only (no Linux tag editor)
+    expect(checkAllPkgs(which, "linux").statuses.some((s) => s.spec.id === "tag")).toBe(false);
   });
 });
 
@@ -110,7 +114,7 @@ describe("makeInstallPlan", () => {
     expect(plan.args).toEqual(["install", "-y", "fd-find", "p7zip-full"]);
   });
 
-  test("empty targets installs all optional packages", () => {
+  test("empty targets installs all optional packages for this platform", () => {
     const which = (b: string) => (b === "pacman" ? "/usr/bin/pacman" : null);
     const plan = makeInstallPlan([], which, "linux");
     expect(plan.pkgsToInstall).toEqual([
@@ -137,6 +141,14 @@ describe("makeInstallPlan", () => {
       "zip",
       "unzip",
     ]);
+  });
+
+  test("a platform-only tool asked for on the wrong OS says so", () => {
+    const which = (b: string) => (b === "apt-get" ? "/usr/bin/apt-get" : null);
+    expect(() => makeInstallPlan(["tag"], which, "linux")).toThrow("not available on this platform");
+    const brewWhich = (b: string) => (b === "brew" ? "/usr/bin/brew" : null);
+    expect(() => makeInstallPlan(["gio"], brewWhich, "darwin")).toThrow("not available on this platform");
+    expect(makeInstallPlan(["tag"], brewWhich, "darwin").args).toEqual(["install", "tag"]);
   });
 
   test("throws if unknown target given", () => {

@@ -62,7 +62,7 @@ describe("resolveVideoBin lookup order", () => {
   test("null when nothing is runnable", () => {
     const execDir = mkdtempSync(path.join(tmpdir(), "tfm-videobin-exec-"));
     try {
-      expect(resolveVideoBin({ platform: "linux", execDir, devBin: null })).toBeNull();
+      expect(resolveVideoBin({ platform: "linux", execDir, devBin: null, pathBin: null })).toBeNull();
     } finally {
       rmSync(execDir, { recursive: true, force: true });
     }
@@ -137,6 +137,25 @@ describe("darwin sidecar and brew fallback", () => {
     }
   });
 
+  test("linux falls back to a system PATH ffmpeg when the sidecar is absent", async () => {
+    const { resolveVideoBin } = await import("./videobin");
+    const { mkdtempSync, rmSync, writeFileSync, chmodSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { default: path } = await import("node:path");
+    const dir = mkdtempSync(path.join(tmpdir(), "tfm-vb-path-"));
+    try {
+      const fake = path.join(dir, "ffmpeg");
+      writeFileSync(fake, "x");
+      chmodSync(fake, 0o755);
+      expect(resolveVideoBin({ execDir: dir, devBin: null, platform: "linux", pathBin: fake })).toEqual({
+        bin: fake,
+        source: "path",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("brew ffmpeg is the last resort on darwin only", async () => {
     const { resolveVideoBin } = await import("./videobin");
     const { mkdtempSync, rmSync, writeFileSync, chmodSync } = await import("node:fs");
@@ -148,7 +167,9 @@ describe("darwin sidecar and brew fallback", () => {
       writeFileSync(fake, "x");
       chmodSync(fake, 0o755);
       expect(resolveVideoBin({ execDir: dir, devBin: null, platform: "darwin", brewBin: fake })?.source).toBe("brew");
-      expect(resolveVideoBin({ execDir: dir, devBin: null, platform: "linux", brewBin: fake })).toBeNull();
+      expect(
+        resolveVideoBin({ execDir: dir, devBin: null, platform: "linux", brewBin: fake, pathBin: null }),
+      ).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -326,6 +326,12 @@ describe("schema invariants", () => {
     expect(Object.keys(defaultConfig.keys).length).toBe(KEY_SCHEMA.length);
   });
 
+  test("go to folder keeps the Finder chord and a cross-terminal ctrl alternative", () => {
+    expect(defaultConfig.keys.goToFolder).toEqual(["shift+cmd+g", "ctrl+shift+g"]);
+    // the ctrl alternative must not shadow another default action
+    expect(keybindConflict(defaultConfig, "goToFolder", "ctrl+shift+g")).toBeNull();
+  });
+
   test("no two default actions share a bind (one key = one action)", () => {
     const rows = KEY_SCHEMA.filter((r) => r.def.length > 0);
     for (let i = 0; i < rows.length; i++) {

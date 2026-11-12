@@ -6,9 +6,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileUriToPath, pathToUri } from "./uri";
 import { trashFilesDir } from "./fsutil";
-import { parseServerInput } from "./network";
+import { parseServerInput, warmNetworkMountCache } from "./network";
 import { darwinMountEntries, diskutilBin, isDarwin, parseDiskutilListPlist, parseMountTable } from "./darwin";
-import { listNetworkMounts, type NetworkMount } from "./netmount";
+import { listNetworkMounts, normUri, type NetworkMount } from "./netmount";
 
 // --- System places sources, Nautilus-style: XDG user dirs, GTK bookmarks,
 // lsblk mounts and the sidebar section model built from them. Owns the
@@ -51,6 +51,10 @@ let sysMounts: MountEntry[] = [];
 let sysNetwork: NetworkMount[] = [];
 
 export const loadSystemPlaces = async (): Promise<void> => {
+  // warm the darwin mount-table cache before user actions: isNetworkPath must
+  // never spawn synchronously on the watcher/trash hot paths (Linux never
+  // reads that cache, so don't pay for the probe there)
+  if (isDarwin()) void warmNetworkMountCache();
   // four independent sources — await them concurrently so the sidebar load costs
   // the slowest one (lsblk ~20ms), not their sum (~60ms serialized)
   const [dirs, marks, mounts, network] = await Promise.all([
@@ -63,6 +67,13 @@ export const loadSystemPlaces = async (): Promise<void> => {
   sysBookmarks = marks;
   sysMounts = mounts;
   sysNetwork = network;
+  // The Trash row shows as soon as [ui] sidebar-show-trash is on, even before
+  // the first item is trashed — make sure its FILES dir exists so the view is
+  // an empty trash rather than a can't-open-this-folder error pane. Best-effort:
+  // a read-only home leaves the row visible with the error it must report.
+  try {
+    await mkdir(trashFilesDir(), { recursive: true });
+  } catch {}
 };
 
 const xdgUserDirsFile = () => path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, ".config"), "user-dirs.dirs");
@@ -329,19 +340,12 @@ export function buildSections(vis: SidebarVisibility = {}, sys: SystemPlaces = l
   const { showRecent = true, showStarred = true, showTrash = true } = vis;
   const { showUserDirs = true, showBookmarks = true, showDevices = true, showNetwork = true } = vis;
   const trashFilesDirPath = trashFilesDir();
-  const hasTrash = (() => {
-    try {
-      return statSync(trashFilesDirPath).isDirectory();
-    } catch {
-      return false;
-    }
-  })();
-
   const defaults: Place[] = [{ icon: "home", label: "Home", path: home, ejectable: false }];
   if (showRecent) defaults.push({ icon: "clock", label: "Recent", path: null, ejectable: false, scheme: "recent" });
   if (showStarred) defaults.push({ icon: "star", label: "Starred", path: null, ejectable: false, scheme: "starred" });
-  if (showTrash && hasTrash)
-    defaults.push({ icon: "trash-can", label: "Trash", path: trashFilesDirPath, ejectable: false });
+  // the row is config-driven, not existence-driven: a missing dir still lists
+  // as an empty trash (loadSystemPlaces creates it), and hiding is explicit
+  if (showTrash) defaults.push({ icon: "trash-can", label: "Trash", path: trashFilesDirPath, ejectable: false });
 
   const dirs: Place[] = showUserDirs
     ? sys.userDirs.map((d) => ({ icon: "folder", label: d.label, path: d.p, ejectable: false }))
@@ -376,7 +380,6 @@ export function buildSections(vis: SidebarVisibility = {}, sys: SystemPlaces = l
   // Network: an always-present "Connect to Server…" row, active gvfs mounts,
   // and saved remote bookmarks that aren't mounted yet (click connects). A
   // bookmark whose share is already mounted is shown once, as the mount.
-  const normUri = (u: string): string => u.replace(/\/+$/, "").toLowerCase();
   const mounted = new Map(sys.network.map((m) => [normUri(m.uri), m]));
   const network: Place[] = [
     { icon: "network", label: "Connect to Server…", path: null, ejectable: false, action: "connect" },

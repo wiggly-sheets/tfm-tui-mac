@@ -3,12 +3,17 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildSections, loadSystemPlaces, parseLsblk } from "./places";
+import { trashFilesDir } from "./fsutil";
+import { listDir } from "./listing";
 import { isVirtualUri } from "./uri";
 
 const oldConfigHome = process.env.XDG_CONFIG_HOME;
+const oldDataHome = process.env.XDG_DATA_HOME;
 afterEach(() => {
   if (oldConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = oldConfigHome;
+  if (oldDataHome === undefined) delete process.env.XDG_DATA_HOME;
+  else process.env.XDG_DATA_HOME = oldDataHome;
 });
 
 describe("parseLsblk", () => {
@@ -87,6 +92,27 @@ describe("virtual place uris used by places", () => {
     expect(isVirtualUri("recent://")).toBe(true);
     expect(isVirtualUri("starred://")).toBe(true);
     expect(isVirtualUri("/home")).toBe(false);
+  });
+});
+
+describe("trash place", () => {
+  test("the Trash row shows before the dir exists and lists empty once load creates it", async () => {
+    const root = path.join(os.tmpdir(), `tfm-trash-place-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    process.env.XDG_DATA_HOME = path.join(root, "data");
+    try {
+      await loadSystemPlaces();
+      const filesDir = trashFilesDir();
+      // loadSystemPlaces prepared the listing dir so navigating there is an
+      // empty trash, not a can't-open-this-folder error
+      await expect(listDir(filesDir, true, "name", true)).resolves.toEqual([]);
+      const flat = buildSections().flatMap((s) => s.places);
+      expect(flat.find((p) => p.label === "Trash")?.path).toBe(filesDir);
+      // config-driven visibility: the row disappears only when told to
+      const hidden = buildSections({ showTrash: false }).flatMap((s) => s.places);
+      expect(hidden.some((p) => p.label === "Trash")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

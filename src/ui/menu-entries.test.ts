@@ -46,7 +46,7 @@ const baseCtx = (): MenuEntriesCtx & {
     sortState: sort,
     closeFileMenu: () => calls.push("close"),
     connectServer: (raw) => calls.push(`connect:${raw ?? ""}`),
-    disconnectServer: (p) => calls.push(`disconnect:${p}`),
+    disconnectServer: (p, uri) => calls.push(`disconnect:${p}${uri ? `|${uri}` : ""}`),
     navigate: (d) => calls.push(`navigate:${d}`),
     newTab: (d) => calls.push(`newTab:${d}`),
     openInOtherPane: (d) => calls.push(`pane:${d}`),
@@ -65,6 +65,7 @@ const baseCtx = (): MenuEntriesCtx & {
     inTrashView: () => false,
     selPaths: () => [{ path: "/a", isDir: false }],
     openFileDefault: (p) => calls.push(`open:${p}`),
+    reveal: (p) => calls.push(`reveal:${p}`),
     isExecutable: () => false,
     runExecutable: (p) => calls.push(`run:${p}`),
     runExecutableInTerminal: (p) => calls.push(`runterm:${p}`),
@@ -140,6 +141,17 @@ describe("fileEntriesFor", () => {
     expect(m.fileEntriesFor("/d", true, 0, 0).some((e) => e.label === "Run")).toBe(false);
   });
 
+  test("file menu offers reveal in the OS file manager on both platforms", () => {
+    const ctx = baseCtx();
+    const m = makeMenuEntries(ctx);
+    const row = m
+      .fileEntriesFor("/a", false, 0, 0)
+      .find((e) => /^(Reveal in Finder|Show in file manager)$/.test(e.label));
+    expect(row).toBeTruthy();
+    row!.action();
+    expect(ctx.calls).toContain("reveal:/a");
+  });
+
   test("file menu opens files, dirs get paste-into + navigate", () => {
     const ctx = baseCtx();
     const m = makeMenuEntries(ctx);
@@ -152,7 +164,7 @@ describe("fileEntriesFor", () => {
     file[0]!.submenu![0]!.action();
     expect(ctx.calls).toContain("openWith:/a");
 
-    const dir = m.fileEntriesFor("/d", true, 0, 0);
+    const dir = m.fileEntriesFor("/d", true, 0, 0, "linux");
     expect(dir[0]!.label).toBe("Open");
     expect(dir[0]!.submenu!.map((e) => e.label)).toEqual(["Open in New Tab", "Open in New Pane", "Open Terminal Here"]);
     // the parent row itself opens the folder
@@ -168,6 +180,26 @@ describe("fileEntriesFor", () => {
     expect(paste?.label).toBe("Paste 1 item into folder");
     paste!.action();
     expect(ctx.calls).toContain("paste:/d");
+  });
+
+  test("darwin dir rows launch the bundle first, navigation second", () => {
+    const ctx = baseCtx();
+    const m = makeMenuEntries(ctx);
+    const entries = m.fileEntriesFor("/Applications/Foo.app", true, 0, 0, "darwin");
+    expect(entries[0]!.label).toBe("Open");
+    expect(entries[1]!.label).toBe("Open as Folder");
+    // folder variants stay on the navigation row
+    expect(entries[1]!.submenu!.map((e) => e.label)).toEqual([
+      "Open in New Tab",
+      "Open in New Pane",
+      "Open Terminal Here",
+    ]);
+    entries[0]!.action();
+    expect(ctx.calls).toContain("open:/Applications/Foo.app");
+    entries[1]!.action();
+    expect(ctx.calls).toContain("navigate:/Applications/Foo.app");
+    entries[1]!.submenu![2]!.action();
+    expect(ctx.calls).toContain("term:/Applications/Foo.app");
   });
 
   test("copy/cut/trash target the whole selection", () => {
@@ -292,7 +324,8 @@ describe("sidebarEntriesFor", () => {
       0,
     );
     mounted.find((e) => e.label === "Disconnect")!.action();
-    expect(ctx.calls).toContain(`disconnect:${mountPath}`);
+    // the row's URI is threaded through: darwin can't decode a /Volumes path
+    expect(ctx.calls).toContain(`disconnect:${mountPath}|sftp://bob@example.com/`);
 
     const saved = m.sidebarEntriesFor(
       place({ path: null, network: true, networkUri: "sftp://bob@example.com/" }),
@@ -596,7 +629,7 @@ describe("open submenu", () => {
   });
   test("dir Open is direct with a New Tab / New Pane / Terminal submenu", () => {
     const m = makeMenuEntries(baseCtx());
-    const open = m.fileEntriesFor("/d", true, 0, 0)[0]!;
+    const open = m.fileEntriesFor("/d", true, 0, 0, "linux")[0]!;
     expect(open.label).toBe("Open");
     expect(open.submenu!.map((e) => e.label)).toEqual(["Open in New Tab", "Open in New Pane", "Open Terminal Here"]);
   });
