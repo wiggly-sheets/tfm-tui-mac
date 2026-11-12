@@ -10,8 +10,8 @@
 // app's own sink files (dnd/debug logs, see ignorePaths) never schedule a
 // rebuild — otherwise browsing /tmp rebuilds the grid after every click. ---
 
-import { lstatSync, watch } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { watch } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { debounced, type Scheduler } from "../lib/uiutil";
 
@@ -51,6 +51,13 @@ type CwdWatcherCtx = {
   stat?: (p: string) => Promise<{ mtimeMs?: number; size?: number } | null>;
 };
 
+// Bun's recursive fs.watch support landed in 1.2. A string compare is wrong
+// ("1.10" sorts before "1.2"): compare numeric components instead.
+export const bunSupportsRecursiveWatch = (version: string = process.versions.bun ?? ""): boolean => {
+  const [major = 0, minor = 0] = version.split(".").map((part) => Number.parseInt(part, 10));
+  return major > 1 || (major === 1 && minor >= 2);
+};
+
 export const makeCwdWatcher = (ctx: CwdWatcherCtx) => {
   let watcher: ReturnType<typeof watch> | null = null;
   let watchedDir: string | null = null;
@@ -60,7 +67,7 @@ export const makeCwdWatcher = (ctx: CwdWatcherCtx) => {
   // the transfer engine landing a copy in a subfolder shows a stale listing.
   // Platforms that support recursive watch get it; the rest fall back to a
   // periodic readdir diff on the debounce tick.
-  const recursiveSupported = (ctx.platform ?? process.platform) !== "linux" || process.versions.bun >= "1.2";
+  const recursiveSupported = (ctx.platform ?? process.platform) !== "linux" || bunSupportsRecursiveWatch();
   const doWatch =
     ctx.watchImpl ??
     ((dir: string, cb: (filename?: string | null) => void) =>
@@ -68,9 +75,9 @@ export const makeCwdWatcher = (ctx: CwdWatcherCtx) => {
   const readDir = ctx.readDir ?? ((d: string) => readdir(d));
   const stat =
     ctx.stat ??
-    ((p: string) => {
+    (async (p: string) => {
       try {
-        const s = lstatSync(p);
+        const s = await lstat(p);
         return { mtimeMs: s.mtimeMs, size: s.size };
       } catch {
         return null;
@@ -107,13 +114,18 @@ export const makeCwdWatcher = (ctx: CwdWatcherCtx) => {
   // stack. Gate on a flag: a render in flight drops the tick, and the debounce
   // reschedules it for the next settle.
   let rendering = false;
+  // a render in flight drops the tick; remember it so ONE follow-up tick runs
+  // after the render settles (otherwise the dropped change leaves the grid
+  // stale until an unrelated event)
+  let renderDropped = false;
   const onCwdChanged = debounced(
     200,
     async () => {
       if (ctx.isRenaming()) return;
       if (path.resolve(ctx.cwd()) !== watchedDir) return;
       if (rendering) {
-        // a render is in flight; the next fs burst will re-arm the debounce
+        // a render is in flight; schedule one follow-up tick when it settles
+        renderDropped = true;
         return;
       }
       if (!recursiveSupported && watchedDir) {
@@ -145,17 +157,28 @@ export const makeCwdWatcher = (ctx: CwdWatcherCtx) => {
         }
       }
       rendering = true;
+      const finishRender = (err?: unknown): void => {
+        rendering = false;
+        if (err) ctx.log?.(`watcher render failed: ${err}`);
+        if (renderDropped) {
+          renderDropped = false;
+          onCwdChanged(); // one follow-up debounce tick
+        }
+      };
       try {
         const r = ctx.renderGrid();
         if (r && typeof (r as Promise<void>).then === "function") {
-          (r as Promise<void>).finally(() => {
-            rendering = false;
-          });
+          // rejection handler, not .finally: an unhandled rejection escapes
+          // the app's crash boundary and leaves `rendering` wedged
+          (r as Promise<void>).then(
+            () => finishRender(),
+            (err) => finishRender(err),
+          );
         } else {
-          rendering = false;
+          finishRender();
         }
-      } catch {
-        rendering = false;
+      } catch (err) {
+        finishRender(err);
       }
     },
     ctx.sched ?? globalThis,

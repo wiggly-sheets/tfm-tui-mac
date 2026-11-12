@@ -475,10 +475,11 @@ export const commonParent = (paths: string[]): string => {
 };
 
 // drop blank lines (tar -t and -v both trail a newline); everything else is an
-// entry name, which is all the progress counter needs
+// entry name, which is all the progress counter needs. Strip only the trailing
+// newline: leading/trailing spaces are part of a legal member name.
 export const parseToolLine = (line: string): string | null => {
-  const t = line.replace(/\r$/, "").trim();
-  return t ? t : null;
+  const t = line.replace(/[\r\n]+$/, "");
+  return t.trim() ? t : null;
 };
 
 // progress-line filter: tool banners/summaries must not advance the file-count
@@ -1115,8 +1116,10 @@ export const parseListingLine = (fmt: ArchiveFormat, line: string): ArchiveEntry
 };
 
 const nameEntryLine = (line: string): ArchiveEntryInfo | null => {
-  const t = line.replace(/\r$/, "").trim().replace(/^\.\//, "");
-  if (!t) return null;
+  // only the line terminator is stripped: leading/trailing spaces are part of
+  // a legal member name and must survive a container round-trip
+  const t = line.replace(/[\r\n]+$/, "").replace(/^\.\//, "");
+  if (!t.trim()) return null;
   const isDir = t.endsWith("/");
   const name = isDir ? t.replace(/\/+$/, "") : t;
   return name ? { name, isDir } : null;

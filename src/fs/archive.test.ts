@@ -32,6 +32,7 @@ import {
   listArchiveContents,
   listArchiveEntries,
   makeLineCounter,
+  parseListingLine,
   parseToolLine,
   readArchiveEntry,
   runArchiveTask,
@@ -278,6 +279,14 @@ describe("parseToolLine / makeLineCounter", () => {
   test("blank lines are dropped", () => {
     expect(parseToolLine("  ")).toBeNull();
     expect(parseToolLine("foo/\r")).toBe("foo/");
+  });
+
+  test("keeps significant leading/trailing spaces on a member name", () => {
+    // only the line terminator is not part of the name
+    expect(parseToolLine(" leading.txt")).toBe(" leading.txt");
+    expect(parseToolLine("trailing.txt ")).toBe("trailing.txt ");
+    expect(parseToolLine("crlf.txt\r\n")).toBe("crlf.txt");
+    expect(parseListingLine("zip", " padded name ")).toEqual({ name: " padded name ", isDir: false });
   });
 
   test("splits chunks on newlines and flushes the tail", () => {

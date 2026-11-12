@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { makeCwdWatcher } from "./watcher";
+import { makeCwdWatcher, bunSupportsRecursiveWatch } from "./watcher";
 
 // virtual clock: the debounce is a timing unit, tests must not wall-clock sleep
 const makeClock = () => {
@@ -33,6 +33,15 @@ const makeClock = () => {
 };
 
 describe("makeCwdWatcher", () => {
+  test("recursive-watch capability compares Bun versions numerically", () => {
+    // string compare said "1.10" < "1.2" — the capability flipped off on 1.10
+    expect(bunSupportsRecursiveWatch("1.2.0")).toBe(true);
+    expect(bunSupportsRecursiveWatch("1.10.0")).toBe(true);
+    expect(bunSupportsRecursiveWatch("1.1.9")).toBe(false);
+    expect(bunSupportsRecursiveWatch("2.0.0")).toBe(true);
+    expect(bunSupportsRecursiveWatch("")).toBe(false);
+  });
+
   test("external changes in the watched dir trigger renderGrid (debounced)", () => {
     let fire: ((f?: string | null) => void) | null = null;
     const clock = makeClock();
@@ -82,6 +91,48 @@ describe("makeCwdWatcher", () => {
     clock.advance(500);
     // debounce window: 10 rapid creates land inside one 200ms coalesce
     expect(gridRenders).toBeLessThanOrEqual(3);
+  });
+
+  test("a render that rejects resets the gate and a dropped event gets one follow-up tick", async () => {
+    let fire: ((f?: string | null) => void) | null = null;
+    const clock = makeClock();
+    let renders = 0;
+    let rejectFirst!: (e: unknown) => void;
+    const first = new Promise<void>((_, reject) => {
+      rejectFirst = reject;
+    });
+    let firstCall = true;
+    const { syncCwdWatcher } = makeCwdWatcher({
+      cwd: () => "/w",
+      isVirtualCwd: () => false,
+      isRenaming: () => false,
+      renderGrid: () => {
+        renders++;
+        if (firstCall) {
+          firstCall = false;
+          return first;
+        }
+      },
+      watchImpl: (_dir, cb) => {
+        fire = cb;
+        return { on: () => {}, close: () => {} };
+      },
+      sched: clock,
+    });
+
+    syncCwdWatcher();
+    fire!("a");
+    clock.advance(300); // first render starts and stays pending
+    expect(renders).toBe(1);
+    fire!("b"); // dropped while rendering in flight
+    clock.advance(300);
+    expect(renders).toBe(1);
+
+    rejectFirst(new Error("render exploded"));
+    await Promise.resolve(); // let the rejection handler run
+    await Promise.resolve();
+    clock.advance(300); // the follow-up debounce tick
+    expect(renders).toBe(2);
   });
 
   test("isRenaming guard swallows the event (inline-edit survives)", () => {

@@ -340,6 +340,28 @@ describe("copyTreeProgress", () => {
   });
 });
 
+describe("copyTreeProgress special files", () => {
+  test.skipIf(!Bun.which("mkfifo"))("a FIFO is recreated without opening a byte stream (no hang)", async () => {
+    // opening a FIFO for read blocks until a writer appears; the copy engine
+    // used to fall through to createReadStream and wedge the shared op queue
+    // forever (cancel cannot interrupt a blocked open)
+    mkdirSync(path.join(dir, "src"), { recursive: true });
+    const fifo = path.join(dir, "src", "pipe");
+    const mk = Bun.spawnSync(["mkfifo", fifo]);
+    expect(mk.exitCode).toBe(0);
+    W(path.join(dir, "src", "a.txt"), "A");
+
+    const h = mkSink();
+    const outcome = await Promise.race([
+      copyTreeProgress(path.join(dir, "src"), path.join(dir, "dst"), h.sink).then(() => "copied" as const),
+      new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 1000)),
+    ]);
+    expect(outcome).toBe("copied");
+    expect(lstatSync(path.join(dir, "dst", "pipe")).isFIFO()).toBe(true);
+    expect(readFileSync(path.join(dir, "dst", "a.txt"), "utf8")).toBe("A");
+  });
+});
+
 describe("rmTreeProgress", () => {
   test("removes nested trees, counting files/bytes like scanTree", async () => {
     W(path.join(dir, "t", "a.txt"), "AAA");

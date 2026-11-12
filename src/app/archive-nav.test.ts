@@ -30,6 +30,14 @@ describe("archiveUri / parseArchiveUri", () => {
     expect(parseArchiveUri(uri)).toEqual({ archive: "/home/u/we?ird.zip", inner: "a/b" });
   });
 
+  test("a literal %3F in the container name survives the round trip", () => {
+    const uri = archiveUri("/home/u/lit%3F.zip", "a");
+    expect(uri).toBe("archive:///home/u/lit%253F.zip?a");
+    expect(parseArchiveUri(uri)).toEqual({ archive: "/home/u/lit%3F.zip", inner: "a" });
+    // a legacy URI with a bare % that is no escape is kept verbatim
+    expect(parseArchiveUri("archive:///home/u/100%.zip")).toEqual({ archive: "/home/u/100%.zip", inner: "" });
+  });
+
   test("refuses a non-archive location and a non-archive uri", () => {
     expect(parseArchiveUri("archive:///home/u/notes.txt")).toBeNull();
     expect(parseArchiveUri("/home/u/data.zip")).toBeNull();

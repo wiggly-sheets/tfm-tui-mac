@@ -587,10 +587,14 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
         }
         const base = path.basename(src);
         let target = path.join(destDir, base);
+        // compare RESOLVED paths: a non-canonical src (/a/./b) joins to the
+        // same file yet fails a raw string compare, so "Replace" would trash
+        // the source itself
+        const sameSpot = path.resolve(target) === path.resolve(src);
         // nautilus semantics: paste-in-place never asks, it just makes "name (copy)"
-        if (target === src && op === "copy") {
+        if (sameSpot && op === "copy") {
           target = uniqueTarget(destDir, base);
-        } else if (target === src) {
+        } else if (sameSpot) {
           skipped++;
           continue;
         } else if (existsSync(target)) {
@@ -655,10 +659,15 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
             units.push(() => trashIfSameFile(t, tid, ctx.log, platform));
             dUnits.push({ op: "trash", path: t, ...(tid ?? {}) });
             redos.push(async () => {
+              // target already there = the redo's end-state; anything else is
+              // a real failure and must throw so app/undo tallies it
+              if (existsSync(t)) return;
               try {
-                if (!existsSync(t)) await copyTreeProgressWired(src, t);
+                await copyTreeProgressWired(src, t);
               } catch (err) {
-                ctx.log(`redo copy ${t}: ${fsErrText(err)}`);
+                // a raced occupant is the same desired end-state: silent no-op
+                if (existsSync(t)) return;
+                throw err;
               }
             });
             dRedos.push({ op: "copy-tree-if-missing", src, dest: t });
@@ -666,11 +675,10 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
             units.push(() => safeRestoreMove(t, s).then(() => undefined));
             dUnits.push({ op: "restore-move", from: t, to: s });
             redos.push(async () => {
-              try {
-                if (existsSync(s) && !existsSync(t)) await fsMove(s, t);
-              } catch (err) {
-                ctx.log(`redo move ${t}: ${fsErrText(err)}`);
-              }
+              // source gone or target occupied = intentional no-op; a real
+              // move failure must throw so the redo summary reports it
+              if (!existsSync(s) || existsSync(t)) return;
+              await fsMove(s, t);
             });
             dRedos.push({ op: "rename-if", from: s, to: t });
           }
@@ -700,7 +708,13 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
               sourceRemovalFailed = true;
               throw new Error(`source partially removed: ${fsErrText(err)}`);
             }
-          } else await fsMove(src, target);
+          } else {
+            // re-check immediately before the rename: a create can land
+            // between the conflict decision and here, and rename() silently
+            // overwrites on POSIX. Fail loudly instead of clobbering it.
+            if (existsSync(target)) throw new Error(`already exists: ${path.basename(target)}`);
+            await fsMove(src, target);
+          }
           recordSuccess();
         } catch (err) {
           // privilege failure → one password gate per batch, then the same
@@ -884,11 +898,10 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
       units.push(() => safeRestoreMove(finalDest, p).then(() => undefined));
       dUnits.push({ op: "rename", from: finalDest, to: p });
       redos.push(async () => {
-        try {
-          if (existsSync(p) && !existsSync(finalDest)) await fsRename(p, finalDest);
-        } catch (err) {
-          ctx.log(`redo rename ${finalDest}: ${fsErrText(err)}`);
-        }
+        // missing source / occupied target = intentional no-op; a real rename
+        // failure must throw so the redo summary reports it
+        if (!existsSync(p) || existsSync(finalDest)) return;
+        await fsRename(p, finalDest);
       });
       dRedos.push({ op: "rename-if", from: p, to: finalDest });
     };
@@ -980,11 +993,10 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
         units.push(() => safeRestoreMove(to, from).then(() => undefined));
         dUnits.push({ op: "rename", from: to, to: from });
         redos.push(async () => {
-          try {
-            if (existsSync(from) && !existsSync(to)) await fsRename(from, to);
-          } catch (err) {
-            ctx.log(`redo rename ${to}: ${fsErrText(err)}`);
-          }
+          // missing source / occupied target = intentional no-op; a real
+          // rename failure must throw so the redo summary reports it
+          if (!existsSync(from) || existsSync(to)) return;
+          await fsRename(from, to);
         });
         dRedos.push({ op: "rename-if", from, to });
         ok++;
@@ -1330,24 +1342,9 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
             },
           },
         );
-        if (prog.cancelled) {
-          cancelled = true;
-          break;
-        }
-        if (res.code !== 0 && res.code !== 1) {
-          // exit 1 is a warning for tar/unzip/7z (some members skipped) — the
-          // rest extracted fine, so don't discard the stage over it
-          failed++;
-          failWhy.add(firstErrLine(res.stderr) || "extract failed");
-          continue;
-        }
-        // warning-level exits (skipped members) still land in the debug trail —
-        // the toast reports success like the spawn path, but the skip is on record
-        if (res.code === 1 && res.stderr)
-          ctx.log(`extract warnings ${path.basename(file)}: ${firstErrLine(res.stderr)}`);
-        // escape sweep first: trash anything the tool wrote outside staging,
-        // then refuse the archive (its staged content is from the same
-        // untrusted member list, so nothing from it lands)
+        // escape sweep ALWAYS runs after the tool returns: a nonzero exit or a
+        // cancel still leaves whatever `../` members the tool already wrote
+        // outside staging. Trash them (recoverable) and refuse the archive.
         let escaped = 0;
         const afterDest = await snapshotNames(destDir);
         for (const name of afterDest) {
@@ -1375,8 +1372,27 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
         if (escaped) {
           failed++;
           failWhy.add(`archive wrote outside staging (${escaped} moved to trash)`);
+        }
+        if (prog.cancelled) {
+          cancelled = true;
+          break;
+        }
+        if (res.code !== 0 && res.code !== 1) {
+          // exit 1 is a warning for tar/unzip/7z (some members skipped) — the
+          // rest extracted fine, so don't discard the stage over it
+          if (!escaped) {
+            failed++;
+            failWhy.add(firstErrLine(res.stderr) || "extract failed");
+          }
           continue;
         }
+        // warning-level exits (skipped members) still land in the debug trail —
+        // the toast reports success like the spawn path, but the skip is on record
+        if (res.code === 1 && res.stderr)
+          ctx.log(`extract warnings ${path.basename(file)}: ${firstErrLine(res.stderr)}`);
+        // refuse the archive: its staged content is from the same untrusted
+        // member list, so nothing from it lands
+        if (escaped) continue;
         const cutLinks = await sanitizeStagedLinks(stage);
         if (cutLinks) ctx.log(`staging links removed ${path.basename(file)}: ${cutLinks}`);
         let entries: string[];
@@ -1419,6 +1435,10 @@ export const makeFileOps = (ctx: FileOpsCtx) => {
             }
           }
           try {
+            // re-check right before the rename: a create can land between the
+            // conflict decision and here, and rename() would silently clobber
+            // it — bump to "name (copy)" (the no-clobber restore pattern)
+            if (existsSync(target)) target = uniqueTarget(destDir, name);
             await fsMove(src, target);
             const tid = fileIdOf(target);
             units.push(() => trashIfSameFile(target, tid, ctx.log, platform));

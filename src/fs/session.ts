@@ -1,8 +1,9 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { RECENT_URI, STARRED_URI, isVirtualUri } from "./uri";
+import { atomicWriteFile } from "./fsutil";
 import type { Tab } from "../app/tabs";
 
 // --- Session persistence: each pane's tab list survives restarts, plus which
@@ -22,15 +23,25 @@ export type PaneTabs = { tabs: Tab[]; activeTab: number };
 export type RestoredSession = { panes: [PaneTabs, PaneTabs]; activePane: 0 | 1 };
 
 export const saveSession = async (panes: [PaneTabs, PaneTabs], activePane: 0 | 1): Promise<void> => {
-  await mkdir(path.dirname(sessionFile()), { recursive: true });
-  await writeFile(sessionFile(), JSON.stringify({ panes, activePane }));
+  const file = sessionFile();
+  await mkdir(path.dirname(file), { recursive: true });
+  // tmp+rename: a crash/EDQUOT mid-write must not leave a truncated session
+  await atomicWriteFile(file, JSON.stringify({ panes, activePane }));
 };
 
 // synchronous final write for quit: process.exit() kills pending async IO,
 // so the debounced save would lose the last navigation
 export const saveSessionSync = (panes: [PaneTabs, PaneTabs], activePane: 0 | 1): void => {
-  mkdirSync(path.dirname(sessionFile()), { recursive: true });
-  writeFileSync(sessionFile(), JSON.stringify({ panes, activePane }));
+  const file = sessionFile();
+  mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify({ panes, activePane }));
+  try {
+    renameSync(tmp, file);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
 };
 
 // directory check shared with virtual places: recent/starred URIs are always

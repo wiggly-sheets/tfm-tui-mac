@@ -98,6 +98,13 @@ export const zipEntries = (bytes: Uint8Array, limit = ARCHIVE_LIST_MAX_ENTRIES):
 
 // entries of `file`, or null when there is nothing to list (not an archive we
 // read, unreadable, or past the memory guard the pane's render loop needs).
+//
+// ONE-entry (path, mtime, size, limit) cache: the preview re-renders this on
+// every repaint (both panes, quicklook), and a tar.gz listing gunzips the
+// whole container in one shot. A changed container moves mtime/size, so the
+// key invalidates itself; the caps are checked before the read either way.
+let lastList: { key: string; entries: ArchiveEntryInfo[] } | null = null;
+
 export const readArchiveEntries = async (
   file: string,
   fmt: ArchiveFormat | null = detectArchiveFormat(file),
@@ -109,10 +116,17 @@ export const readArchiveEntries = async (
     if (!st?.isFile()) return null;
     const cap = fmt === "tar.gz" ? ARCHIVE_GZ_MAX_BYTES : ARCHIVE_LIST_MAX_BYTES;
     if (st.size > cap) return null;
+    const key = `${file}\u0000${st.mtimeMs}\u0000${st.size}\u0000${limit}`;
+    if (lastList?.key === key) return lastList.entries;
     const raw = new Uint8Array(await Bun.file(file).bytes());
-    if (fmt === "zip") return zipEntries(raw, limit);
-    const tar = fmt === "tar.gz" ? Bun.gunzipSync(raw) : raw;
-    return tarEntries(tar, limit);
+    let entries: ArchiveEntryInfo[];
+    if (fmt === "zip") entries = zipEntries(raw, limit);
+    else {
+      const tar = fmt === "tar.gz" ? Bun.gunzipSync(raw) : raw;
+      entries = tarEntries(tar, limit);
+    }
+    lastList = { key, entries };
+    return entries;
   } catch {
     return null;
   }

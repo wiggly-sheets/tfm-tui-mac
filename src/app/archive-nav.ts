@@ -11,15 +11,23 @@ import { ARCHIVE_URI } from "../fs/uri";
 export type ArchiveLocation = { archive: string; inner: string };
 
 export const archiveUri = (archive: string, inner = ""): string =>
-  // "?" is legal in a file name, so it is escaped in the container part: it is
-  // the only byte that would misparse (the inner path follows it)
-  `${ARCHIVE_URI}${archive.replace(/\?/g, "%3F")}${inner ? `?${inner}` : ""}`;
+  // the container segment is percent-encoded (slashes kept readable): "?" is
+  // legal in a file name but would misparse (the inner path follows it), and
+  // a literal "%3F" must not decode to "?" on the way back
+  `${ARCHIVE_URI}${encodeURIComponent(archive).replace(/%2F/gi, "/")}${inner ? `?${inner}` : ""}`;
 
 export const parseArchiveUri = (uri: string): ArchiveLocation | null => {
   if (!uri.startsWith(ARCHIVE_URI)) return null;
   const rest = uri.slice(ARCHIVE_URI.length);
   const q = rest.indexOf("?");
-  const archive = (q < 0 ? rest : rest.slice(0, q)).replace(/%3F/g, "?");
+  const raw = q < 0 ? rest : rest.slice(0, q);
+  let archive: string;
+  try {
+    archive = decodeURIComponent(raw);
+  } catch {
+    // a legacy URI with a bare "%" that is not a valid escape: keep it as-is
+    archive = raw;
+  }
   if (!detectArchiveFormat(archive)) return null;
   return { archive, inner: q < 0 ? "" : rest.slice(q + 1) };
 };

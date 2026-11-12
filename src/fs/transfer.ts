@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createReadStream, createWriteStream, type ReadStream, type Stats } from "node:fs";
 import {
   chmod,
@@ -100,6 +101,18 @@ const fsyncParentDir = (p: string): Promise<void> =>
   // best-effort: tmpfs / permissions may not allow dir fsync — the file
   // fsync + exclusive landing already closed the half-copy window
   fsyncPath(path.dirname(p)).catch(() => {});
+
+// FIFOs/device nodes have no copyable byte stream. A FIFO is recreated with
+// mkfifo (the only portable way from Bun); false means the tool is missing or
+// the name is taken, which the caller reports as a per-file failure.
+const makeFifo = (dest: string, mode: number): boolean => {
+  try {
+    const r = spawnSync("mkfifo", ["-m", (mode & 0o7777).toString(8), dest], { stdio: "ignore" });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+};
 
 export const landCopiedFile = async (
   tmp: string,
@@ -323,6 +336,20 @@ export const copyTreeProgress = async (src: string, dest: string, sink: Transfer
       if (errCode(err) === "EEXIST") throw new Error(`already exists: ${path.basename(dest)}`);
       throw err;
     }
+  } else if (!st.isFile()) {
+    // FIFOs, sockets and device nodes have no copyable byte stream. Opening a
+    // FIFO for read blocks until a writer appears, so createReadStream would
+    // wedge the shared op queue forever (cancel cannot interrupt the open).
+    // Recreate a FIFO when mkfifo is available; anything else is a per-file
+    // failure, never a silent skip.
+    await sink.checkpoint();
+    await mkdir(path.dirname(dest), { recursive: true });
+    if (st.isFIFO() && makeFifo(dest, st.mode)) {
+      sink.fileDone();
+      sink.repaint(true);
+      return fileIdOf(dest);
+    }
+    throw new Error(`cannot copy special file: ${path.basename(src)}`);
   } else {
     await sink.checkpoint();
     await mkdir(path.dirname(dest), { recursive: true });

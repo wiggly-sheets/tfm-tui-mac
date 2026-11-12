@@ -145,7 +145,13 @@ export const readRecentXbelAsync = async (platform: string = process.platform): 
   return darwin ? mergeRecent(out, await mdfindRecentAsync(200)) : mergeRecent(out, []);
 };
 
+// bumped whenever the Recent/Starred sources change, so listDir's short-lived
+// virtual-place cache can invalidate immediately instead of waiting the TTL
+let recentListGen = 0;
+export const recentListingGen = (): number => recentListGen;
+
 export const upsertRecentXbel = async (paths: string[]): Promise<void> => {
+  recentListGen++;
   try {
     let xml = "";
     try {
@@ -192,7 +198,10 @@ export const upsertRecentXbel = async (paths: string[]): Promise<void> => {
       .slice(-500)
       .map((k) => k.block)
       .join("\n");
+    // a fresh profile has no $XDG_DATA_HOME yet — the write fails ENOENT
+    await mkdir(path.dirname(xbelPath()), { recursive: true });
     await writeFile(xbelPath(), `${head}${body}\n</xbel>\n`, "utf8");
+    recentListGen++;
   } catch (err) {
     // silently losing the recents rewrite looks like "tfm forgot my files"
     swallow("recent xbel write", err);
@@ -218,14 +227,17 @@ export const writeStarredList = async (paths: string[]): Promise<void> => {
   try {
     await mkdir(path.dirname(starredListPath()), { recursive: true });
     await writeFile(starredListPath(), `${[...new Set(paths)].join("\n")}\n`, "utf8");
+    recentListGen++;
   } catch (err) {
     swallow("starred list write", err);
   }
 };
 
 export const starredRegistryAdd = (p: string): void => {
+  recentListGen++;
   void writeStarredList([...readStarredList(), p]);
 };
 export const starredRegistryRemove = (p: string): void => {
+  recentListGen++;
   void writeStarredList(readStarredList().filter((x) => x !== p));
 };

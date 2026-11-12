@@ -640,6 +640,19 @@ describe("runTransfer: self-drop and orphan-sweep guards", () => {
     expect(existsSync(src)).toBe(true);
   });
 
+  test("a non-canonical self path still paste-in-place copies (never prompts/replaces)", async () => {
+    // path.join collapses to the source, but a raw string compare against
+    // "/a/./b" did not — the conflict prompt then offered "Replace", which
+    // trashes the SOURCE. Resolved comparison makes it the copy branch.
+    const h = makeHarness();
+    const src = path.join(ROOT, "dot-self");
+    W(src, "A");
+    await h.ops.runTransfer("copy", ROOT, [path.join(ROOT, ".", "dot-self")], "paste");
+    expect(h.calls).not.toContain("conflict:prompt");
+    expect(readFileSync(path.join(ROOT, "dot-self (copy)"), "utf8")).toBe("A");
+    expect(readFileSync(src, "utf8")).toBe("A");
+  });
+
   test("orphan sweep removes only temp-shaped names, not user files", async () => {
     const h = makeHarness();
     const destDir = path.join(ROOT, "sweep-anchored");
@@ -659,6 +672,65 @@ describe("runTransfer: self-drop and orphan-sweep guards", () => {
     expect(existsSync(path.join(destDir, ".tfm-extract-5678-ef56gh78"))).toBe(false);
     expect(existsSync(path.join(destDir, "notes.tfm-part-2.md"))).toBe(true);
     expect(existsSync(path.join(destDir, ".tfm-extract-backup"))).toBe(true);
+  });
+});
+
+describe("runTransfer: move no-clobber race", () => {
+  test("a target created after the replace decision is not overwritten", async () => {
+    const h = makeHarness({
+      conflict: { resetPolicy: () => {}, policy: () => "replace", promptConflict: async () => "replace" },
+      stashVictim: async (victimDest, units) => {
+        // simulate a raced create landing between the stash and the move
+        rmSync(victimDest, { recursive: true, force: true });
+        W(victimDest, "STRANGER");
+        units.push(async () => {});
+        return true;
+      },
+    });
+    const src = path.join(ROOT, "race-move-src.txt");
+    const destDir = path.join(ROOT, "race-move-dest");
+    W(src, "NEW");
+    mkdirSync(destDir, { recursive: true });
+    const target = path.join(destDir, "race-move-src.txt");
+    W(target, "OLD");
+
+    await h.ops.runTransfer("move", destDir, [src], "move race");
+
+    // the raced occupant wins; the move refuses instead of clobbering it
+    expect(readFileSync(target, "utf8")).toBe("STRANGER");
+    expect(readFileSync(src, "utf8")).toBe("NEW");
+    expect(h.calls.some((c) => c.startsWith("notify:move failed:error:"))).toBe(true);
+  });
+});
+
+describe("redo closures: failures are not swallowed", () => {
+  test("copy redo rethrows a real failure but a present target is a silent no-op", async () => {
+    const h = makeHarness();
+    const src = path.join(ROOT, "redo-copy-src");
+    const destDir = path.join(ROOT, "redo-copy-dest");
+    W(src, "A");
+    mkdirSync(destDir, { recursive: true });
+    await h.ops.runTransfer("copy", destDir, [src], "paste");
+    const redos = h.redoUnits();
+    expect(redos.length).toBe(1);
+    const redo = redos[0]!;
+    // target present: the redo's desired end-state — intentionally silent
+    await expect(redo()).resolves.toBeUndefined();
+    // source vanished too: redone nothing — must throw so app/undo tallies it
+    rmSync(path.join(destDir, "redo-copy-src"), { recursive: true, force: true });
+    rmSync(src, { force: true });
+    await expect(redo()).rejects.toThrow();
+  });
+
+  test("move redo stays silent when there is nothing to re-apply", async () => {
+    const h = makeHarness();
+    const src = path.join(ROOT, "redo-move-src");
+    const destDir = path.join(ROOT, "redo-move-dest");
+    W(src, "A");
+    mkdirSync(destDir, { recursive: true });
+    await h.ops.runTransfer("move", destDir, [src], "move");
+    // the source is gone (moved): that is the redo's end-state, not a failure
+    await expect(h.redoUnits()[0]!()).resolves.toBeUndefined();
   });
 });
 
@@ -1123,6 +1195,53 @@ describe("extractArchive", () => {
     expect(existsSync(path.join(destDir, "good.txt"))).toBe(false);
     expect(h.calls.some((c) => c.includes("outside staging"))).toBe(true);
     expect(h.calls.some((c) => c.startsWith("undo:"))).toBe(false);
+  });
+
+  test("escape sweep still runs when the tool exits nonzero", async () => {
+    // a hostile `../` member can be written BEFORE the tool reports failure;
+    // skipping the sweep on a nonzero exit let it survive in destDir
+    const runArchive: ArchiveRun = async (spec) => {
+      if (!spec.args.includes("-C")) return { code: 0, stdout: "", stderr: "" };
+      const stage = spec.args[spec.args.indexOf("-C") + 1]!;
+      writeFileSync(path.join(stage, "good.txt"), "good");
+      writeFileSync(path.join(path.dirname(stage), "escape.txt"), "evil");
+      return { code: 2, stdout: "", stderr: "boom" };
+    };
+    const h = makeHarness({ runArchive, listArchive: async () => 1 });
+    const destDir = path.join(ROOT, "x-escape-nonzero");
+    mkdirSync(destDir, { recursive: true });
+    const archive = path.join(ROOT, "x-escape-nonzero.tar.gz");
+    W(archive, "not-really");
+
+    await h.ops.extractArchive([archive], destDir);
+
+    expect(existsSync(path.join(destDir, "escape.txt"))).toBe(false);
+    expect(existsSync(path.join(destDir, "good.txt"))).toBe(false);
+    expect(h.calls.some((c) => c.includes("outside staging"))).toBe(true);
+    expect(h.calls.some((c) => c.startsWith("undo:"))).toBe(false);
+  });
+
+  test("escape sweep still runs when the op is cancelled", async () => {
+    let h: ReturnType<typeof makeHarness>;
+    const runArchive: ArchiveRun = async (spec) => {
+      if (!spec.args.includes("-C")) return { code: 0, stdout: "", stderr: "" };
+      const stage = spec.args[spec.args.indexOf("-C") + 1]!;
+      writeFileSync(path.join(stage, "good.txt"), "good");
+      writeFileSync(path.join(path.dirname(stage), "escape.txt"), "evil");
+      h.prog.cancelled = true; // cancellation lands after the tool wrote
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    h = makeHarness({ runArchive, listArchive: async () => 1 });
+    const destDir = path.join(ROOT, "x-escape-cancel");
+    mkdirSync(destDir, { recursive: true });
+    const archive = path.join(ROOT, "x-escape-cancel.tar.gz");
+    W(archive, "not-really");
+
+    await h.ops.extractArchive([archive], destDir);
+
+    expect(existsSync(path.join(destDir, "escape.txt"))).toBe(false);
+    expect(h.calls.some((c) => c.includes("outside staging"))).toBe(true);
+    expect(h.calls.some((c) => c.startsWith("notify:extract cancelled:"))).toBe(true);
   });
 
   test("symlinks escaping the stage are removed, legit entries still land", async () => {

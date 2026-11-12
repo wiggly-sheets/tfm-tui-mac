@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readRestoredSession, saveSession, sessionFile, type PaneTabs } from "./session";
+import { readRestoredSession, saveSession, saveSessionSync, sessionFile, type PaneTabs } from "./session";
 
 const oldStateHome = process.env.XDG_STATE_HOME;
 afterEach(() => {
@@ -27,6 +27,26 @@ describe("sessionFile", () => {
     expect(sessionFile()).toBe(path.join(root, "tfm", "session.json"));
     delete process.env.XDG_STATE_HOME;
     expect(sessionFile()).toBe(path.join(os.homedir(), ".local/state/tfm", "session.json"));
+  });
+});
+
+describe("saveSession", () => {
+  test("async and sync writes are atomic: no temp leftovers, valid document", async () => {
+    const root = sandbox();
+    try {
+      const panes: [PaneTabs, PaneTabs] = [
+        { tabs: [{ history: [root], histIdx: 0 }], activeTab: 0 },
+        { tabs: [{ history: [os.tmpdir()], histIdx: 0 }], activeTab: 0 },
+      ];
+      await saveSession(panes, 0);
+      expect(readdirSync(path.dirname(sessionFile()))).toEqual(["session.json"]);
+
+      saveSessionSync(panes, 1);
+      expect(readdirSync(path.dirname(sessionFile()))).toEqual(["session.json"]);
+      expect(JSON.parse(readFileSync(sessionFile(), "utf8")).activePane).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

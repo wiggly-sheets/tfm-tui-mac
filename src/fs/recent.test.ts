@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readRecentXbel, readStarredList, upsertRecentXbel, writeStarredList } from "./recent";
@@ -84,6 +84,21 @@ describe("upsertRecentXbel", () => {
     await upsertRecentXbel(many);
     const xml = readFileSync(XBEL, "utf8");
     expect((xml.match(/<bookmark /g) ?? []).length).toBe(500);
+  });
+
+  test("creates a missing $XDG_DATA_HOME parent on a fresh profile", async () => {
+    const prev = process.env.XDG_DATA_HOME;
+    const fresh = path.join(DATA, "fresh", "nested");
+    process.env.XDG_DATA_HOME = fresh;
+    const file = path.join(fresh, "recently-used.xbel");
+    try {
+      expect(existsSync(fresh)).toBe(false);
+      await upsertRecentXbel(["/tmp/one.txt"]);
+      expect(existsSync(file)).toBe(true);
+      expect(readFileSync(file, "utf8")).toContain("file:///tmp/one.txt");
+    } finally {
+      process.env.XDG_DATA_HOME = prev;
+    }
   });
 });
 
