@@ -146,11 +146,19 @@ of the estate.
 
 - `make help` — list every target (the default).
 - `make build` — compile the binary into `dist/tfm`.
-- `make test` — run the checks, the test suite and the version smoke test.
-- `make release-artifacts` — build the universal macOS binary and write the
-  checksum file next to it.
-- `make release VERSION=1.2.3` — build the artifacts, tag `v1.2.3` locally and
-  print the command that pushes it. It never pushes by itself.
+- `make test` — run the changelog check, the checks, the test suite and the
+  version smoke test.
+- `make verify` — check the compiled binary and, when present, the release
+  checksum.
+- `make run` — run the compiled binary.
+- `make install` — install the compiled binary with `install.sh` into
+  `~/.local/bin`.
+- `make release-artifacts` — build the universal macOS binary and its verified
+  checksum file.
+- `make release-notes VERSION=1.2.3` — print the changelog section of a version.
+- `make release VERSION=1.2.3` — move `[Unreleased]` to `1.2.3`, update
+  `package.json`, test, build, verify, commit the bump and tag `v1.2.3`. It
+  prints the push commands and never pushes by itself.
 - `make clean` — remove the build output.
 
 The release publishes `tfm-universal-macos.gz` and the sidecar

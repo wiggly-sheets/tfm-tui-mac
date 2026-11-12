@@ -57,14 +57,20 @@ Pure logic belongs in `src/app`, so it can be tested without a terminal.
 
 ## Releases
 
-Releases are built by `.github/workflows/release.yml` on a version tag:
+Cut a release with the shared target:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+make release VERSION=1.0.0
+git push origin main v1.0.0
 ```
 
-The tag must match `package.json` (`v` + the version there), or the workflow
-fails before building. The workflow compiles the Linux x64/arm64 and macOS
+`make release` moves `[Unreleased]` in `CHANGELOG.md` to the version, sets the
+same version in `package.json`, runs `make test`, builds and verifies the
+artifacts, commits the bump and creates the annotated tag. It never pushes.
+
+Pushing the tag starts `.github/workflows/release.yml`. The tag must match
+`package.json` (`v` + the version there), or the workflow fails before
+building. The workflow compiles the Linux x64/arm64 and macOS
 x64/arm64/universal artifacts, attaches the ffmpeg sidecars, and publishes the
-release with `dist/*.gz` plus a `.sha256` sidecar each.
+release with `dist/*.gz` plus a `.sha256` sidecar each and the changelog
+section of the version.

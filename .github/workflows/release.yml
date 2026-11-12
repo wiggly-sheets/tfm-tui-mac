@@ -209,16 +209,30 @@ jobs:
 
       # The notes are the section of our own CHANGELOG for this version. A
       # version without a section fails the release, so the exit code of the
-      # script is never swallowed.
+      # checker and the extractor is never swallowed.
       - name: Release notes from the CHANGELOG
         run: |
+          set -euo pipefail
+          ./scripts/changelog.sh check
           VERSION="${{ github.ref_name }}"
-          ./scripts/release-notes.sh "${VERSION#v}" > release-notes.md
+          ./scripts/changelog.sh notes "${VERSION#v}" > release-notes.md
+          {
+            echo ""
+            echo "## Checksums"
+            echo ""
+            echo '```'
+            cat dist/*.sha256
+            echo '```'
+          } >> release-notes.md
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          name: tfm ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
           body_path: release-notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
           files: |
             dist/tfm-x86_64-linux.gz
             dist/tfm-x86_64-linux.gz.sha256

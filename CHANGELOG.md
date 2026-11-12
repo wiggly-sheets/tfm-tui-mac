@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## [Unreleased]
 
-Self-update for install.sh installs:
+### Added
+
+**Self-update for install.sh installs:**
 
 - `tfm --update` downloads the latest release for this platform, verifies its
   `sha256`, smoke-tests the staged build and atomically replaces the installed
@@ -15,61 +17,18 @@ Self-update for install.sh installs:
 - `install.sh` now records an install marker (`$XDG_DATA_HOME/tfm/install.json`)
   so the running binary can tell it was installed by this script.
 
-Build, CI and docs:
+**macOS support:**
 
-- CI runs the compiled binary and checks its `--version` output; both workflows
-  add concurrency groups and least-privilege permissions; releases publish the
-  notes of the CHANGELOG and keep artifacts for seven days.
-- The build interface now follows the shared contract of the estate: `make`
-  prints the targets, `make build` compiles the binary, `make test` runs the
-  checks and the test suite, `make release-artifacts` builds the universal
-  binary with its checksum file, `make release VERSION=x.y.z` prepares a
-  release without pushing, and `make clean` removes the build output.
-- The release notes come from the section of this CHANGELOG for the released
-  version. A stable version without a section fails the release.
-- Dependabot for bun and GitHub Actions; issue and PR templates; `SECURITY.md`
-  and `CONTRIBUTING.md`.
+- macOS is now supported with full port parity. Releases ship `aarch64-macos`; trash, servers, Finder tags and file opens go through the built-in macOS tools (`trash`, `diskutil`, `open`). macOS is added to CI.
 
-macOS is now supported with full port parity. Releases ship
-`aarch64-macos`; trash, servers, Finder tags and file opens go through the
-built-in macOS tools (`trash`, `diskutil`, `open`). macOS is added to CI.
-
-macOS fixes in this release:
-
-- Renames work correctly on case-insensitive APFS.
-- Writing a file no longer clobbers its Finder tags.
-- Copy preserves extended attributes (Finder tags, quarantine, resource forks)
-  on a bounded background lane, so per-file progress never waits on the
-  attribute spawns.
-- Finder tag sync uses the `tag` CLI only (writing the tag attribute directly
-  would corrupt it); with no CLI installed tfm leaves the attribute untouched.
-- `/System/Applications` is searched for bundled apps.
-
-Icon rendering fix in this release:
-
-- Corrected the image-protocol fallback: iTerm2 now falls back to Nerd Font
-  glyphs. Stable iTerm2 does not report pixel dimensions, so the previous
-  sixel placements reserved cell space and rendered blank. kitty, WezTerm and
-  Ghostty keep color rasters; tmux, the Linux console and terminals with no
-  graphics protocol keep their glyphs.
-
-Build and packaging in this release:
-
-- `scripts/build.ts` builds any subset of the release targets (`linux-x64`,
-  `linux-arm64`, `mac-x64`, `mac-arm64`, `mac-universal`) from one host, or
-  `all` for the full matrix. `mac-universal` lipos both darwin slices into
-  `dist/tfm-universal-macos` (macOS host required).
-- Release CI ships macOS x64, arm64 and universal binaries; `install.sh`
-  recognizes `Darwin-x86_64`.
-
-Keyboard and navigation in this release:
+**Keyboard and navigation:**
 
 - Cmd/Super is a distinct modifier (`cmd` / `super` / `command`) alongside alt.
 - Go to Folder quick-jump popup (`shift+cmd+g`, remappable).
 - New shortcuts: `ctrl+b` toggle sidebar, `alt+t` next theme, `alt+s` cycle
   sort, `alt+shift+s` reverse sort.
 
-Panes and view in this release:
+**Panes and view:**
 
 - Per-pane view modes plus a new Miller columns view; `ctrl+g` cycles the
   active pane's mode (grid → list → columns).
@@ -85,12 +44,61 @@ Panes and view in this release:
   showing details for the current selection; it shares the right column with the
   preview.
 
-Interaction in this release:
+**Interaction:**
 
 - Internal drag and drop on every terminal (OSC 72 on kitty, press-hold
   fallback elsewhere).
 - Opt-in mouse drag-resize: `[ui] mouse-resize-sidebar`, `mouse-resize-split`
   and `mouse-resize-preview`, all off by default.
+
+### Changed
+
+**Build and CI:**
+
+- CI runs the compiled binary and checks its `--version` output; both workflows
+  add concurrency groups and least-privilege permissions; releases publish the
+  notes of the CHANGELOG and keep artifacts for seven days.
+- The build interface now follows the shared contract of the estate: `make`
+  prints the targets, `make build` compiles the binary, `make test` runs the
+  checks and the test suite, `make release-artifacts` builds the universal
+  binary with its checksum file, `make release VERSION=x.y.z` prepares a
+  release without pushing, and `make clean` removes the build output.
+- The release notes come from the section of this CHANGELOG for the released
+  version. A stable version without a section fails the release.
+- Dependabot for bun and GitHub Actions; issue and PR templates; `SECURITY.md`
+  and `CONTRIBUTING.md`.
+
+**Build and packaging:**
+
+- `scripts/build.ts` builds any subset of the release targets (`linux-x64`,
+  `linux-arm64`, `mac-x64`, `mac-arm64`, `mac-universal`) from one host, or
+  `all` for the full matrix. `mac-universal` lipos both darwin slices into
+  `dist/tfm-universal-macos` (macOS host required).
+- Release CI ships macOS x64, arm64 and universal binaries; `install.sh`
+  recognizes `Darwin-x86_64`.
+
+### Fixed
+
+**macOS fixes:**
+
+- Renames work correctly on case-insensitive APFS.
+- Writing a file no longer clobbers its Finder tags.
+- Copy preserves extended attributes (Finder tags, quarantine, resource forks)
+  on a bounded background lane, so per-file progress never waits on the
+  attribute spawns.
+- Finder tag sync uses the `tag` CLI only (writing the tag attribute directly
+  would corrupt it); with no CLI installed tfm leaves the attribute untouched.
+- `/System/Applications` is searched for bundled apps.
+
+**Icon rendering:**
+
+- Corrected the image-protocol fallback: iTerm2 now falls back to Nerd Font
+  glyphs. Stable iTerm2 does not report pixel dimensions, so the previous
+  sixel placements reserved cell space and rendered blank. kitty, WezTerm and
+  Ghostty keep color rasters; tmux, the Linux console and terminals with no
+  graphics protocol keep their glyphs.
+
+<!-- pre-versioning -->
 
 ## 1.0.0 — first stable release
 
