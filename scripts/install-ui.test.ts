@@ -30,10 +30,10 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 
-// skip on BSD/macOS: installer is a bash script with bashisms
-if (process.platform !== "linux") {
-  describe.skip("installer rendering (linux-only)", () => {});
-}
+// These tests run on Linux and macOS on purpose: the macOS job is the one that
+// exercises install.sh under /bin/bash 3.2, which is what `curl | bash` uses
+// there. A guard that claimed to skip the suite on macOS once hid a broken
+// download bar, because describe.skip(name, fn) never runs fn.
 
 // FANCY/COLS come AFTER the source on purpose: install.sh derives them from the
 // environment at load time (no tty here → FANCY=0), and the test decides.
