@@ -372,11 +372,17 @@ progress_paint() { # progress_paint BAR STATS
 
 # Milliseconds since the epoch. $EPOCHREALTIME is a bash builtin: the bar
 # repaints ~10x/s, and a `date` fork per tick would be 10 processes a second.
+# bash 3.2 — the /bin/bash macOS ships, which is what `curl | bash` runs — has
+# no $EPOCHREALTIME, so it borrows perl's clock: the second-only `date` fallback
+# below would report 0 ms per tick and freeze the speed and the ETA at an em dash.
 now_ms() {
   local t=${EPOCHREALTIME:-}
   if [ -n "$t" ]; then
     t=${t//./}
     printf '%s' "${t:0:13}"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000' ||
+      printf '%s' "$(( $(date +%s) * 1000 ))"
   else
     printf '%s' "$(( $(date +%s) * 1000 ))"
   fi

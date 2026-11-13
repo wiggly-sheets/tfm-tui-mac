@@ -79,6 +79,12 @@
 
 ### Fixed
 
+**Installer:**
+
+- The download bar reports the live speed and the ETA under the `/bin/bash`
+  3.2 that macOS ships, which has no `$EPOCHREALTIME`; before, both stayed
+  an em dash for the whole download.
+
 **macOS fixes:**
 
 - Renames work correctly on case-insensitive APFS.

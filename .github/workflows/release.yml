@@ -103,7 +103,7 @@ jobs:
   # use (see the BtbN comment above) — instead of a brew install (brew ffmpeg
   # links Homebrew dylibs and would not run on machines without them).
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
