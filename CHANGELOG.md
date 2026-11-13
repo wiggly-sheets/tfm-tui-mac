@@ -104,6 +104,12 @@
   Ghostty keep color rasters; tmux, the Linux console and terminals with no
   graphics protocol keep their glyphs.
 
+## [1.0.1-rc.1] - 2026-11-13
+
+### Added
+
+- Release pipeline trial.
+
 <!-- pre-versioning -->
 
 ## 1.0.0 — first stable release
