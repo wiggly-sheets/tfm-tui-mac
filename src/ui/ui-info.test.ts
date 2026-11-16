@@ -28,6 +28,7 @@ const mkClock = (): { sched: Scheduler; flush: () => void } => {
 
 const mkPane = () => {
   const kids: any[] = [];
+  let adds = 0;
   return {
     node: {
       getChildren: () => kids,
@@ -36,10 +37,12 @@ const mkPane = () => {
         if (i >= 0) kids.splice(i, 1);
       },
       add: (c: any) => {
+        adds++;
         kids.push(c);
       },
     },
     childCount: () => kids.length,
+    addCount: () => adds,
   };
 };
 
@@ -68,25 +71,17 @@ describe("info visibility guard", () => {
     expect(pane.childCount()).toBe(0);
   });
 
-  test("renders the no-selection state when visible", () => {
-    const clock = mkClock();
-    const pane = mkPane();
-    const info = mkInfo({ visible: true, clock, pane });
-    info.renderInfo();
-    clock.flush();
-    expect(pane.childCount()).toBeGreaterThan(0);
-  });
-
-  test("coalesces a burst into a single rebuild", () => {
+  test("a burst of visible renders paints the no-selection state exactly once", () => {
     const clock = mkClock();
     const pane = mkPane();
     const info = mkInfo({ visible: true, clock, pane });
     for (let i = 0; i < 5; i++) info.renderInfo();
     clock.flush();
-    expect(pane.childCount()).toBe(1); // one "no selection" Text, exactly once
+    expect(pane.addCount()).toBe(1); // debounced: one paint, not five
+    expect(pane.childCount()).toBe(1); // one "no selection" Text
   });
 
-  test("absent infoVisible gate is treated as visible (test fakes stay light)", () => {
+  test("an absent infoVisible gate is treated as visible", () => {
     const clock = mkClock();
     const pane = mkPane();
     const info = makeInfoSidebar({
@@ -101,6 +96,6 @@ describe("info visibility guard", () => {
     });
     info.renderInfo();
     clock.flush();
-    expect(pane.childCount()).toBeGreaterThan(0);
+    expect(pane.addCount()).toBe(1);
   });
 });

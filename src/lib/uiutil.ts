@@ -74,8 +74,8 @@ export const destroyChildren = (node: unknown, keep?: unknown): void => {
 
 // trailing debounce: every call pushes the run `ms` back; the body sees the
 // latest closure state when it finally fires
-// injectable timer pair: tests pass a virtual clock (Bun has no fake
-// timers), production defaults to the real one
+// injectable timer pair: tests can pass a virtual clock; production defaults
+// to the real one
 export type Scheduler = {
   setTimeout(cb: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;

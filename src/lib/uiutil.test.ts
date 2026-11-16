@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { BoxRenderable, TextRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import {
@@ -11,8 +11,8 @@ import {
   type Scheduler,
 } from "./uiutil";
 
-// Bun 1.3.14 has no fake timers, so debounced takes an injected Scheduler:
-// these tests advance a virtual clock and never race the wall clock (a
+// Bun 1.3.4+ has fake timers; debounced also takes an injected Scheduler, so
+// these tests can advance a virtual clock and never race the wall clock (a
 // fixed-sleep version of the trails test flaked red under parallel load).
 const mkClock = () => {
   let now = 0;
@@ -212,12 +212,17 @@ describe("debounced", () => {
     expect(runs).toBe(1);
   });
 
-  test("default scheduler still works against the real clock", async () => {
-    let runs = 0;
-    const run = debounced(5, () => runs++);
-    run();
-    await Bun.sleep(50);
-    expect(runs).toBe(1);
+  test("default scheduler still works (fake clock on the global timers)", () => {
+    jest.useFakeTimers();
+    try {
+      let runs = 0;
+      const run = debounced(5, () => runs++);
+      run();
+      jest.advanceTimersByTime(5);
+      expect(runs).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

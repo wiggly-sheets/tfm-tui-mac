@@ -58,22 +58,35 @@ describe("isTextLike", () => {
 describe("syntaxStyleSig", () => {
   const base: Theme = { ...defaultConfig.theme };
 
-  test("differs when only a syntax key differs", () => {
-    const other: Theme = { ...base, syntaxString: "#000000" };
-    expect(syntaxStyleSig(other)).not.toBe(syntaxStyleSig(base));
+  // every field syntaxStyleSig reads: a dropped field would stop this key
+  // from changing the signature, which is what the retheme check depends on
+  const SIG_KEYS: (keyof Theme)[] = [
+    "accent",
+    "white",
+    "sidebarFg",
+    "sidebarFgMuted",
+    "syntaxString",
+    "syntaxNumber",
+    "syntaxType",
+    "syntaxFunction",
+    "syntaxOperator",
+    "syntaxProperty",
+  ];
+
+  test("changes when any signature field changes", () => {
+    const sig = syntaxStyleSig(base);
+    for (const key of SIG_KEYS) {
+      const other: Theme = { ...base, [key]: "#000000" };
+      expect({ key, changed: syntaxStyleSig(other) !== sig }).toEqual({ key, changed: true });
+    }
   });
 
   test("is stable for the same theme", () => {
-    expect(syntaxStyleSig(base)).toBe(syntaxStyleSig({ ...base }));
+    expect(syntaxStyleSig({ ...base })).toBe(syntaxStyleSig(base));
   });
 });
 
 describe("buildSyntaxStyle", () => {
-  test("builds a style from a Theme without throwing", () => {
-    const style = buildSyntaxStyle({ ...defaultConfig.theme });
-    expect(style).toBeTruthy();
-  });
-
   test("constant.builtin lightens number instead of copying it", () => {
     // presets distinguish builtin constants; without a Theme slot the leaf
     // derives it as number-mixed-toward-white — a real visible step, math

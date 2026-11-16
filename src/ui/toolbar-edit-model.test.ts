@@ -35,8 +35,11 @@ describe("addItem", () => {
 
 describe("moveItem", () => {
   test("forward: drop after the source subtracts the removed slot", () => {
-    expect(moveItem(L(A, B, C), 0, 2)).toEqual([B, A, C]);
-    expect(moveItem(L(A, B, C), 0, 3)).toEqual([B, C, A]);
+    const src = L(A, B, C);
+    expect(moveItem(src, 0, 2)).toEqual([B, A, C]);
+    expect(moveItem(src, 0, 3)).toEqual([B, C, A]);
+    // every op returns a fresh list and never mutates its input
+    expect(src).toEqual([A, B, C]);
   });
 
   test("backward: drop before the source keeps the boundary", () => {
@@ -53,17 +56,13 @@ describe("moveItem", () => {
     expect(moveItem(L(A, B), 5, 0)).toEqual([A, B]);
     expect(moveItem(L(A, B), -1, 0)).toEqual([A, B]);
   });
-
-  test("does not mutate the input", () => {
-    const src = L(A, B);
-    moveItem(src, 0, 2);
-    expect(src).toEqual([A, B]);
-  });
 });
 
 describe("removeItem", () => {
-  test("drops the id, keeps order", () => {
-    expect(removeItem(L(A, B, C), B)).toEqual([A, C]);
+  test("drops the id, keeps order (fresh list, input intact)", () => {
+    const src = L(A, B, C);
+    expect(removeItem(src, B)).toEqual([A, C]);
+    expect(src).toEqual([A, B, C]);
   });
 
   test("an absent id is a no-op", () => {
@@ -75,10 +74,5 @@ describe("toggleItem", () => {
   test("appends when absent, removes when present", () => {
     expect(toggleItem(L(A), B)).toEqual([A, B]);
     expect(toggleItem(L(A, B), A)).toEqual([B]);
-  });
-
-  test("double toggle is identity", () => {
-    const src = L(A, B);
-    expect(toggleItem(toggleItem(src, C), C)).toEqual(src);
   });
 });

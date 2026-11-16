@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { Box } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import {
@@ -99,17 +99,23 @@ describe("shouldToast", () => {
 
 describe("makeProgress gates", () => {
   test("pauseGate blocks while paused and unblocks on resume", async () => {
-    const { prog, pauseGate } = makeProgress(stubCtx().ctx);
-    prog.paused = true;
-    let released = false;
-    const gate = pauseGate().then(() => {
-      released = true;
-    });
-    await new Promise((r) => setTimeout(r, 120));
-    expect(released).toBe(false);
-    prog.paused = false;
-    await gate;
-    expect(released).toBe(true);
+    jest.useFakeTimers();
+    try {
+      const { prog, pauseGate } = makeProgress(stubCtx().ctx);
+      prog.paused = true;
+      let released = false;
+      const gate = pauseGate().then(() => {
+        released = true;
+      });
+      await Promise.resolve(); // let the gate enter its first sleep
+      expect(released).toBe(false);
+      prog.paused = false;
+      jest.advanceTimersByTime(80); // releases the pending sleep
+      await gate;
+      expect(released).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("pauseGate returns immediately when cancelled", async () => {
@@ -126,48 +132,46 @@ describe("makeProgress gates", () => {
     expect(() => paintProgress(true)).not.toThrow();
   });
 
-  test("showProgressToast builds with stub ctx; finish clears the spinner", () => {
-    const { prog, showProgressToast, finishProgressToast } = makeProgress(stubCtx().ctx);
-    prog.active = true;
-    showProgressToast();
-    expect(prog.toastUp).toBe(true);
-    finishProgressToast("✓ done");
-    expect(prog.toastUp).toBe(false);
-  });
-
-  test("show opens one sticky shell; finish closes it after the linger", async () => {
+  test("show opens one sticky shell; finish closes it after the linger", () => {
     // the shell belongs to ./notify — progress only drives the handle:
     // no close during the linger (notifies must keep stacking below),
-    // exactly one close after it
-    const { ctx, calls } = stubCtx();
-    const { showProgressToast, finishProgressToast } = makeProgress(ctx);
-    showProgressToast();
-    expect(calls).toEqual(["sticky:show"]);
-    finishProgressToast("✓ done");
-    // still lingering: handle open
-    expect(calls).toEqual(["sticky:show"]);
-    const deadline = Date.now() + 5000;
-    while (!calls.includes("sticky:close") && Date.now() < deadline) await Bun.sleep(50);
-    expect(calls).toEqual(["sticky:show", "sticky:close"]);
+    // exactly one close after it. Fake timers keep this deterministic.
+    jest.useFakeTimers();
+    try {
+      const { ctx, calls } = stubCtx();
+      const { showProgressToast, finishProgressToast } = makeProgress(ctx);
+      showProgressToast();
+      expect(calls).toEqual(["sticky:show"]);
+      finishProgressToast("✓ done");
+      expect(calls).toEqual(["sticky:show"]); // still lingering
+      jest.advanceTimersByTime(1799);
+      expect(calls).toEqual(["sticky:show"]);
+      jest.advanceTimersByTime(1);
+      expect(calls).toEqual(["sticky:show", "sticky:close"]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  test("re-show during the linger closes the stale handle first", async () => {
+  test("re-show during the linger closes the stale handle first", () => {
     // back-to-back transfers: without the handoff the lingering done-toast
     // and the fresh toast share the stack
-    const { ctx, calls } = stubCtx();
-    const { prog, showProgressToast, finishProgressToast } = makeProgress(ctx);
-    showProgressToast();
-    finishProgressToast("✓ done");
-    showProgressToast(); // second transfer lands inside the linger window
-    expect(calls).toEqual(["sticky:show", "sticky:close", "sticky:show"]);
-    expect(prog.toastUp).toBe(true);
-    // past the old lifecycle's linger point: it must not close the new toast.
-    // Poll the forbidden close so a regression fails fast instead of at the end.
-    const deadline = Date.now() + 2300;
-    while (Date.now() < deadline) {
-      await Bun.sleep(50);
+    jest.useFakeTimers();
+    try {
+      const { ctx, calls } = stubCtx();
+      const { prog, showProgressToast, finishProgressToast } = makeProgress(ctx);
+      showProgressToast();
+      finishProgressToast("✓ done");
+      jest.advanceTimersByTime(1700); // inside the 1800ms linger
+      showProgressToast(); // second transfer lands inside the linger window
       expect(calls).toEqual(["sticky:show", "sticky:close", "sticky:show"]);
       expect(prog.toastUp).toBe(true);
+      // past the old lifecycle's linger point: it must not close the new toast
+      jest.advanceTimersByTime(5000);
+      expect(calls).toEqual(["sticky:show", "sticky:close", "sticky:show"]);
+      expect(prog.toastUp).toBe(true);
+    } finally {
+      jest.useRealTimers();
     }
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { makeStatus } from "./ui-status";
 
 // virtual clock: the reclaim debounce is a timing unit — no wall-clock sleeps
@@ -85,22 +85,27 @@ describe("makeStatus", () => {
     expect(refreshCount()).toBe(1);
   });
 
-  test("default reset delay is used when none is given", async () => {
-    // no sched injected: exercises the real-clock default — the 2500ms
-    // default cannot fire inside a 50ms window, a safe negative assert
-    const nodes: Record<string, { content: string }> = { "tfm-status-label": { content: "" } };
-    let refreshes = 0;
-    const { setStatusMsg } = makeStatus({
-      setText: (id, text) => {
-        const n = nodes[id];
-        if (n) n.content = text;
-      },
-      refresh: () => {
-        refreshes++;
-      },
-    });
-    setStatusMsg("x");
-    await new Promise((r) => setTimeout(r, 50));
-    expect(refreshes).toBe(0); // 2500ms default — must not have fired yet
+  test("default reset delay is used when none is given", () => {
+    jest.useFakeTimers();
+    try {
+      const nodes: Record<string, { content: string }> = { "tfm-status-label": { content: "" } };
+      let refreshes = 0;
+      const { setStatusMsg } = makeStatus({
+        setText: (id, text) => {
+          const n = nodes[id];
+          if (n) n.content = text;
+        },
+        refresh: () => {
+          refreshes++;
+        },
+      });
+      setStatusMsg("x");
+      jest.advanceTimersByTime(2499);
+      expect(refreshes).toBe(0); // 2500ms default — must not have fired yet
+      jest.advanceTimersByTime(1);
+      expect(refreshes).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
