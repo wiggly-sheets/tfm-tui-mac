@@ -224,6 +224,12 @@ export type SidebarTitleMode = "tfm" | "files" | "none";
 // as do close/check whose MDI "outlines" are different busy icons).
 export type IconStyle = "filled" | "outline";
 
+// global thumbnail fitting policy ([ui] thumbnail-fit): fit shows the whole
+// source without distortion, crop fills the area and cuts overflow, stretch
+// fills the area and distorts the source. It applies to every image/video
+// thumbnail surface (grid, list, preview, and the properties hero).
+export type ThumbnailFitMode = "fit" | "crop" | "stretch";
+
 // tty mode for the Linux console / dumb terminals (no kitty graphics, no
 // Nerd-Font PUA): forces list view + ASCII glyphs + no rasters/thumbs and
 // paints one STATIC console palette (dark/light by configured-bg brightness —
@@ -269,6 +275,7 @@ export type UiConfig = {
   followTerminal: boolean;
   transparentBg: TransparentBgMode;
   icons: IconMode;
+  thumbnailFit: ThumbnailFitMode;
   iconStyle: IconStyle;
   ttyMode: TtyMode;
   forceGlyph: boolean;
@@ -1166,6 +1173,19 @@ const UI_ROWS: SchemaRow[] = [
     doc: '"opaque" = icons flattened onto the tile bg (default); "transparent" = rasters keep alpha (may fringe on some terminals); "transparent-partial" = transparent except inside floating menus/dialogs',
     label: "icons",
     blurb: "How icons blend with tile backgrounds",
+    group: "appearance",
+    subsection: "look",
+  },
+  {
+    kind: "enum",
+    section: "ui",
+    tomlKey: "thumbnail-fit",
+    prop: "thumbnailFit",
+    values: ["fit", "crop", "stretch"],
+    def: "fit",
+    doc: '"fit" = preserve the source aspect ratio and show the whole thumbnail; "crop" = fill the area and crop overflow; "stretch" = fill the area and distort the source. Applies to grid, list, preview, and properties thumbnails.',
+    label: "thumbnail fit",
+    blurb: "Show whole thumbnails, crop them, or stretch them",
     group: "appearance",
     subsection: "look",
   },

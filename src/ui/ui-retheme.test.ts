@@ -37,6 +37,7 @@ const mkCtx = () => {
     clearIconCaches: 0,
     clearFailedThumbs: 0,
     resetIconQueue: 0,
+    syncThumbnailFit: 0,
     syncTerminalTheme: 0,
     syncTerminalHeight: 0,
     repaintButtons: 0,
@@ -82,6 +83,9 @@ const mkCtx = () => {
     },
     resetIconQueue: () => {
       calls.resetIconQueue++;
+    },
+    syncThumbnailFit: () => {
+      calls.syncThumbnailFit++;
     },
     syncTerminalTheme: () => {
       calls.syncTerminalTheme++;

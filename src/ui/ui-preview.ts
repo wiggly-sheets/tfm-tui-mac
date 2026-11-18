@@ -61,7 +61,6 @@ type PreviewCtx = {
   // of clearing + re-allocating the pane per step; injectable for tests
   sched?: Scheduler;
   termH(): number; // renderer.terminalHeight — LIVE read
-  cellMetrics(): { cellW: number; cellH: number; aspect: number };
   focusKey(): string | null; // focused tile's key, else null
   tileRefs: Map<string, { selected: boolean }>; // tileRefsByKey — shared by ref; only .forEach read here
   pushThumbJob(job: ThumbJob): void; // thumbJobs is SWAPPED (reassigned) by drainThumbs — never capture the array
@@ -362,9 +361,8 @@ export const makePreview = (ctx: PreviewCtx) => {
       st.size > 0 &&
       st.size <= 26214400
     ) {
-      const w = Math.max(4, geo.w - 4);
-      const maxH = Math.max(4, geo.h - 8);
-      const h = Math.min(maxH, Math.max(3, Math.round(w / ctx.cellMetrics().aspect)));
+      const w = Math.max(4, geo.w - 2);
+      const h = Math.max(3, geo.h - 2);
       const slotId = ctx.nextIconId();
       target.add(
         Box(

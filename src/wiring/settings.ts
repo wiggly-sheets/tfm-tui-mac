@@ -439,6 +439,7 @@ export const wireRetheme = (deps: {
     },
     clearFailedThumbs,
     resetIconQueue: core.slots.resetIconQueue,
+    syncThumbnailFit: core.slots.syncThumbnailFit,
     syncTerminalTheme: fileops.terminal.syncTerminalTheme,
     syncTerminalHeight: () => fileops.terminal.syncTerminalHeight(),
     // bottom-bar slider: value/visibility/colors re-read from live config +

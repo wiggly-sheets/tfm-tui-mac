@@ -24,6 +24,13 @@ describe("parseConfigDoc", () => {
     expect(cfg.ui.dragThresholdCells).toBe(1);
     expect(cfg.keys.quit).toEqual(["ctrl+q"]);
     expect(cfg.theme.bg).toBe("#1a1b26");
+    expect(cfg.ui.thumbnailFit).toBe("fit");
+  });
+
+  test("thumbnail-fit accepts the three policies and rejects others", () => {
+    expect(parseConfigDoc({ ui: { "thumbnail-fit": "crop" } }).ui.thumbnailFit).toBe("crop");
+    expect(parseConfigDoc({ ui: { "thumbnail-fit": "stretch" } }).ui.thumbnailFit).toBe("stretch");
+    expect(parseConfigDoc({ ui: { "thumbnail-fit": "zoom" } }).ui.thumbnailFit).toBe("fit");
   });
 
   test("clamps ints, rejects bad bools/enums/hex per key", () => {

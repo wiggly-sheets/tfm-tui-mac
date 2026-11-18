@@ -17,6 +17,7 @@ import {
   type ThumbJob,
 } from "./ui-slots";
 import type { Theme } from "../config/config";
+import type { ThumbnailFitMode } from "../config/config-schema";
 
 // icon rasters need one of the SVG renderers (same gate as icons.test.ts)
 const hasInproc = await import("@resvg/resvg-js").then(() => true).catch(() => false);
@@ -451,9 +452,10 @@ describe("thumbJobRank", () => {
 // and video cover-crop into the tile, SVG vectors contain. Getting this wrong
 // crops SVG drawings — the exact regression this pins.
 describe("thumbImageFit", () => {
-  test("rasters/video cover-crop; SVG vectors contain", () => {
-    expect(thumbImageFit(false)).toBe("cover");
-    expect(thumbImageFit(true)).toBe("fit");
+  test("fit contains, crop covers, stretch fills", () => {
+    expect(thumbImageFit("fit")).toBe("fit");
+    expect(thumbImageFit("crop")).toBe("cover");
+    expect(thumbImageFit("stretch")).toBe("fill");
   });
 });
 
@@ -487,13 +489,14 @@ describe("thumbnail mount", () => {
     rmSync(cacheSandbox, { recursive: true, force: true });
   });
 
-  const mkSlots = () =>
+  const mkSlots = (fit: () => ThumbnailFitMode = () => "fit") =>
     makeSlots({
       renderer: () => t.renderer,
       byId: (id) => t.renderer.root.findDescendantById(id),
       colors: () => ({ bg: BG, sidebarFgMuted: FG, sidebarBg: BG, hoverBg: BG, white: "#fff" }) as unknown as Theme,
       uiStyle: () => "solid",
       iconsMode: () => "opaque",
+      thumbnailFit: fit,
       iconCells: () => 4,
       modalOpen: () => false,
       glyphFor: () => "F",
@@ -537,7 +540,7 @@ describe("thumbnail mount", () => {
     return { dir, p };
   };
 
-  test('a drained raster thumb mounts with fit:"cover"', async () => {
+  test('a drained raster thumb mounts with the default fit:"fit"', async () => {
     const slotId = "tfm-tile-0-thumb";
     t.renderer.root.add(Box({ id: slotId, width: 8, height: 8 }));
     await t.renderOnce();
@@ -551,7 +554,30 @@ describe("thumbnail mount", () => {
 
     const img = t.renderer.root.findDescendantById(`${slotId}-t`) as any;
     expect(img).toBeTruthy();
+    expect(img.fit).toBe("fit");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("syncThumbnailFit applies a live policy flip to a mounted thumb", async () => {
+    const slotId = "tfm-tile-fit-thumb";
+    t.renderer.root.add(Box({ id: slotId, width: 8, height: 8 }));
+    await t.renderOnce();
+    const { dir, p } = writePng("fit.png");
+    let mode: ThumbnailFitMode = "fit";
+    const slots = mkSlots(() => mode);
+    slots.pushThumbJob({ slotId, path: p, mtimeMs: 1, size: 1, wCells: 4, vector: false, fallbackGlyph: "F" });
+    openResolution();
+    openCaps();
+    await slots.drainThumbs();
+    await t.renderOnce();
+    const img = t.renderer.root.findDescendantById(`${slotId}-t`) as any;
+    expect(img.fit).toBe("fit");
+    mode = "crop";
+    slots.syncThumbnailFit();
     expect(img.fit).toBe("cover");
+    mode = "stretch";
+    slots.syncThumbnailFit();
+    expect(img.fit).toBe("fill");
     rmSync(dir, { recursive: true, force: true });
   });
 

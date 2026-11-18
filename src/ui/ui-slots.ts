@@ -12,6 +12,7 @@ import {
   type CliRenderer,
   type ColorInput,
   ImageRenderable,
+  type ImageFit,
   type ImageRenderProtocol,
   type MouseEvent,
   type TerminalCapabilities,
@@ -21,6 +22,7 @@ import { stat } from "node:fs/promises";
 import { iconPng, brandPng, svgAspect, thumbPng, THUMB_MAX_BYTES } from "./icons";
 import { swallow } from "../app/log";
 import type { IconMode, IconStyle, Theme } from "../config/config";
+import type { ThumbnailFitMode } from "../config/config-schema";
 import { intToHex } from "../config/color";
 import { applySurface, btnSurface, iconTransparent, slotBg, type UiStyle } from "./style";
 import type { MaybeNode } from "../lib/node-like";
@@ -227,13 +229,18 @@ export const probeThumbStat = async (p: string): Promise<{ size: number; mtimeMs
   }
 };
 
-// How the mounted raster is fitted into its cell box. Raster/video rasters are
-// either aspect-preserving (Bun.Image `fit:"inside"`) or exact-box (ffmpeg
-// cover-crop; magick `^`+extent), so cover-crop them to fill the tile. SVG
-// thumbs via resvg are ALSO aspect-preserving but must be CONTAINED (contain
-// letterboxes; cover would crop the drawing's edges) — that was the old
-// `fit:"fit"` behavior, restored here for vectors only.
-export const thumbImageFit = (vector: boolean): "fit" | "cover" => (vector ? "fit" : "cover");
+// The global thumbnail policy maps to OpenTUI's fit vocabulary in ONE place.
+// Every thumbnail source and every thumbnail surface uses this mapping.
+export const thumbImageFit = (mode: ThumbnailFitMode): ImageFit => {
+  switch (mode) {
+    case "crop":
+      return "cover";
+    case "stretch":
+      return "fill";
+    case "fit":
+      return "fit";
+  }
+};
 
 // --- Image render protocol for tfm's own rasters -------------------------
 // A raster may only be mounted where it TRULY draws; everywhere else the slot
@@ -308,6 +315,9 @@ export type SlotsCtx = {
   uiStyle(): UiStyle;
   // [ui] icons — read live like uiStyle (mode flip re-rasters)
   iconsMode(): IconMode;
+  // [ui] thumbnail-fit — read live for every drain and for the mounted-image
+  // update path. Optional so test fakes keep working (absent = fit).
+  thumbnailFit?(): ThumbnailFitMode;
   // [ui] icon-style — read live (toggle re-rasters via resetIconQueue).
   // Optional so test fakes keep working (absent = filled).
   iconStyle?(): IconStyle;
@@ -368,6 +378,10 @@ export const makeSlots = (ctx: SlotsCtx) => {
   // blank until the cwd changed, because renderGrid early-outs on an unchanged
   // listing and never re-pushed them.
   const thumbOwners = new Map<string, string>();
+  // slot ids with a mounted thumbnail Image. Ownership keys are dropped on a
+  // successful mount, so the live-policy walk needs its own registry; pruned
+  // lazily in syncThumbnailFit when the slot is gone.
+  const mountedThumbs = new Set<string>();
   // a drain in flight keeps its ownership keys: thumbJobs is emptied at drain
   // start, so the array length alone cannot tell the cap that work is running
   let thumbDraining = 0;
@@ -389,6 +403,8 @@ export const makeSlots = (ctx: SlotsCtx) => {
   // resetIconQueue (theme flip / resize / icon-mode change) marks every spec
   // for a re-raster even if an in-flight pass already claimed it
   let iconForceRedrain = false;
+
+  const currentThumbFit = (): ImageFit => thumbImageFit(ctx.thumbnailFit?.() ?? "fit");
 
   const cellMetrics = () => {
     const r = ctx.renderer();
@@ -434,6 +450,12 @@ export const makeSlots = (ctx: SlotsCtx) => {
           id: slotId,
           width: Math.round(heightCells * 2),
           height: heightCells,
+          // The raster art FILLS the slot (drawn at the slot's height), so
+          // the fallback glyph must sit where that art sits: a top-aligned
+          // glyph in a 2..5-row slot put the icon on the row ABOVE the name
+          // (list view). The slot is a COLUMN box, so justifyContent centers
+          // it vertically; horizontal placement is untouched.
+          justifyContent: "center",
           ...(onMouseDown ? { onMouseDown } : {}),
         },
         Text({ id: `${slotId}-g`, content: g, fg: states[initialState]?.fg ?? states[0]?.fg }),
@@ -505,6 +527,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
       // OUR key is removed — a rebuild may have re-pushed the slot with a new one.
       const forgetThumb = (j: ThumbJob): void => {
         if (thumbOwners.get(j.slotId) === thumbJobKey(j)) thumbOwners.delete(j.slotId);
+        mountedThumbs.delete(j.slotId);
       };
       let idx = 0;
       const worker = async () => {
@@ -558,12 +581,17 @@ export const makeSlots = (ctx: SlotsCtx) => {
               source: bytes,
               width: j.wCells,
               height: hCells,
-              // rasters/video cover-crop into the tile; SVG vectors contain (see
-              // thumbImageFit) — icons keep fit:"fit" at their own site
-              fit: thumbImageFit(j.vector),
+              // one global policy for every thumbnail source and surface
+              fit: currentThumbFit(),
               protocol,
             });
             if (img.loadPromise) await img.loadPromise;
+            // the policy can change while the source is decoding/loading. The
+            // image is not mounted yet, so the live-update walk cannot see it;
+            // settle on the CURRENT policy immediately before mounting.
+            try {
+              img.fit = currentThumbFit();
+            } catch {}
             // RE-RESOLVE: a rebuild during the raster detached the captured node;
             // writing into it leaked a native image buffer and painted nowhere.
             // A same-id replacement is the live slot, so use the fresh lookup.
@@ -575,6 +603,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
               try {
                 img.destroy?.();
               } catch {}
+              mountedThumbs.delete(j.slotId);
               continue;
             }
             // the raster is this slot's now — its ownership key has no further job
@@ -583,6 +612,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
             // raster) owns native memory that would otherwise wait for the GC poke
             destroyChildren(slot);
             slot.add(img);
+            mountedThumbs.add(j.slotId);
           } catch {
             // `slot` is re-assigned inside the try above, so the catch sees the
             // unnarrowed type again — the optional chain re-establishes it
@@ -599,6 +629,23 @@ export const makeSlots = (ctx: SlotsCtx) => {
       await Promise.all(Array.from({ length: Math.min(THUMB_WORKERS, jobs.length) }, () => worker()));
     } finally {
       thumbDraining--;
+    }
+  };
+
+  // Apply the live global policy to every mounted thumbnail. The source
+  // pixels are policy-independent (all producers preserve the whole image),
+  // so a mode change is a cheap draw-policy update rather than a re-raster.
+  const syncThumbnailFit = (): void => {
+    const fit = currentThumbFit();
+    for (const slotId of mountedThumbs.keys()) {
+      const img = ctx.byId(`${slotId}-t`);
+      if (!img) {
+        mountedThumbs.delete(slotId);
+        continue;
+      }
+      try {
+        (img as { fit?: ImageFit }).fit = fit;
+      } catch {}
     }
   };
 
@@ -924,6 +971,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
     makeIconSlot,
     setIconState,
     drainThumbs,
+    syncThumbnailFit,
     drainIconQueue,
     setScrim,
     nextIconId: (): string => `tfm-icon-${iconSeq++}`,

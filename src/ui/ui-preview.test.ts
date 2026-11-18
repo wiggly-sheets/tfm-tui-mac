@@ -64,7 +64,6 @@ const mkPreview = (opts: { visible: boolean; clock: ReturnType<typeof mkClock>; 
     visible: () => opts.visible,
     sched: opts.clock.sched,
     termH: () => 24,
-    cellMetrics: () => ({ cellW: 10, cellH: 20, aspect: 0.5 }),
     focusKey: () => null,
     tileRefs: new Map(),
     pushThumbJob: () => {},
@@ -157,7 +156,6 @@ const mkLivePreview = (file: string, wrap: WrapMode = "none") => {
     previewEnabled: () => true,
     previewWidth: () => 40,
     termH: () => 24,
-    cellMetrics: () => ({ cellW: 10, cellH: 20, aspect: 0.5 }),
     focusKey: () => file,
     tileRefs: new Map(),
     pushThumbJob: () => {},
@@ -264,7 +262,6 @@ describeNonRoot("sudo preview", () => {
         previewEnabled: () => true,
         previewWidth: () => 40,
         termH: () => 24,
-        cellMetrics: () => ({ cellW: 10, cellH: 20, aspect: 0.5 }),
         focusKey: () => file,
         tileRefs: new Map(),
         pushThumbJob: () => {},
@@ -321,7 +318,6 @@ describe("preview rich rendering", () => {
       previewEnabled: () => true,
       previewWidth: () => 40,
       termH: () => 24,
-      cellMetrics: () => ({ cellW: 10, cellH: 20, aspect: 0.5 }),
       focusKey: () => file,
       tileRefs: new Map(),
       pushThumbJob: () => {},
@@ -412,7 +408,6 @@ describe("preview rich rendering", () => {
       previewEnabled: () => true,
       previewWidth: () => 40,
       termH: () => 24,
-      cellMetrics: () => ({ cellW: 10, cellH: 20, aspect: 0.5 }),
       focusKey: () => file,
       tileRefs: new Map(),
       pushThumbJob: () => {},
@@ -450,7 +445,6 @@ describe("preview rich rendering", () => {
         previewEnabled: () => true,
         previewWidth: () => 40,
         termH: () => 18,
-        cellMetrics: () => ({ cellW: 10, cellH: 20, aspect: 0.5 }),
         focusKey: () => file,
         tileRefs: new Map(),
         pushThumbJob: () => {},
@@ -534,6 +528,40 @@ describe("preview rich rendering", () => {
       for (const c of fences) expect(c.wrapMode).toBe(mode);
       for (const c of prose) expect(c.wrapMode).toBe("word");
     }
+  });
+
+  test("image preview fills the pane content rectangle, not an invented square", async () => {
+    const img = path.join(tmpDir, "pic.png");
+    writeFileSync(img, "pngbytes");
+    const jobs: any[] = [];
+    const clock = mkClock();
+    const id = `tfm-preview-${paneSeq++}`;
+    const pane = Box({ id, width: 40, height: 20 });
+    t.renderer.root.add(pane);
+    const p = makePreview({
+      renderer: t.renderer,
+      byId: () => t.renderer.root.findDescendantById(id),
+      colors: () => ({ ...defaultConfig.theme }) as Theme,
+      uiStyle: () => "solid",
+      previewEnabled: () => true,
+      previewWidth: () => 40,
+      termH: () => 24,
+      focusKey: () => img,
+      tileRefs: new Map(),
+      pushThumbJob: (j) => void jobs.push(j),
+      drainThumbs: () => {},
+      drainIconQueue: () => {},
+      nextIconId: () => `slot-${paneSeq}`,
+      fallbackGlyphFor: () => "?",
+      sched: clock.sched,
+    });
+    p.renderPreview();
+    clock.flush();
+    expect(await settleUntil(t, () => jobs.length > 0)).toBe(true);
+    const job = jobs[0];
+    expect(job.wCells).toBe(38);
+    expect(job.hCells).toBe(22);
+    expect(await settleUntil(t, () => !!t.renderer.root.findDescendantById(job.slotId))).toBe(true);
   });
 
   test("no-filetype files follow the wrap mode and get the gutter", async () => {
