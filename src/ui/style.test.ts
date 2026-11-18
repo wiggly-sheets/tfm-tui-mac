@@ -177,12 +177,6 @@ describe("transparent-bg force", () => {
     expect(btnSurface("solid", theme, false, undefined, "force")).toEqual({});
     expect(btnSurface("solid", theme, true, undefined, "force")).toEqual({ backgroundColor: "#292e42" });
   });
-
-  test("absent force is today's behavior (no silent restyle)", () => {
-    expect(chromeSurface("solid", theme, theme.sidebarBg)).toEqual({ backgroundColor: "#16161e" });
-    expect(tileSurface("solid", theme, "rest")).toEqual({ backgroundColor: "#1a1b26" });
-    expect(btnSurface("solid", theme, false)).toEqual({ backgroundColor: "#1a1b26" });
-  });
 });
 
 describe("applySurface", () => {

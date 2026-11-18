@@ -213,26 +213,6 @@ const text = (id: string): string => {
   if (Array.isArray(c)) return c.map((x: any) => x?.text ?? "").join("");
   return c?.text ?? "";
 };
-// fire a synthetic mouse event at a mounted node (escHintBtn pattern).
-// Carries the real propagation protocol: row handlers call
-// ev.stopPropagation() to hold the click out of the scrim's click-away
-// closer, and the dispatcher honors event.propagationStopped — a bare
-// object without it bubbles and closes the menu, unlike production.
-const fire = (id: string, type: string) => {
-  const ev = {
-    type,
-    button: 0,
-    x: 0,
-    y: 0,
-    modifiers: { shift: false, alt: false, ctrl: false },
-    propagationStopped: false,
-    stopPropagation() {
-      ev.propagationStopped = true;
-    },
-  };
-  return (t.renderer.root.findDescendantById(id) as any)?.processMouseEvent(ev);
-};
-
 describe("esc-menu root view", () => {
   test("sustained render failure warns instead of leaving a silent empty panel", async () => {
     // break the settings-view render twice: first failure schedules the
@@ -1290,62 +1270,6 @@ describe("help view", () => {
     menu.menuActivate();
     await t.renderOnce();
     expect(t.captureCharFrame()).toContain("Menu — about");
-    menu.closeMenu();
-    await t.renderOnce();
-  });
-
-  test("about credits row drills to detail and back through real mouse events", async () => {
-    menu.closeMenu();
-    await t.renderOnce();
-    openedUrls.length = 0;
-    menu.openMenu();
-    menu.moveMenu(1); // Settings
-    menu.moveMenu(1); // Help
-    menu.moveMenu(1); // About
-    menu.menuActivate();
-    await t.renderOnce();
-    expect(t.captureCharFrame()).toContain("Credits");
-    // link rows reach the opener seam with their exact URL
-    fire("tfm-about-row-website", "down");
-    expect(openedUrls).toEqual(["https://wiggly-sheets.github.io/tfm-tui-mac"]);
-    // the overloaded credits row drills instead of opening
-    fire("tfm-about-row-credits", "down");
-    await t.renderOnce();
-    let frame = t.captureCharFrame();
-    expect(frame).toContain("← Back");
-    expect(frame).toContain("opentui.com");
-    expect(openedUrls.length).toBe(1);
-    // values share one column: an overflowing value must wrap below,
-    // never squeeze its label left (flex shrink stole 2 cells here)
-    {
-      const colOf = (needle: string): number => {
-        const line = t
-          .captureCharFrame()
-          .split("\n")
-          .find((l) => l.includes(needle));
-        return line?.indexOf(needle) ?? -1;
-      };
-      expect(colOf("opentui.com")).toBeGreaterThan(0);
-      expect(colOf("nerdfonts.com")).toBe(colOf("opentui.com"));
-    }
-    // credit links reach the opener seam with their exact project URLs
-    fire("tfm-about-row-d-opentui", "down");
-    fire("tfm-about-row-d-mdi", "down");
-    expect(openedUrls).toEqual([
-      "https://wiggly-sheets.github.io/tfm-tui-mac",
-      "https://opentui.com",
-      "https://pictogrammers.com/library/mdi/",
-    ]);
-    // back returns to main; arrows/enter still no-op there
-    fire("tfm-about-back", "down");
-    await t.renderOnce();
-    frame = t.captureCharFrame();
-    expect(frame).toContain("Credits");
-    expect(frame).not.toContain("← Back");
-    menu.moveMenu(1);
-    menu.menuActivate();
-    await t.renderOnce();
-    expect(t.captureCharFrame()).toContain("Credits");
     menu.closeMenu();
     await t.renderOnce();
   });

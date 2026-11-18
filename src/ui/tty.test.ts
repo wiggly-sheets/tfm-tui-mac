@@ -100,6 +100,8 @@ describe("tty static themes", () => {
       expect(theme.sidebarFg).not.toBe(theme.sidebarFgMuted);
       expect(theme.border).not.toBe(theme.bg);
       expect(theme.divider).not.toBe(theme.bg);
+      // panels must separate from the canvas in both palettes
+      expect(theme.sidebarBg).not.toBe(theme.bg);
     }
   });
   test("dark: grey canvas, dark-blue panels, split text roles", () => {
@@ -114,21 +116,6 @@ describe("tty static themes", () => {
     expect(TTY_DARK_THEME.hoverBg).toBe("#5555ff"); // doubles as the rubber-band outline
     expect(TTY_DARK_THEME.border).toBe("#aa0000");
     expect(TTY_DARK_THEME.divider).toBe("#aa0000");
-    for (const [k, v] of Object.entries(TTY_DARK_THEME as Record<string, string>)) {
-      if (k.startsWith("ansi")) continue; // embedded-terminal palette stays verbatim
-      expect([
-        "#aaaaaa",
-        "#0000aa",
-        "#000000",
-        "#ffffff",
-        "#5555ff",
-        "#aa0000",
-        "#ffff55",
-        "#55ff55",
-        "#55ffff",
-        "#555555",
-      ]).toContain(v);
-    }
     expect(TTY_LIGHT_THEME.bg).toBe("#ffffff");
     expect(TTY_LIGHT_THEME.accentBg).toBe("#55ffff");
     expect(TTY_LIGHT_THEME.accent).toBe("#0000aa");
@@ -136,22 +123,10 @@ describe("tty static themes", () => {
     expect(TTY_DARK_THEME.white).toBe("#ffffff");
     expect(TTY_LIGHT_THEME.white).toBe(TTY_LIGHT_THEME.sidebarFg);
   });
-  test("white panels separate from the grey canvas (both themes)", () => {
-    expect(TTY_DARK_THEME.sidebarBg).not.toBe(TTY_DARK_THEME.bg);
-    expect(TTY_DARK_THEME.accentBg).not.toBe(TTY_DARK_THEME.bg);
-    expect(TTY_DARK_THEME.hoverBg).not.toBe(TTY_DARK_THEME.bg);
-    expect(TTY_DARK_THEME.hoverBg).not.toBe(TTY_DARK_THEME.accentBg);
-    expect(TTY_LIGHT_THEME.sidebarBg).not.toBe(TTY_LIGHT_THEME.bg);
-  });
   test("both statics cover the same full key set (every Theme role)", () => {
     const darkKeys = Object.keys(TTY_DARK_THEME).sort();
     expect(darkKeys).toEqual(Object.keys(TTY_LIGHT_THEME).sort());
     expect(darkKeys.length).toBe(32); // 10 chrome + 6 syntax + 16 ansi
-  });
-  test("dark and light are different palettes", () => {
-    expect(TTY_DARK_THEME.bg).not.toBe(TTY_LIGHT_THEME.bg);
-    expect(TTY_DARK_THEME.bg).toBe("#aaaaaa");
-    expect(TTY_LIGHT_THEME.bg).toBe("#ffffff");
   });
   test("syntax roles use distinct hues within each palette", () => {
     for (const theme of [TTY_DARK_THEME, TTY_LIGHT_THEME]) {

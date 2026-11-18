@@ -150,7 +150,6 @@ describe("about panel rendering", () => {
     const id = await openMain();
     // hero-size faithful brand slot (a tinted drain would flatten the mark)
     expect(logoReqs).toEqual([{ name: "tfm", heightCells: ABOUT_LOGO_CELLS, faithful: true }]);
-    expect(ABOUT_LOGO_CELLS).toBe(8);
     const frame = t.captureCharFrame();
     expect(frame).toContain("tfm");
     expect(frame).toContain("terminal file manager");
@@ -184,7 +183,10 @@ describe("about panel rendering", () => {
     for (const [off, label] of ["Website", "GitHub", "Credits", "Plugin API", "License"].entries()) {
       expect(lines[heroIdx + 2 + off]).toContain(label);
     }
-    expect(versionIdx - heroIdx).toBe(7);
+    // compactness bound, not a pixel pin: the old scroller pushed the version
+    // far below the hero (20+ rows); the tight stack keeps it within the row
+    // count + spacer + divider, so cosmetic row changes stay free
+    expect(versionIdx - heroIdx).toBeLessThanOrEqual(ABOUT_ROWS.length + 3);
     await closePanel(id);
   });
 

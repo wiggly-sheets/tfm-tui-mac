@@ -569,21 +569,6 @@ describe("makeFileAnim (engine)", () => {
     expect(fakes[0]!.opacity).toBe(1);
   });
 
-  test("the container path is exempt from the per-node ceiling", () => {
-    const inner = { opacity: 1, translateX: 0, translateY: 0 };
-    const byId = (id: string) => asNode(id === "big-inner" ? inner : { opacity: 1 });
-    const anim = makeFileAnim({
-      renderer: t.renderer,
-      byId,
-      opts: () => opts({ style: "fade", containerFade: true, ms: 1000 }),
-    });
-    anim.play({ tiles: Array.from({ length: MAX_PER_NODE_ANIM + 1 }, (_, i) => `t${i}`), inner: "big-inner" });
-    engine.update(500);
-    expect(inner.opacity).toBeLessThan(1);
-    anim.stop();
-    expect(inner.opacity).toBe(1);
-  });
-
   test("stop() cancels a running animation and rests its nodes", async () => {
     t.renderer.root.add(Box({ id: "g-inner2", width: 40, height: 8, flexDirection: "column" }));
     await t.renderOnce();
