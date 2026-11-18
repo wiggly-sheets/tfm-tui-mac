@@ -98,12 +98,25 @@ const baseCtx = () => {
 
 const b64 = (s: string): string => Buffer.from(s, "utf8").toString("base64").replace(/=+$/, "");
 
-// poll on observable state (fake ctx arrays) instead of fixed sleeps — the
-// drop finishing is fire-and-forget inside dnd72
-const settleUntil = async (cond: () => boolean, ms = 2000): Promise<void> => {
+// yield one event-loop turn per iteration: finishDrop is synchronous apart
+// from the fake-async ctx methods (runTransfer, trashPaths, receiveRemoteDrop),
+// so a turn drain settles it without any wall-clock wait. The turn ceiling —
+// not a deadline — bounds a genuine hang and keeps the failure loud.
+const settleUntil = async (cond: () => boolean, turns = 2000): Promise<void> => {
+  for (let i = 0; i < turns; i++) {
+    if (cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  if (!cond()) throw new Error(`settleUntil timeout after ${turns} event-loop turns`);
+};
+
+// shortcut: waits on a real dnd72 timer (the 50ms remote-request timeout, the
+// 700ms end-window epilogue), so it must spend real time; upgrade to a fake
+// clock when a third timer-bound site appears.
+const settleTimers = async (cond: () => boolean, ms = 3000): Promise<void> => {
   const deadline = Date.now() + ms;
   while (!cond() && Date.now() < deadline) await Bun.sleep(10);
-  if (!cond()) throw new Error("settleUntil timeout");
+  if (!cond()) throw new Error(`settleTimers timeout after ${ms}ms`);
 };
 
 describe("splitOsc72Seq", () => {
@@ -583,7 +596,7 @@ describe("remote drops", () => {
     feed("t=r:x=1");
     await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:x=1:y=1\x1b\\"));
     // never answer — the 50ms timer fires
-    await settleUntil(() => notes.length > 0, 3000);
+    await settleTimers(() => notes.length > 0);
     expect(ctx.runTransfers).toEqual([]);
     expect(tx.some((s) => s === "\x1b]72;t=r:o=0\x1b\\")).toBe(true);
     const leaked = readdirSync(os.tmpdir()).filter((n) => n.startsWith("tfm-remote-") && !stagedBefore.has(n));
@@ -776,7 +789,7 @@ describe("external drag end", () => {
     gridDrag.keys = [{ path: "/d/a", isDir: false }];
     feed("t=o:x=1:y=1");
     feed("t=e:x=4:y=0"); // end, not canceled, no self drop handled
-    await settleUntil(() => notes.some((n) => n.includes("Sent 1 item")), 3000); // 700ms-deferred epilogue
+    await settleTimers(() => notes.some((n) => n.includes("Sent 1 item"))); // 700ms-deferred epilogue
     expect(notes.some((n) => n.includes("Sent 1 item"))).toBe(true);
     gridDrag.keys = null;
   });
@@ -788,7 +801,7 @@ describe("external drag end", () => {
     feed("t=o:x=1:y=1");
     feed("t=e:x=2:y=2"); // op=move
     feed("t=e:x=4:y=0");
-    await settleUntil(() => ctx.trashed.length > 0, 3000); // 700ms-deferred epilogue
+    await settleTimers(() => ctx.trashed.length > 0); // 700ms-deferred epilogue
     gridDrag.keys = null;
   });
 
