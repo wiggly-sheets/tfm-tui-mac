@@ -34,6 +34,18 @@ const mktmp = (prefix: string): string => mkdtempSync(path.join(os.tmpdir(), pre
 const ROOT = mktmp("tfm-fileops-");
 const HOME = ROOT;
 
+// case-only renames are a no-op on a case-folding filesystem (macOS APFS/HFS+
+// by default): probe the sandbox instead of assuming by platform, so a
+// case-sensitive volume runs the test
+const rootFoldsCase = (() => {
+  try {
+    writeFileSync(path.join(ROOT, "case-probe"), "x");
+    return existsSync(path.join(ROOT, "CASE-PROBE"));
+  } catch {
+    return false;
+  }
+})();
+
 // trash-path assertions sandbox $XDG_DATA_HOME (same pattern as
 // trashops.test.ts) so no real Trash dir is ever touched
 const oldDataHome = process.env.XDG_DATA_HOME;
@@ -735,7 +747,8 @@ describe("redo closures: failures are not swallowed", () => {
 });
 
 describe("performBulkRename", () => {
-  test.skipIf(process.platform === "darwin")("renames all pairs in ONE undo batch (undone as one step)", async () => {
+  // skipped only where the FS folds case: a.txt -> A.txt would be the same file
+  test.skipIf(rootFoldsCase)("renames all pairs in ONE undo batch (undone as one step)", async () => {
     const h = makeHarness();
     const a = path.join(ROOT, "bulk-a.txt");
     const b = path.join(ROOT, "bulk-b.txt");
@@ -1804,7 +1817,11 @@ describe("plugin veto keeps caller state intact", () => {
       mkdirSync(destDir, { recursive: true });
       h.ops.setClipboard("copy", [{ path: src, isDir: false }]);
       h.ops.pasteSmart(destDir);
-      await Bun.sleep(30);
+      // the veto is reported before the paste unwinds; wait for that report
+      // instead of a fixed pause, then assert the caller state survived
+      for (let i = 0; i < 2000 && !h.calls.some((c) => c.includes("Blocked by plugin")); i++) {
+        await new Promise((r) => setImmediate(r));
+      }
       expect(h.ops.clipboard()?.items.length).toBe(1); // NOT consumed
       expect(existsSync(path.join(destDir, "veto-paste-src.txt"))).toBe(false);
       expect(h.calls.some((c) => c.startsWith("undo:"))).toBe(false);
@@ -1820,34 +1837,49 @@ describe("plugin veto keeps caller state intact", () => {
 // preScan arms it mid-scan in counting mode, and a small tree must still never
 // flicker a toast at all.
 describe("preScan counting", () => {
-  // Explicit budgets: these two tests seed 1100/5000 real files, so the default
-  // 5s bun timeout is a coin flip under parallel-suite load (measured >5s while
-  // biome+tsc ran alongside; ~1.1s for the 1100-file walk standalone). The
-  // timeout is the test's own, not a lowered bound — every assertion is intact.
-  test("big tree raises the toast while totals are still unknown", async () => {
-    const h = makeHarness();
-    const src = path.join(ROOT, "prescan-big");
-    const destDir = path.join(ROOT, "prescan-dest");
-    mkdirSync(src, { recursive: true });
-    mkdirSync(destDir, { recursive: true });
-    for (let i = 0; i < 1100; i++) W(path.join(src, `f${i}`), "x");
-    const shown: Array<{ counting?: boolean; totalFiles: number }> = [];
-    // mirror the real showProgressToast: a second call while the toast is up
-    // no-ops, so `shown` records genuine armings only
-    h.ctx.showProgressToast = () => {
-      if (h.prog.toastUp) return;
-      h.prog.toastUp = true;
-      shown.push({ counting: !!h.prog.counting, totalFiles: h.prog.totalFiles });
-    };
-    await h.ops.runTransfer("copy", destDir, [src], "paste");
-    // the very first (and only) show happened mid-scan, while still counting —
-    // the post-scan arm no-ops because the toast is up
-    expect(shown.length).toBe(1);
-    expect(shown[0]!.counting).toBe(true);
-    // the counting flag is gone by the time the transfer runs
-    expect(h.prog.counting).toBeFalsy();
-    expect(h.prog.totalFiles).toBe(1100);
-  }, 20000);
+  // These tests walk a real tree, so their duration is disk-bound. The budget
+  // is an explicit load allowance, NOT a lowered behavioral bound: seeding is
+  // hardlinks off one file (cheap), and every assertion below is unchanged.
+  // 20s covers the measured worst case (~1.1s for the 1100-file walk) with
+  // headroom for a parallel biome/tsc run on the same host.
+  const PRESCAN_BUDGET_MS = 20_000;
+  // one seed file + hardlinks: same walk cost, a fraction of the write cost
+  const seedFiles = (dir: string, n: number): void => {
+    mkdirSync(dir, { recursive: true });
+    const seed = path.join(dir, "seed");
+    W(seed, "x");
+    for (let i = 0; i < n; i++) linkSync(seed, path.join(dir, `f${i}`));
+    rmSync(seed);
+  };
+
+  test(
+    "big tree raises the toast while totals are still unknown",
+    async () => {
+      const h = makeHarness();
+      const src = path.join(ROOT, "prescan-big");
+      const destDir = path.join(ROOT, "prescan-dest");
+      mkdirSync(src, { recursive: true });
+      mkdirSync(destDir, { recursive: true });
+      seedFiles(src, 1100);
+      const shown: Array<{ counting?: boolean; totalFiles: number }> = [];
+      // mirror the real showProgressToast: a second call while the toast is up
+      // no-ops, so `shown` records genuine armings only
+      h.ctx.showProgressToast = () => {
+        if (h.prog.toastUp) return;
+        h.prog.toastUp = true;
+        shown.push({ counting: !!h.prog.counting, totalFiles: h.prog.totalFiles });
+      };
+      await h.ops.runTransfer("copy", destDir, [src], "paste");
+      // the very first (and only) show happened mid-scan, while still counting —
+      // the post-scan arm no-ops because the toast is up
+      expect(shown.length).toBe(1);
+      expect(shown[0]!.counting).toBe(true);
+      // the counting flag is gone by the time the transfer runs
+      expect(h.prog.counting).toBeFalsy();
+      expect(h.prog.totalFiles).toBe(1100);
+    },
+    PRESCAN_BUDGET_MS,
+  );
 
   test("small tree never touches counting paint and never arms mid-scan", async () => {
     const h = makeHarness();
@@ -1871,22 +1903,26 @@ describe("preScan counting", () => {
   // refuses to stop while the tree is walked to the end. totalFiles staying
   // on the no-totals fallback proves the walk never finished (without the
   // guards the scan completes and total becomes 5000).
-  test("cancel during the pre-scan aborts scan and copy phase", async () => {
-    const h = makeHarness();
-    const src = path.join(ROOT, "prescan-cancel");
-    const destDir = path.join(ROOT, "prescan-cancel-dest");
-    mkdirSync(src, { recursive: true });
-    mkdirSync(destDir, { recursive: true });
-    for (let i = 0; i < 5000; i++) W(path.join(src, `f${i}`), "x");
-    h.ctx.paintProgress = () => {
-      h.prog.cancelled = true; // the toast ✕ lands on the first counting paint
-    };
-    await h.ops.runTransfer("copy", destDir, [src], "paste");
-    expect(h.prog.counting).toBeFalsy();
-    expect(h.prog.totalFiles).toBe(1);
-    expect(readdirSync(destDir).length).toBe(0);
-    expect(h.calls.some((c) => c.startsWith("notify:copy cancelled"))).toBe(true);
-  }, 20000);
+  test(
+    "cancel during the pre-scan aborts scan and copy phase",
+    async () => {
+      const h = makeHarness();
+      const src = path.join(ROOT, "prescan-cancel");
+      const destDir = path.join(ROOT, "prescan-cancel-dest");
+      mkdirSync(src, { recursive: true });
+      mkdirSync(destDir, { recursive: true });
+      seedFiles(src, 5000);
+      h.ctx.paintProgress = () => {
+        h.prog.cancelled = true; // the toast ✕ lands on the first counting paint
+      };
+      await h.ops.runTransfer("copy", destDir, [src], "paste");
+      expect(h.prog.counting).toBeFalsy();
+      expect(h.prog.totalFiles).toBe(1);
+      expect(readdirSync(destDir).length).toBe(0);
+      expect(h.calls.some((c) => c.startsWith("notify:copy cancelled"))).toBe(true);
+    },
+    PRESCAN_BUDGET_MS,
+  );
 });
 
 // chmod-based permission tests never fail as uid 0 (root bypasses
