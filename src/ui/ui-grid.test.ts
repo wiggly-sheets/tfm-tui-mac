@@ -1445,18 +1445,21 @@ test("windowed busy loop: repeated stats ticks keep every mounted row visible", 
 // behind: the combination blanked the pane on the console (null
 // renderer.resolution parks for seconds) until the cwd changed.
 describe("renderGrid (superseded renders)", () => {
-  const settleUntil = async (cond: () => boolean, ms = 2000): Promise<void> => {
-    const deadline = Date.now() + ms;
-    while (!cond() && Date.now() < deadline) await Bun.sleep(5);
-  };
   // controllable waitForResolution: every call parks until open(), which
   // releases the parked ones AND lets later calls through — no release-vs-park
-  // ordering deadlock when a test interleaves renders
+  // ordering deadlock when a test interleaves renders. `parked()` resolves when
+  // a render actually parks, so tests await the event instead of polling.
   const parkWaits = () => {
     const waiters: Array<() => void> = [];
+    const arrived: Array<() => void> = [];
     let open = false;
     return {
       count: (): number => waiters.length,
+      parked: (): Promise<void> =>
+        new Promise<void>((r) => {
+          if (open || waiters.length > 0) r();
+          else arrived.push(r);
+        }),
       open: (): void => {
         open = true;
         for (const r of waiters.splice(0)) r();
@@ -1465,6 +1468,7 @@ describe("renderGrid (superseded renders)", () => {
         if (open) return Promise.resolve();
         return new Promise<void>((r) => {
           waiters.push(r);
+          for (const notify of arrived.splice(0)) notify();
         });
       },
     };
@@ -1488,7 +1492,7 @@ describe("renderGrid (superseded renders)", () => {
       // the first is still parked mid-rebuild
       writeFileSync(path.join(dir, "c.txt"), "c");
       const first = renderGrid(); // deliberately not awaited — it parks
-      await settleUntil(() => waits.count() >= 1);
+      await waits.parked();
       const second = renderGrid();
       waits.open();
       await Promise.all([first, second]);
@@ -1530,7 +1534,7 @@ describe("renderGrid (superseded renders)", () => {
 
       writeFileSync(path.join(dir, "c.txt"), "c");
       const parked = renderGrid();
-      await settleUntil(() => waits.count() >= 1);
+      await waits.parked();
       await t.renderOnce();
       // the park happens BEFORE the grid is cleared: on the console the null
       // resolution parks for seconds and the old rows must survive it
@@ -2346,17 +2350,20 @@ describe("loadingLabel / loadingLine", () => {
 });
 
 describe("renderGrid (loading placeholder)", () => {
-  const settleUntil = async (cond: () => boolean, ms = 2000): Promise<void> => {
-    const deadline = Date.now() + ms;
-    while (!cond() && Date.now() < deadline) await Bun.sleep(5);
-  };
   // holds renders inside the resolution park — the seam the console's slow path
-  // used to be (and still is, right after a resize requery)
+  // used to be (and still is, right after a resize requery). `parked()` resolves
+  // when a render actually parks, so tests await the event instead of polling.
   const parkWait = () => {
     const waiters: Array<() => void> = [];
+    const arrived: Array<() => void> = [];
     let open = false;
     return {
       count: (): number => waiters.length,
+      parked: (): Promise<void> =>
+        new Promise<void>((r) => {
+          if (open || waiters.length > 0) r();
+          else arrived.push(r);
+        }),
       open: (): void => {
         open = true;
         for (const r of waiters.splice(0)) r();
@@ -2366,6 +2373,7 @@ describe("renderGrid (loading placeholder)", () => {
           ? Promise.resolve()
           : new Promise<void>((r) => {
               waiters.push(r);
+              for (const notify of arrived.splice(0)) notify();
             }),
     };
   };
@@ -2398,7 +2406,7 @@ describe("renderGrid (loading placeholder)", () => {
       waitForResolutionImpl = park.impl;
       gridState.cwd = b;
       const parked = renderGrid();
-      await settleUntil(() => park.count() >= 1);
+      await park.parked();
       // the listing is in hand and the pane is parked before the clear: the
       // armed delay fires now, so the OLD folder's tiles are replaced by the
       // placeholder instead of sitting there looking frozen
@@ -2465,7 +2473,7 @@ describe("renderGrid (loading placeholder)", () => {
       waitForResolutionImpl = park.impl;
       gridState.cwd = b;
       const parkedB = renderGrid();
-      await settleUntil(() => park.count() >= 1);
+      await park.parked();
       revealClock.flush();
       await t.renderOnce();
       expect(t.captureCharFrame()).not.toContain("a.txt");

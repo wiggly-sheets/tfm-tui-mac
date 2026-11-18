@@ -5,13 +5,23 @@ describe("makeOpQueue", () => {
   test("runs ops serially in enqueue order", async () => {
     const q = makeOpQueue();
     const order: string[] = [];
-    const slow = q.enqueue(async () => {
-      await Bun.sleep(30);
-      order.push("slow");
-    });
+    // the first op parks on a gate: the second must not start until it settles
+    let release!: () => void;
+    const slow = q.enqueue(
+      () =>
+        new Promise<void>((r) => {
+          release = () => {
+            order.push("slow");
+            r();
+          };
+        }),
+    );
     const fast = q.enqueue(async () => {
       order.push("fast");
     });
+    await Promise.resolve();
+    expect(order).toEqual([]);
+    release();
     await Promise.all([slow, fast]);
     expect(order).toEqual(["slow", "fast"]);
   });
@@ -38,7 +48,7 @@ describe("makeOpQueue", () => {
     const gate = new Promise<void>((r) => (release = r));
     const first = q.enqueue(() => gate);
     const second = q.enqueue(async () => {});
-    await Bun.sleep(10);
+    await Promise.resolve();
     expect(q.isIdle()).toBe(false);
     release();
     await Promise.all([first, second]);

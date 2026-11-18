@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { Text } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { makeFloats } from "./floats";
@@ -100,9 +100,15 @@ describe("bulk rename widget", () => {
     const t = await createTestRenderer({ width: 100, height: 26 });
     try {
       const bulk = mkBulk(t, makeFloats(), []);
-      bulk.open(TWO);
+      // focus lands from the open's 10ms timer — run it on the fake clock
+      jest.useFakeTimers();
+      try {
+        bulk.open(TWO);
+        jest.advanceTimersByTime(10);
+      } finally {
+        jest.useRealTimers();
+      }
       await t.renderOnce();
-      await Bun.sleep(30);
       expect((t.renderer as any).currentFocusedRenderable?.id).toBe("tfm-bulkrename-input");
       await t.mockInput.typeText("Z");
       await t.renderOnce();

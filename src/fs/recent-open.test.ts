@@ -1,13 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { makeRecentOpen } from "./recent-open";
 
-const settleUntil = async (cond: () => boolean, ms = 3000): Promise<void> => {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 25));
+// drain the promise chain behind the app probe without waiting on wall clock
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+};
+
+// the recordOpen debounce (150ms) is a timing unit: put the whole test on the
+// fake clock and advance it explicitly instead of sleeping past it
+const withClock = async (body: () => Promise<void>): Promise<void> => {
+  jest.useFakeTimers();
+  try {
+    await body();
+  } finally {
+    jest.useRealTimers();
   }
-  throw new Error("settleUntil timeout");
 };
 
 const mkCtx = (over: Partial<Parameters<typeof makeRecentOpen>[0]> = {}) => {
@@ -39,7 +46,7 @@ describe("makeRecentOpen", () => {
     const { openFileDefault } = makeRecentOpen(ctx);
     openFileDefault("/home/a/movie.mp4");
     expect(calls).toContain("spawn:/home/a/movie.mp4");
-    await settleUntil(() => calls.some((c) => c.startsWith("notify:")));
+    await flush();
     expect(calls.some((c) => c === "notify:open:Opening movie.mp4 · Video Player")).toBe(true);
   });
 
@@ -47,40 +54,45 @@ describe("makeRecentOpen", () => {
     const { calls, ctx } = mkCtx({ appForFile: async () => "" });
     const { openFileDefault } = makeRecentOpen(ctx);
     openFileDefault("/home/a/file.bin");
-    await settleUntil(() => calls.some((c) => c.startsWith("notify:")));
+    await flush();
     expect(calls.some((c) => c === "notify:open:Opening file.bin")).toBe(true);
   });
 
   test("a burst of opens batches + dedupes into ONE xbel rewrite", async () => {
-    const { calls, ctx } = mkCtx();
-    const { openFileDefault } = makeRecentOpen(ctx);
-    openFileDefault("/a");
-    openFileDefault("/b");
-    openFileDefault("/a"); // duplicate inside the window
-    openFileDefault("/c");
-    await settleUntil(() => calls.some((c) => c.startsWith("upsert:")));
-    const upserts = calls.filter((c) => c.startsWith("upsert:"));
-    expect(upserts.length).toBe(1);
-    expect(upserts[0]).toBe("upsert:/a|/b|/c");
+    await withClock(async () => {
+      const { calls, ctx } = mkCtx();
+      const { openFileDefault } = makeRecentOpen(ctx);
+      openFileDefault("/a");
+      openFileDefault("/b");
+      openFileDefault("/a"); // duplicate inside the window
+      openFileDefault("/c");
+      jest.advanceTimersByTime(150);
+      await flush();
+      const upserts = calls.filter((c) => c.startsWith("upsert:"));
+      expect(upserts.length).toBe(1);
+      expect(upserts[0]).toBe("upsert:/a|/b|/c");
+    });
   });
 
   test("trash view records nothing", async () => {
-    const { calls, ctx } = mkCtx({ inTrashView: () => true });
-    const { openFileDefault } = makeRecentOpen(ctx);
-    openFileDefault("/a");
-    await new Promise((r) => setTimeout(r, 300));
-    expect(calls.some((c) => c.startsWith("upsert:"))).toBe(false);
-    expect(calls.some((c) => c.startsWith("spawn:"))).toBe(true); // still opens
+    await withClock(async () => {
+      const { calls, ctx } = mkCtx({ inTrashView: () => true });
+      const { openFileDefault } = makeRecentOpen(ctx);
+      openFileDefault("/a");
+      jest.advanceTimersByTime(150);
+      await flush();
+      expect(calls.some((c) => c.startsWith("upsert:"))).toBe(false);
+      expect(calls.some((c) => c.startsWith("spawn:"))).toBe(true); // still opens
+    });
   });
 
   test("unreadable file escalates through openAsRoot, never spawns or records", async () => {
     const { calls, ctx } = mkCtx({ canRead: () => false });
     const { openFileDefault } = makeRecentOpen(ctx);
     openFileDefault("/etc/sudoers");
-    await settleUntil(() => calls.some((c) => c.startsWith("escalate:")));
+    await flush();
     expect(calls).toContain("escalate:/etc/sudoers");
     expect(calls.some((c) => c.startsWith("spawn:"))).toBe(false);
-    await new Promise((r) => setTimeout(r, 300));
     expect(calls.some((c) => c.startsWith("upsert:"))).toBe(false);
   });
 
@@ -88,19 +100,22 @@ describe("makeRecentOpen", () => {
     const { calls, ctx } = mkCtx();
     const { openFileDefault } = makeRecentOpen(ctx);
     openFileDefault("/home/a/movie.mp4");
-    await settleUntil(() => calls.some((c) => c.startsWith("notify:")));
+    await flush();
     expect(calls.some((c) => c.startsWith("escalate:"))).toBe(false);
   });
 
   test("missing file takes the plain path, never escalates", async () => {
     // canRead is false for ENOENT too — a file deleted between listing and
     // open (or a dangling symlink) must spawn-and-error, not sudo-prompt
-    const { calls, ctx } = mkCtx({ canRead: () => false });
-    const { openFileDefault } = makeRecentOpen(ctx);
-    openFileDefault("/definitely/not/here-tfm-xyz");
-    expect(calls).toContain("spawn:/definitely/not/here-tfm-xyz");
-    await new Promise((r) => setTimeout(r, 300));
-    expect(calls.some((c) => c.startsWith("escalate:"))).toBe(false);
+    await withClock(async () => {
+      const { calls, ctx } = mkCtx({ canRead: () => false });
+      const { openFileDefault } = makeRecentOpen(ctx);
+      openFileDefault("/definitely/not/here-tfm-xyz");
+      expect(calls).toContain("spawn:/definitely/not/here-tfm-xyz");
+      jest.advanceTimersByTime(150);
+      await flush();
+      expect(calls.some((c) => c.startsWith("escalate:"))).toBe(false);
+    });
   });
 
   test("spawn failure suppresses the optimistic Opening toast", async () => {
@@ -120,23 +135,26 @@ describe("makeRecentOpen", () => {
     openFileDefault("/home/a/movie.mp4");
     onFailed(); // spawn fails before the app probe answers
     resolveProbe("Video Player");
-    await new Promise((r) => setTimeout(r, 100));
+    await flush();
     expect(calls.some((c) => c.includes("Opening movie.mp4"))).toBe(false);
   });
 
   test("executable routes to the Run prompt, never xdg-open", async () => {
-    const { calls, ctx } = mkCtx({
-      isExecutable: () => ({ executable: true, needsChmod: false }),
-      askExecutable: (p) => {
-        calls.push(`ask:${p}`);
-      },
+    await withClock(async () => {
+      const { calls, ctx } = mkCtx({
+        isExecutable: () => ({ executable: true, needsChmod: false }),
+        askExecutable: (p) => {
+          calls.push(`ask:${p}`);
+        },
+      });
+      const { openFileDefault } = makeRecentOpen(ctx);
+      openFileDefault("/home/a/run.sh");
+      expect(calls).toContain("ask:/home/a/run.sh");
+      expect(calls.some((c) => c.startsWith("spawn:"))).toBe(false);
+      jest.advanceTimersByTime(150);
+      await flush();
+      expect(calls.some((c) => c.startsWith("upsert:"))).toBe(false);
     });
-    const { openFileDefault } = makeRecentOpen(ctx);
-    openFileDefault("/home/a/run.sh");
-    expect(calls).toContain("ask:/home/a/run.sh");
-    expect(calls.some((c) => c.startsWith("spawn:"))).toBe(false);
-    await new Promise((r) => setTimeout(r, 300));
-    expect(calls.some((c) => c.startsWith("upsert:"))).toBe(false);
   });
 
   test("non-executable still spawns when the prompt seam is wired", async () => {

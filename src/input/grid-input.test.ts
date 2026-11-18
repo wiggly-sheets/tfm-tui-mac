@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, jest, test } from "bun:test";
 import {
   beginBand,
   commitPendingCtrlToggle,
@@ -207,41 +207,51 @@ describe("plain click + drag", () => {
 });
 
 describe("deferred ctrl toggle (the moved-0-items regression)", () => {
-  test("ctrl+click toggles at mouseup without movement", async () => {
-    const ctx = makeCtx();
-    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    press(h, { modifiers: { ctrl: true } });
-    // NOT toggled at mousedown — selection state untouched
-    expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(false);
-    h.onMouseUp();
-    // toggle fires synchronously; drag-state cleanup is deferred a tick
-    expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(true);
-    // settle the deferred cleanup via the observable state (never a bare sleep)
-    for (let i = 0; i < 50 && gridDrag.keys; i++) await Bun.sleep(1);
-    expect(gridDrag.keys).toBeNull();
+  test("ctrl+click toggles at mouseup without movement, cleanup runs one tick later", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      press(h, { modifiers: { ctrl: true } });
+      // NOT toggled at mousedown — selection state untouched
+      expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(false);
+      h.onMouseUp();
+      // toggle fires synchronously; drag-state cleanup is deferred a tick
+      expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(true);
+      expect(gridDrag.keys).not.toBeNull();
+      jest.advanceTimersByTime(0);
+      expect(gridDrag.keys).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  test("ctrl+press then drag: toggle is cancelled, payload keeps the pressed tile", async () => {
-    const ctx = makeCtx();
-    // pre-select b and c
-    ctx.tileRefs.get("/w/b.txt")!.selected = true;
-    ctx.tileRefs.get("/w/c.txt")!.selected = true;
-    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    press(h, { x: 5, y: 5, modifiers: { ctrl: true } });
-    expect(gridDrag.pendingKey).toBe("/w/a.txt");
-    h.onMouseDrag({ x: 9, y: 9 } as any); // past threshold -> becomes a drag
-    expect(gridDrag.pendingKey).toBeNull();
-    expect(gridDrag.active).toBe(true);
-    expect(gridDrag.keys!.map((k) => k.path).sort()).toEqual(["/w/a.txt", "/w/b.txt", "/w/c.txt"]);
-    // drag marked unselected payload tiles as selected
-    expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(true);
-    h.onMouseUp();
-    // toggle must NOT have fired
-    expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(true);
-    // settle the deferred cleanup — a leaked timer would fire mid-next-test
-    // and clear the shared gridDrag singleton out from under it
-    for (let i = 0; i < 50 && gridDrag.keys; i++) await Bun.sleep(1);
-    expect(gridDrag.keys).toBeNull();
+  test("ctrl+press then drag: toggle is cancelled, payload keeps the pressed tile", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      // pre-select b and c
+      ctx.tileRefs.get("/w/b.txt")!.selected = true;
+      ctx.tileRefs.get("/w/c.txt")!.selected = true;
+      const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      press(h, { x: 5, y: 5, modifiers: { ctrl: true } });
+      expect(gridDrag.pendingKey).toBe("/w/a.txt");
+      h.onMouseDrag({ x: 9, y: 9 } as any); // past threshold -> becomes a drag
+      expect(gridDrag.pendingKey).toBeNull();
+      expect(gridDrag.active).toBe(true);
+      expect(gridDrag.keys!.map((k) => k.path).sort()).toEqual(["/w/a.txt", "/w/b.txt", "/w/c.txt"]);
+      // drag marked unselected payload tiles as selected
+      expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(true);
+      h.onMouseUp();
+      // toggle must NOT have fired
+      expect(ctx.tileRefs.get("/w/a.txt")!.selected).toBe(true);
+      // deferred cleanup: a leaked timer would fire mid-next-test and clear the
+      // shared gridDrag singleton out from under it
+      jest.advanceTimersByTime(0);
+      expect(gridDrag.keys).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -347,27 +357,37 @@ describe("commitPendingCtrlToggle / finishDragState", () => {
     expect(ctx.visuals.get("/w/sub")).toBe(0);
   });
 
-  test("releasing an active drag restores the selection status (no stale 'Dragging…')", async () => {
-    const ctx = makeCtx();
-    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    press(h, { x: 5, y: 5 });
-    h.onMouseDrag({ x: 8, y: 5 } as any); // drag starts -> "Dragging 1 item…"
-    expect(ctx.statuses.at(-1)).toBe("Dragging 1 item…");
-    ctx.selStatusRefreshes.n = 0;
-    h.onMouseUp(); // cleanup is deferred a tick (scheduleDragCleanup) — poll, don't sleep
-    for (let i = 0; i < 50 && gridDrag.active; i++) await Bun.sleep(1);
-    expect(gridDrag.active).toBe(false);
-    expect(ctx.selStatusRefreshes.n).toBe(1);
+  test("releasing an active drag restores the selection status (no stale 'Dragging…')", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      press(h, { x: 5, y: 5 });
+      h.onMouseDrag({ x: 8, y: 5 } as any); // drag starts -> "Dragging 1 item…"
+      expect(ctx.statuses.at(-1)).toBe("Dragging 1 item…");
+      ctx.selStatusRefreshes.n = 0;
+      h.onMouseUp(); // cleanup is deferred a tick (scheduleDragCleanup)
+      jest.advanceTimersByTime(0);
+      expect(gridDrag.active).toBe(false);
+      expect(ctx.selStatusRefreshes.n).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  test("plain mouseup without an active drag does not touch the status", async () => {
-    const ctx = makeCtx();
-    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    press(h, { x: 5, y: 5 });
-    ctx.selStatusRefreshes.n = 0;
-    h.onMouseUp();
-    for (let i = 0; i < 50 && gridDrag.keys; i++) await Bun.sleep(1); // settle deferred cleanup
-    expect(ctx.selStatusRefreshes.n).toBe(0);
+  test("plain mouseup without an active drag does not touch the status", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      press(h, { x: 5, y: 5 });
+      ctx.selStatusRefreshes.n = 0;
+      h.onMouseUp();
+      jest.advanceTimersByTime(0); // settle deferred cleanup
+      expect(ctx.selStatusRefreshes.n).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -568,57 +588,79 @@ describe("fallback drag (no-mouse terminals)", () => {
     (ctx as any).fallbackDrag = () => ({ pickupMs: () => pickupMs });
   };
 
-  test("a long-press picks up the live selection and arms the drop pipeline", async () => {
-    const ctx = makeCtx();
-    withFallback(ctx, 50);
-    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    press(h, { x: 5, y: 5 });
-    // the pickup fires after the configured hold — poll, don't sleep
-    for (let i = 0; i < 100 && !gridDrag.fallback; i++) await Bun.sleep(1);
-    expect(gridDrag.fallback).toBe(true);
-    expect(fallbackDrag.keys).toEqual([{ path: "/w/a.txt", isDir: false }]);
-    expect(ctx.statuses.at(-1)).toContain("Picked up 1 item");
-    // cleanup: a plain release must not leave the timer or the flag behind
-    h.onMouseUp();
-    for (let i = 0; i < 50 && gridDrag.fallback; i++) await Bun.sleep(1);
-    expect(gridDrag.fallback).toBe(false);
-    expect(fallbackDrag.keys).toBeNull();
-    expect(fallbackDrag.timer).toBeNull();
+  test("a long-press picks up the live selection and arms the drop pipeline", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      withFallback(ctx, 50);
+      const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      press(h, { x: 5, y: 5 });
+      // the pickup fires after the configured hold, not before
+      jest.advanceTimersByTime(49);
+      expect(gridDrag.fallback).toBe(false);
+      jest.advanceTimersByTime(1);
+      expect(gridDrag.fallback).toBe(true);
+      expect(fallbackDrag.keys).toEqual([{ path: "/w/a.txt", isDir: false }]);
+      expect(ctx.statuses.at(-1)).toContain("Picked up 1 item");
+      // cleanup: a plain release must not leave the timer or the flag behind
+      h.onMouseUp();
+      jest.advanceTimersByTime(0);
+      expect(gridDrag.fallback).toBe(false);
+      expect(fallbackDrag.keys).toBeNull();
+      expect(fallbackDrag.timer).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  test("a release before the hold fires cancels the pickup (plain click stays a click)", async () => {
-    const ctx = makeCtx();
-    withFallback(ctx, 50);
-    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    press(h, { x: 5, y: 5 });
-    h.onMouseUp(); // released well before the 50ms hold
-    for (let i = 0; i < 100 && gridDrag.fallback; i++) await Bun.sleep(1);
-    expect(gridDrag.fallback).toBe(false);
-    expect(fallbackDrag.timer).toBeNull();
-    expect(ctx.statuses).toEqual([]);
+  test("a release before the hold fires cancels the pickup (plain click stays a click)", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      withFallback(ctx, 50);
+      const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      press(h, { x: 5, y: 5 });
+      h.onMouseUp(); // released well before the 50ms hold
+      jest.advanceTimersByTime(100);
+      expect(gridDrag.fallback).toBe(false);
+      expect(fallbackDrag.timer).toBeNull();
+      expect(ctx.statuses).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  test("a click on a folder after the pickup moves the selection into it", async () => {
-    const ctx = makeCtx();
-    withFallback(ctx, 50);
-    const hSrc = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    const hDst = makeEntryMouseHandlers(ctx)({ isDir: true }, "/w/sub", 3);
-    press(hSrc, { x: 5, y: 5 });
-    for (let i = 0; i < 100 && !gridDrag.fallback; i++) await Bun.sleep(1);
-    // the click that lands on the destination folder IS the drop
-    hDst.onMouseDrop();
-    expect(ctx.moved).toEqual([{ dest: "/w/sub", n: 1 }]);
-    expect(gridDrag.fallback).toBe(false);
-    expect(fallbackDrag.keys).toBeNull();
+  test("a click on a folder after the pickup moves the selection into it", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      withFallback(ctx, 50);
+      const hSrc = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      const hDst = makeEntryMouseHandlers(ctx)({ isDir: true }, "/w/sub", 3);
+      press(hSrc, { x: 5, y: 5 });
+      jest.advanceTimersByTime(50);
+      // the click that lands on the destination folder IS the drop
+      hDst.onMouseDrop();
+      expect(ctx.moved).toEqual([{ dest: "/w/sub", n: 1 }]);
+      expect(gridDrag.fallback).toBe(false);
+      expect(fallbackDrag.keys).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  test("absent fallbackDrag seam keeps today's behavior (old fakes)", async () => {
-    const ctx = makeCtx();
-    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
-    press(h, { x: 5, y: 5 });
-    h.onMouseUp();
-    for (let i = 0; i < 100 && gridDrag.fallback; i++) await Bun.sleep(1);
-    expect(gridDrag.fallback).toBe(false);
-    expect(fallbackDrag.timer).toBeNull();
+  test("absent fallbackDrag seam keeps today's behavior (old fakes)", () => {
+    jest.useFakeTimers();
+    try {
+      const ctx = makeCtx();
+      const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+      press(h, { x: 5, y: 5 });
+      h.onMouseUp();
+      jest.advanceTimersByTime(100);
+      expect(gridDrag.fallback).toBe(false);
+      expect(fallbackDrag.timer).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

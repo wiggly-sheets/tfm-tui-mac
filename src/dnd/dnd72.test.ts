@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, jest, test } from "bun:test";
 import {
   existsSync,
   lstatSync,
@@ -653,7 +653,6 @@ describe("remote drops", () => {
     feed("t=r:x=1");
     await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:x=1:y=1\x1b\\"));
     feed("t=m:x=-1:y=-1");
-    await Bun.sleep(100);
     expect(ctx.runTransfers).toEqual([]);
     expect(notes).toEqual([]);
     expect(tx.some((s) => s === "\x1b]72;t=r:o=0\x1b\\")).toBe(true);
@@ -669,7 +668,6 @@ describe("remote drops", () => {
     await settleUntil(() => tx.some((s) => s === "\x1b]72;t=r:x=1:y=1\x1b\\"));
     const agrees = tx.filter((s) => s.startsWith("\x1b]72;t=m:o=1")).length;
     feed("t=M:x=1", "text/uri-list"); // second drop while fetching
-    await Bun.sleep(100);
     expect(tx.filter((s) => s.startsWith("\x1b]72;t=m:o=1")).length).toBe(agrees);
     gridDrag.keys = null;
   });
@@ -794,46 +792,56 @@ describe("external drag end", () => {
     gridDrag.keys = null;
   });
 
-  test("a new drag starting inside the end window completes its own epilogue", async () => {
-    const { ctx, feed, notes } = baseCtx();
-    makeDnd72(ctx);
-    // session A ends over another app (copy) — its epilogue is deferred 700ms
-    gridDrag.keys = [{ path: "/d/a", isDir: false }];
-    feed("t=o:x=1:y=1");
-    feed("t=e:x=4:y=0");
-    // session B starts inside that window and ends over another app too
-    gridDrag.keys = [{ path: "/d/b", isDir: false }];
-    feed("t=o:x=1:y=1");
-    feed("t=e:x=4:y=0");
-    // both sessions must report "Sent" — the stale fire resetting the shared
-    // state (dragPaths=null) used to swallow session B's epilogue entirely
-    const deadline = Date.now() + 3000;
-    while (notes.filter((n) => n.includes("Sent 1 item")).length < 2 && Date.now() < deadline) await Bun.sleep(10);
-    expect(notes.filter((n) => n.includes("Sent 1 item")).length).toBe(2);
-    gridDrag.keys = null;
+  test("a new drag starting inside the end window completes its own epilogue", () => {
+    jest.useFakeTimers();
+    try {
+      const { ctx, feed, notes } = baseCtx();
+      makeDnd72(ctx);
+      // session A ends over another app (copy) — its epilogue is deferred 700ms
+      gridDrag.keys = [{ path: "/d/a", isDir: false }];
+      feed("t=o:x=1:y=1");
+      feed("t=e:x=4:y=0");
+      // session B starts inside that window and ends over another app too
+      gridDrag.keys = [{ path: "/d/b", isDir: false }];
+      feed("t=o:x=1:y=1");
+      feed("t=e:x=4:y=0");
+      // both deferred epilogues fire on their own expiry
+      jest.advanceTimersByTime(700);
+      // both sessions must report "Sent" — the stale fire resetting the shared
+      // state (dragPaths=null) used to swallow session B's epilogue entirely
+      expect(notes.filter((n) => n.includes("Sent 1 item")).length).toBe(2);
+      gridDrag.keys = null;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("stale copy-session epilogue never trashes sources because a new drag was a move", async () => {
-    const { ctx, feed, notes } = baseCtx();
-    makeDnd72(ctx);
-    // A: copy drag, end over another app → deferred epilogue
-    gridDrag.keys = [{ path: "/d/a", isDir: false }];
-    feed("t=o:x=1:y=1");
-    feed("t=e:x=4:y=0");
-    // B: move drag begins inside A's window and announces op=move
-    gridDrag.keys = [{ path: "/d/b", isDir: false }];
-    feed("t=o:x=1:y=1");
-    feed("t=e:x=2:y=2");
-    // the stale timer reads the snapshot (A was a copy), not the live op
-    await settleUntil(() => notes.some((n) => n.includes("Sent 1 item")), 3000); // A's epilogue ran as a copy
-    expect(ctx.trashed).toEqual([]); // A's sources survive
-    expect(notes).toContain("drag & drop:success: Sent 1 item"); // A's copy epilogue ran as a copy
-    // B still completes with move semantics
-    feed("t=e:x=4:y=0");
-    const deadline = Date.now() + 3000;
-    while (ctx.trashed.length === 0 && Date.now() < deadline) await Bun.sleep(10);
-    expect(ctx.trashed).toEqual([["/d/b"]]);
-    gridDrag.keys = null;
+    jest.useFakeTimers();
+    try {
+      const { ctx, feed, notes } = baseCtx();
+      makeDnd72(ctx);
+      // A: copy drag, end over another app → deferred epilogue
+      gridDrag.keys = [{ path: "/d/a", isDir: false }];
+      feed("t=o:x=1:y=1");
+      feed("t=e:x=4:y=0");
+      // B: move drag begins inside A's window and announces op=move
+      gridDrag.keys = [{ path: "/d/b", isDir: false }];
+      feed("t=o:x=1:y=1");
+      feed("t=e:x=2:y=2");
+      // the stale timer reads the snapshot (A was a copy), not the live op
+      jest.advanceTimersByTime(700);
+      expect(ctx.trashed).toEqual([]); // A's sources survive
+      expect(notes).toContain("drag & drop:success: Sent 1 item"); // A's copy epilogue ran as a copy
+      // B still completes with move semantics
+      feed("t=e:x=4:y=0");
+      jest.advanceTimersByTime(700);
+      await Promise.resolve();
+      expect(ctx.trashed).toEqual([["/d/b"]]);
+      gridDrag.keys = null;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

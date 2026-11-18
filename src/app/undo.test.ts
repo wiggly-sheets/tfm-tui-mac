@@ -15,11 +15,13 @@ const recordingSink = (): UndoSink & { notes: string[] } => {
   };
 };
 
-// poll on observable state (sink notes / stack depths / ran[]) — never a
-// fixed sleep, which races fire-and-forget ops under parallel-suite load
+// poll on observable state (sink notes / stack depths / ran[]) by yielding the
+// event loop: no fixed sleep, so parallel-suite load cannot race the check
 const settleUntil = async (cond: () => boolean): Promise<void> => {
-  const deadline = Date.now() + 2000;
-  while (!cond() && Date.now() < deadline) await Bun.sleep(10);
+  for (let i = 0; i < 2000; i++) {
+    if (cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
   if (!cond()) throw new Error("settleUntil timeout");
 };
 

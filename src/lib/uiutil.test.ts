@@ -1,4 +1,9 @@
 import { describe, expect, jest, test } from "bun:test";
+
+// let queued promise rejections reach their catch handler (no wall-clock wait)
+const flushMicrotasks = async (): Promise<void> => {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+};
 import { BoxRenderable, TextRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import {
@@ -295,7 +300,7 @@ describe("invokeIsolated", () => {
       },
       (e: unknown) => errs.push(e),
     );
-    await Bun.sleep(10);
+    await flushMicrotasks();
     expect(errs.length).toBe(1);
     expect(String(errs[0])).toContain("async-boom");
   });
@@ -311,7 +316,7 @@ describe("invokeIsolated", () => {
         },
       ),
     ).not.toThrow();
-    await Bun.sleep(10);
+    await flushMicrotasks();
   });
 });
 
@@ -342,7 +347,7 @@ describe("safeRenderStep", () => {
       },
       (m) => logs.push(m),
     );
-    await Bun.sleep(20);
+    await flushMicrotasks();
     expect(logs.length).toBe(1);
     expect(logs[0]).toContain("render async-step (async):");
     expect(logs[0]).toContain("late boom");

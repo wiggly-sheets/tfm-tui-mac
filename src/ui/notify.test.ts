@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { Box, Text } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import {
@@ -12,12 +12,6 @@ import {
 } from "./notify";
 import { makeProgress } from "./ui-progress";
 import type { IconSlotHandle, SlotElement } from "./ui-slots";
-
-const settleUntil = async (cond: () => boolean): Promise<void> => {
-  const deadline = Date.now() + 3000;
-  while (!cond() && Date.now() < deadline) await Bun.sleep(10);
-  await Bun.sleep(10);
-};
 
 // byId stubs stand in for post-mount renderables (proxy props throw
 // pre-mount, so positions are pinned through the stub sets instead).
@@ -134,17 +128,22 @@ describe("wrapToastText", () => {
 });
 
 describe("notify stacking", () => {
-  test("consecutive toasts stack at increasing y, never the same slot", async () => {
-    const { ctx, nodes, removed } = makeFake();
-    const { notify } = makeNotify(ctx);
-    notify("first");
-    notify("second");
-    expect(nodes.get("tfm-toast-1").top).toBe(1);
-    expect(nodes.get("tfm-toast-2").top).toBe(5);
-    // both toasts fade and remove themselves without taking the app down
-    await settleUntil(() => removed.length >= 2);
-    expect(removed).toContain("tfm-toast-1");
-    expect(removed).toContain("tfm-toast-2");
+  test("consecutive toasts stack at increasing y, never the same slot", () => {
+    jest.useFakeTimers();
+    try {
+      const { ctx, nodes, removed } = makeFake();
+      const { notify } = makeNotify(ctx);
+      notify("first");
+      notify("second");
+      expect(nodes.get("tfm-toast-1").top).toBe(1);
+      expect(nodes.get("tfm-toast-2").top).toBe(5);
+      // past the 25ms auto-dismiss + fade chain: both remove themselves
+      jest.advanceTimersByTime(500);
+      expect(removed).toContain("tfm-toast-1");
+      expect(removed).toContain("tfm-toast-2");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("long warnings wrap over rows instead of one truncated line", async () => {
@@ -174,33 +173,34 @@ describe("notify stacking", () => {
     ]);
   });
 
-  test("sticky toasts never auto-dismiss; close() fades out and reflows", async () => {
-    // the progress toast lives on a sticky handle — it must survive past
-    // the auto-dismiss window, share the fade-out with plain notifies, and
-    // leave no hole when closed
-    const { ctx, nodes, removed } = makeFake({ durationMs: 10000 });
-    const { notify, notifySticky } = makeNotify(ctx);
-    const sticky = notifySticky([{ kind: "progress" } as unknown as SlotElement], { width: 36, height: 4 });
-    expect(sticky).not.toBeNull();
-    notify("below");
-    expect(nodes.get(sticky!.nodeId).top).toBe(1);
-    expect(nodes.get("tfm-toast-2").top).toBe(6);
-    // past the auto-dismiss window: nothing left on its own (sticky never
-    // auto-dismisses; the plain toast's 10s window hasn't elapsed either) —
-    // poll for the FORBIDDEN removal so a regression fails fast
-    const deadline = Date.now() + 500;
-    while (Date.now() < deadline) {
-      await Bun.sleep(20);
+  test("sticky toasts never auto-dismiss; close() fades out and reflows", () => {
+    jest.useFakeTimers();
+    try {
+      // the progress toast lives on a sticky handle — it must survive past
+      // the auto-dismiss window, share the fade-out with plain notifies, and
+      // leave no hole when closed
+      const { ctx, nodes, removed } = makeFake({ durationMs: 10000 });
+      const { notify, notifySticky } = makeNotify(ctx);
+      const sticky = notifySticky([{ kind: "progress" } as unknown as SlotElement], { width: 36, height: 4 });
+      expect(sticky).not.toBeNull();
+      notify("below");
+      expect(nodes.get(sticky!.nodeId).top).toBe(1);
+      expect(nodes.get("tfm-toast-2").top).toBe(6);
+      // well inside the plain toast's 10s window: nothing removed on its own,
+      // and the sticky toast has no dismiss timer at all
+      jest.advanceTimersByTime(500);
       expect(removed).toEqual([]);
+      sticky!.close();
+      jest.advanceTimersByTime(200); // fade steps -> removeEntry
+      expect(removed).toEqual([sticky!.nodeId]);
+      expect(nodes.get("tfm-toast-2").top).toBe(1);
+      // double close is a safe no-op
+      sticky!.close();
+      jest.advanceTimersByTime(200);
+      expect(removed).toEqual([sticky!.nodeId]);
+    } finally {
+      jest.useRealTimers();
     }
-    sticky!.close();
-    await settleUntil(() => removed.includes(sticky!.nodeId));
-    expect(removed).toEqual([sticky!.nodeId]);
-    expect(nodes.get("tfm-toast-2").top).toBe(1);
-    // double close is a safe no-op
-    sticky!.close();
-    await settleUntil(() => removed.length > 1 || Date.now() > deadline); // poll, never a bare sleep
-    expect(removed).toEqual([sticky!.nodeId]);
   });
 });
 
@@ -268,16 +268,15 @@ describe("notify stacking (real renderer)", () => {
         stripSelectable: () => {},
         durationMs: () => 10000,
       });
-      notify("first-msg");
-      notify("second-msg with a much longer tail");
-      // slide-in takes ~180ms — poll the PAINTED frame until both toasts show
-      // (never a bare sleep; animated renders are timing-dependent)
-      const slideIn = Date.now() + 3000;
-      while (Date.now() < slideIn) {
-        await r.renderOnce();
-        const rows = r.captureCharFrame().split("\n");
-        if (rows.some((row) => row.includes("first-msg")) && rows.some((row) => row.includes("longer tail"))) break;
-        await Bun.sleep(20);
+      // the slide-in (180ms) is timer work: run it on the fake clock, then
+      // paint the settled frame once
+      jest.useFakeTimers();
+      try {
+        notify("first-msg");
+        notify("second-msg with a much longer tail");
+        jest.advanceTimersByTime(200);
+      } finally {
+        jest.useRealTimers();
       }
       await r.renderOnce();
       const frame = r.captureCharFrame();
@@ -341,17 +340,17 @@ describe("notify stacking (real renderer)", () => {
         drainIconQueue: () => {},
         notifySticky: (children: any[], opts?: { width?: number; height?: number }) => notifySticky(children, opts),
       });
-      notify("early-note");
-      progress.showProgressToast();
-      stopSpinner = () => progress.finishProgressToast("done");
-      notify("late-note");
-      // poll the painted frame until all three are up (slide-in timing)
-      const slideIn = Date.now() + 3000;
-      while (Date.now() < slideIn) {
-        await r.renderOnce();
-        const rows = r.captureCharFrame().split("\n");
-        if (rows.some((row) => row.includes("copying")) && rows.some((row) => row.includes("late-note"))) break;
-        await Bun.sleep(20);
+      // the slide-in (180ms) is timer work: run it on the fake clock, then
+      // paint the settled frame once
+      jest.useFakeTimers();
+      try {
+        notify("early-note");
+        progress.showProgressToast();
+        stopSpinner = () => progress.finishProgressToast("done");
+        notify("late-note");
+        jest.advanceTimersByTime(200);
+      } finally {
+        jest.useRealTimers();
       }
       await r.renderOnce();
       const rows = r.captureCharFrame().split("\n");

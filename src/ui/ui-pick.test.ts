@@ -7,6 +7,11 @@ import { makeFloats } from "./floats";
 import { defaultConfig } from "../config/config-schema";
 import type { Theme } from "../config/config";
 
+// settle the async rejection report without a wall-clock wait
+const flushMicrotasks = async (): Promise<void> => {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+};
+
 // Headless tests for the generic filter-list overlay (api.ui.pick primitive).
 // Fuzzy scoring is pure; the widget is pinned through its PUBLIC surface
 // (open/setFilter/move/activate/handleKey/close) plus painted frames.
@@ -196,7 +201,7 @@ describe("pick widget", () => {
       pick.handleKey({ name: "down" });
       expect(() => pick.handleKey({ name: "return" })).not.toThrow();
       expect(floats.isOpen("pick")).toBe(false);
-      await Bun.sleep(10);
+      await flushMicrotasks();
       expect(errs.length).toBe(1);
     } finally {
       t.renderer.destroy();

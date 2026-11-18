@@ -79,9 +79,12 @@ const fire = (id: string, type: string) =>
     y: 0,
     modifiers: { shift: false, alt: false, ctrl: false },
   });
-const settle = async (cond: () => boolean, ms = 3000): Promise<void> => {
+// yield until the async stat/readdir pass lands. setImmediate polling is the
+// mechanism; the ceiling only bounds a genuinely stuck promise (a spawned
+// lsblk can take a while), it is not the expected wait.
+const settle = async (cond: () => boolean, ms = 5000): Promise<void> => {
   const deadline = Date.now() + ms;
-  while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  while (!cond() && Date.now() < deadline) await new Promise((r) => setImmediate(r));
   expect(cond()).toBe(true);
 };
 

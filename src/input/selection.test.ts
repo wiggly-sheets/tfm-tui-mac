@@ -17,10 +17,14 @@ const COLORS: any = {
   white: "#ffffff",
 };
 
+// yield the loop until the status lands: the stat pass is real fs work, so the
+// wait is on the observable result, never on a fixed duration
 const settleUntil = async (cond: () => boolean): Promise<void> => {
-  const deadline = Date.now() + 2000;
-  while (!cond() && Date.now() < deadline) await Bun.sleep(10);
-  await Bun.sleep(10);
+  for (let i = 0; i < 2000; i++) {
+    if (cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error("settleUntil timeout");
 };
 
 const makeHarness = () => {

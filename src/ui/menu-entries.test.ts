@@ -6,6 +6,11 @@ import type { ClipItem, GridTileRef } from "../input/grid-input";
 import type { Place } from "../fs/places";
 import type { LoadedPlugin } from "../plugins/plugin-api";
 
+// settle the async rejection report without a wall-clock wait
+const flushMicrotasks = async (): Promise<void> => {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+};
+
 // full-shape fakes (absent builders are null, never undefined — matches what
 // the loader hands out, so the guards are exercised exactly as in prod)
 const fakePlugin = (over: Partial<LoadedPlugin> & { name: string }): LoadedPlugin => ({
@@ -524,7 +529,7 @@ describe("plugin fileMenu entries", () => {
     const boom = m.fileEntriesFor("/a", false, 0, 0).find((e) => e.label === "SlowBoom")!;
     expect(() => boom.action()).not.toThrow();
     expect(ctx.calls).toContain("close");
-    await Bun.sleep(10);
+    await flushMicrotasks();
     expect(errs.length).toBe(1);
     expect(errs[0]!.name).toBe("slow-boom");
   });

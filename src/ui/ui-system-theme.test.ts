@@ -67,7 +67,7 @@ class FakeRenderer extends EventEmitter {
 const clone = (c: Config): Config => JSON.parse(JSON.stringify(c));
 
 // manual clock for the follow debounce (repo rule: timing units test on a
-// virtual clock — bun has no fake timers)
+// virtual clock, never a sleep)
 const manualSched = () => {
   const pending = new Map<number, () => void>();
   let next = 1;
@@ -261,13 +261,27 @@ describe("applyBootSystemTheme", () => {
   });
 });
 
+// resolve queued promises (the re-resolve chain) without a wall-clock wait
+const flushMicrotasks = async (): Promise<void> => {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+};
+
+// run the debounce the event listener armed: fire it, then let the async
+// resolve chain settle
+const fireDebounce = async (clk: ReturnType<typeof manualSched>): Promise<void> => {
+  for (const fn of [...clk.pending.values()]) fn();
+  clk.pending.clear();
+  await flushMicrotasks();
+};
+
 describe("followSystemTheme", () => {
   test("a THEME_MODE event re-resolves while follow-terminal is on", async () => {
-    const { sys, renderer, config, calls } = mkCtx(true);
+    const clk = manualSched();
+    const { sys, renderer, config, calls } = mkCtx(true, clk.sched);
     const stop = sys.followSystemTheme();
     renderer.emit("theme_mode", "light");
-    const deadline = Date.now() + 2000;
-    while (calls.apply === 0 && Date.now() < deadline) await Bun.sleep(10);
+    expect(clk.pending.size).toBe(1);
+    await fireDebounce(clk);
     expect(calls.apply).toBeGreaterThan(0);
     expect(config.theme.bg).toBe("#1a1b26");
     stop?.();
@@ -287,19 +301,17 @@ describe("followSystemTheme", () => {
     off.sys.followSystemTheme();
     off.renderer.emit("theme_mode", "light");
     expect(clk.pending.size).toBe(1);
-    for (const fn of [...clk.pending.values()]) fn();
-    clk.pending.clear();
-    await Bun.sleep(0);
+    await fireDebounce(clk);
     expect(off.renderer.paletteCalls).toBe(0);
     expect(off.calls.apply).toBe(0);
   });
 
   test("a PALETTE event re-resolves too (same-mode palette switches)", async () => {
-    const { sys, renderer, calls } = mkCtx(true);
+    const clk = manualSched();
+    const { sys, renderer, calls } = mkCtx(true, clk.sched);
     const stop = sys.followSystemTheme();
     renderer.emit("palette", {});
-    const deadline = Date.now() + 2000;
-    while (calls.apply === 0 && Date.now() < deadline) await Bun.sleep(10);
+    await fireDebounce(clk);
     expect(calls.apply).toBeGreaterThan(0);
     stop?.();
   });
@@ -398,17 +410,24 @@ describe("query budgets (B4)", () => {
 
   test("boot waits out a slow palette answer instead of keeping the preset", async () => {
     const h = mkCtx(true);
-    // slower than OpenTUI's own 300ms OSC-support probe window
-    h.renderer.getPalette = async () => {
-      await Bun.sleep(300);
-      return {
-        palette: [...PALETTE],
-        defaultForeground: "#c0caf5",
-        defaultBackground: "#1a1b26",
-        cursorColor: "#ff9e64",
-      };
-    };
-    expect(await h.sys.applyBootSystemTheme()).toBe(true);
+    const presetBg = h.config.theme.bg;
+    // a terminal that answers late: boot must not settle for the preset while
+    // the query is still in flight (the old short budget did exactly that)
+    let answer!: (p: Awaited<ReturnType<FakeRenderer["getPalette"]>>) => void;
+    h.renderer.getPalette = () =>
+      new Promise((r) => {
+        answer = r;
+      });
+    const booted = h.sys.applyBootSystemTheme();
+    await flushMicrotasks();
+    expect(h.config.theme.bg).toBe(presetBg); // still waiting, not applied
+    answer({
+      palette: [...PALETTE],
+      defaultForeground: "#c0caf5",
+      defaultBackground: "#1a1b26",
+      cursorColor: "#ff9e64",
+    });
+    expect(await booted).toBe(true);
     expect(h.config.theme.bg).toBe("#1a1b26");
   });
 });
