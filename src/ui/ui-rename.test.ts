@@ -68,7 +68,7 @@ describe("makeRename (renderer)", () => {
   let rename: ReturnType<typeof makeRename>;
   let rowSeq = 0;
 
-  const mountRow = async (key: string): Promise<void> => {
+  const mountRow = async (key: string, opts?: { renameWidth?: number }): Promise<void> => {
     const id = `tfm-tile-${rowSeq++}`;
     const labelId = `${id}-label`;
     writeFileSync(key, "");
@@ -87,7 +87,12 @@ describe("makeRename (renderer)", () => {
     row.add(Text({ content: "     0 B" }));
     row.add(Text({ content: "2026-09-04 09:00" }));
     t.renderer.root.add(row);
-    ctx.tileRefs.set(key, { tileId: id, labelId, baseFg: "#fff" });
+    ctx.tileRefs.set(key, {
+      tileId: id,
+      labelId,
+      baseFg: "#fff",
+      ...(opts?.renameWidth !== undefined ? { renameWidth: opts.renameWidth } : {}),
+    });
     await t.renderOnce();
   };
 
@@ -190,6 +195,16 @@ describe("makeRename (renderer)", () => {
     expect(ids.indexOf(ctx.tileRefs.get(key)!.labelId)).toBe(1); // after the icon, before spacer/size/date
     expect(ids[ids.length - 1]).not.toBe(ctx.tileRefs.get(key)!.labelId);
   });
+  test("list rename editor uses the row name-column width, not the grid tile width", async () => {
+    const key = path.join(dir, "wide-list-name.txt");
+    await mountRow(key, { renameWidth: 40 });
+    rename.startInlineRename(key);
+    await t.renderOnce();
+    const input = t.renderer.root.findDescendantById("tfm-rename-input") as any;
+    expect(input.width).toBe(40);
+    rename.finishInlineRename(false);
+  });
+
   test("start sets the text pointer, finish restores default", async () => {
     pointers.length = 0;
     const key = path.join(dir, "ptr.txt");

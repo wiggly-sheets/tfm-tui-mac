@@ -112,6 +112,9 @@ export const inodeKey = (st: { dev: number; ino: number }): string => `${st.dev}
 export type WalkStat = { dev: number; ino: number; size: number };
 const WALK_STAT_WORKERS = 32;
 
+// The aggregate on-disk cost of a folder tree (null = too large to scan).
+export type DirStats = { bytes: number; files: number; folders: number };
+
 export const dirWalkStats = async (
   root: string,
   deps?: {
@@ -119,7 +122,7 @@ export const dirWalkStats = async (
     lstat?: (p: string) => Promise<{ size: number }>;
     concurrency?: number;
   },
-): Promise<{ bytes: number; files: number; folders: number } | null> => {
+): Promise<DirStats | null> => {
   let bytes = 0,
     files = 0,
     folders = 0,

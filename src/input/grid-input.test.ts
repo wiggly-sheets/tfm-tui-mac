@@ -38,6 +38,7 @@ const makeCtx = (): GridInputCtx & {
   selStatusRefreshes: { n: number };
   focusCalls: { n: number };
   blurCalls: { n: number };
+  blurSidebarCalls: { n: number };
   hoverCalls: [string, boolean][];
   pointers: string[];
 } => {
@@ -59,6 +60,7 @@ const makeCtx = (): GridInputCtx & {
   const selStatus = { n: 0 };
   const focusCalls = { n: 0 };
   const blurCalls = { n: 0 };
+  const blurSidebarCalls = { n: 0 };
   const hoverCalls: [string, boolean][] = [];
   const pointers: string[] = [];
   let anchor: number | null = null;
@@ -72,6 +74,7 @@ const makeCtx = (): GridInputCtx & {
     selStatusRefreshes: selStatus,
     focusCalls,
     blurCalls,
+    blurSidebarCalls,
     hoverCalls,
     pointers,
     setPointer: (s) => void pointers.push(s),
@@ -137,6 +140,9 @@ const makeCtx = (): GridInputCtx & {
     blurTerminal: () => {
       blurCalls.n++;
     },
+    blurSidebar: () => {
+      blurSidebarCalls.n++;
+    },
   };
 };
 
@@ -163,6 +169,15 @@ describe("dual-pane focus", () => {
     const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
     press(h, {});
     expect(ctx.blurCalls.n).toBe(1);
+  });
+
+  test("a tile press hands the keyboard back to the grid", () => {
+    // the sidebar swallows EVERY key while it has keyboard focus. Clicking a
+    // file is what takes the focus back — without this j/k/enter stayed dead.
+    const ctx = makeCtx();
+    const h = makeEntryMouseHandlers(ctx)({ isDir: false }, "/w/a.txt", 0);
+    press(h, {});
+    expect(ctx.blurSidebarCalls.n).toBe(1);
   });
 });
 

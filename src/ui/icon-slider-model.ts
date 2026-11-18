@@ -1,13 +1,11 @@
-// --- Pure model for the bottom-bar icon-size slider. The slider is another
-// way to drive the EXISTING grid zoom (settings.zoomUiPatch): it moves
-// iconCells + tileHeight + tileWidth together, one step per level. Bounds and
-// steps come from UI_SCHEMA's int rows — the single source, never hardcoded —
-// so the slider can never drift from the layout steppers. ---
+// --- Pure model for the bottom-bar icon-size slider. The slider moves
+// iconCells + tileHeight + tileWidth together, one schema step per level.
+// The ctrl zoom uses a proportional ladder (./zoom); both read UI_SCHEMA's
+// int rows — the single source, never hardcoded — so the three cannot drift. ---
 
 import { UI_SCHEMA, type UiConfig, type ViewMode } from "../config/config-schema";
 
-// the three grid-zoom axes the slider drives in lockstep (the same trio
-// settings.zoomUiPatch moves for grid view)
+// the three grid-zoom axes the slider drives in lockstep
 const ZOOM_KEYS = ["iconCells", "tileHeight", "tileWidth"] as const;
 type ZoomKey = (typeof ZOOM_KEYS)[number];
 

@@ -21,6 +21,10 @@ export type SelTileRef = {
   tileId: string;
   labelId: string;
   isDir: boolean;
+  // Width available to the inline rename editor for this entry. Grid tiles
+  // publish their label width; list rows publish their name-column width so
+  // the editor never inherits the unrelated grid tile-width setting.
+  renameWidth?: number;
   // grid tiles with room for the configured hover distance/direction move
   // their icon on hover (rest layout untouched); the rest keep the highlight.
   hoverLift?: boolean;
@@ -55,6 +59,10 @@ export type SelectionCtx = {
   // bar or emit plugin selection events (the active pane owns those). Absent =
   // always active (single-pane callers / tests).
   isActive?: () => boolean;
+  // the directory listing behind the "N items" count. Injectable so the
+  // stale-async guard can be decided by a test instead of an fs race;
+  // absent = the real fs read.
+  readDir?: (dir: string) => Promise<string[]>;
   dimInactivePanes?: () => boolean;
 };
 
@@ -62,6 +70,9 @@ export type Selection = ReturnType<typeof makeSelection>;
 
 export const makeSelection = (ctx: SelectionCtx) => {
   const tileRefs = new Map<string, SelTileRef>();
+  // the directory listing behind the "N items" count — the seam lets a test
+  // decide when the (async) count lands instead of racing the filesystem
+  const readDir = ctx.readDir ?? ((dir: string) => readdir(dir));
 
   // keyboard focus over tiles
   let focusKeys: string[] = [];
@@ -235,11 +246,22 @@ export const makeSelection = (ctx: SelectionCtx) => {
     return out;
   };
 
-  let selStatusGen = 0;
-  // last emitted selection (joined): rubber-band moves and rebuilds call
-  // updateSelectionStatusReal constantly with unchanged paths — plugins must
-  // not be spammed with identical events.
-  let lastEmittedSel = "";
+  // --- the status label: one writer, two guards ---
+  //
+  // The label ("tfm-status-label") is GLOBAL (both panes share it) and the
+  // "N items" count of a directory selection is ASYNC, so a write can land
+  // long after the request that asked for it. Two guards sit AT THE WRITE:
+  // the ticket (only the current request may write) and the pane (a pane
+  // that lost focus must not paint over the new pane's status).
+  type StatusTicket = { readonly kind: "status-ticket" };
+  let statusTicket: StatusTicket | null = null;
+
+  // The last emitted selection signature (the paths joined). `null` = NOTHING
+  // has been emitted yet; `""` = the EMPTY selection was emitted. The two must
+  // not collide: with `""` as the initial value the first observation of an
+  // empty selection looked like a repeat and never reached the plugin stream.
+  let lastEmittedSel: string | null = null;
+
   const updateSelectionStatusReal = (): void => {
     // an inactive pane's selection never drives the shared status/events
     if (ctx.isActive && !ctx.isActive()) return;
@@ -252,13 +274,20 @@ export const makeSelection = (ctx: SelectionCtx) => {
       }
     } catch {}
     ctx.renderInfo?.();
-    const gen = ++selStatusGen;
+    // this request owns the label from here on
+    const ticket: StatusTicket = { kind: "status-ticket" };
+    statusTicket = ticket;
     const sel: { key: string; isDir: boolean }[] = [];
     tileRefs.forEach((r, k) => {
       if (r.selected) sel.push({ key: k, isDir: r.isDir });
     });
     const setStatus = (s: string) => {
-      if (gen !== selStatusGen) return;
+      // a newer request owns the label now
+      if (statusTicket !== ticket) return;
+      // the pane may have lost the focus while the directory count was in
+      // flight — the label is shared, so a stale write would land on the
+      // NEW pane's status
+      if (ctx.isActive && !ctx.isActive()) return;
       ctx.setText("tfm-status-label", s);
     };
     if (sel.length === 0) {
@@ -281,7 +310,7 @@ export const makeSelection = (ctx: SelectionCtx) => {
       let next = 0;
       const worker = async (): Promise<void> => {
         while (next < files.length) {
-          if (gen !== selStatusGen) return;
+          if (statusTicket !== ticket) return;
           const s = files[next++];
           if (!s) return;
           try {
@@ -295,7 +324,7 @@ export const makeSelection = (ctx: SelectionCtx) => {
         }
       };
       await Promise.all(Array.from({ length: Math.min(32, files.length) }, worker));
-      if (gen !== selStatusGen) return;
+      if (statusTicket !== ticket) return;
       const dirs = sel.filter((s) => s.isDir);
       const bits = [`${sel.length} selected`];
       if (bytes > 0) bits.push(fmtBytes(bytes));
@@ -303,11 +332,11 @@ export const makeSelection = (ctx: SelectionCtx) => {
         const d = dirs[0];
         if (d) {
           try {
-            bits.push(`${(await readdir(d.key)).length} items`);
+            bits.push(`${(await readDir(d.key)).length} items`);
           } catch {}
         }
       }
-      if (gen !== selStatusGen) return;
+      if (statusTicket !== ticket) return;
       setStatus(bits.join(" · "));
     })();
   };

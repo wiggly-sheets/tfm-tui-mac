@@ -1,6 +1,6 @@
 // --- Bottom-bar icon-size slider (Finder-style). It sits at the right of the
 // tfm-status row and drives the EXISTING grid zoom through the config path, so
-// ctrl+= / ctrl+- and the slider stay one mechanism (settings.zoomUiPatch).
+// ctrl+= / ctrl+- and the slider both read UI_SCHEMA bounds (see ./zoom).
 // Visible only when [ui] icon-size-slider is on, the ACTIVE pane is in grid
 // view, and a live image protocol exists — see ./icon-slider-model. ---
 

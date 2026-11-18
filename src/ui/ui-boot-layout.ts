@@ -279,8 +279,17 @@ export const scrollbarTrackColors = (colors: Theme): { backgroundColor: string; 
 // (`tfm-scroll` / `tfm-scroll-2`) so grid-input, hit-target and ui-lookup keep
 // finding them; new leaves get `tfm-scroll-<id>`. Built by wiring/panes for
 // every leaf, at boot and on each split. ---
-export const buildPaneScroller = (ctx: PaneScrollerCtx): ScrollBoxRenderable =>
-  new ScrollBoxRenderable(ctx.renderer, {
+export const buildPaneScroller = (ctx: PaneScrollerCtx): ScrollBoxRenderable => {
+  // NEVER keyboard-focusable (scroller + BOTH bars). OpenTUI's autoFocus
+  // focuses the nearest focusable ancestor on ANY left click, and a focused
+  // ScrollBox/ScrollBar turns arrows/j/k/pgup/pgdn/home/end into a
+  // 1/5-viewport self-scroll: it fights the selection scroll and keeps
+  // scrolling behind an open modal. tfm owns every grid key (the router also
+  // preventDefaults consumed keys); the wheel needs no focus.
+  //
+  // Set through the SETTER, not the option: `options.focusable` is ignored on
+  // a renderable whose defaultFocusable is true (probed on this fork).
+  const scroller = new ScrollBoxRenderable(ctx.renderer, {
     id: scrollerId(ctx.id),
     flexGrow: 1,
     width: "100%",
@@ -317,6 +326,11 @@ export const buildPaneScroller = (ctx: PaneScrollerCtx): ScrollBoxRenderable =>
     // never receive a drag
     onMouseDrop: () => ctx.dropIntoPane(),
   });
+  scroller.focusable = false;
+  scroller.verticalScrollBar.focusable = false;
+  scroller.horizontalScrollBar.focusable = false;
+  return scroller;
+};
 
 // --- Boot overlays: the rubber-band selection rect and the drag ghost. Built
 // ONCE, post-mount, and live for the whole app lifetime. Ids must stay

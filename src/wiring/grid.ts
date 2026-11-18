@@ -55,6 +55,10 @@ export const wireGrid = (deps: {
   plugins: PluginsWiring;
   // pick overlay wires LAST (wiring/keymap) — lazy getter, action-time only
   getPick(): ReturnType<typeof makePick>;
+  // the key router (wiring/keymap) — a tile press hands the keyboard back
+  // from the sidebar. Lazy getter: keymap wires LAST, so the TDZ is settled
+  // by the first click (same seam as getPick above).
+  getKeyRouter(): { leaveSidebarToGrid(): void };
   // retheme wires after grid — lazy getter, action-time only (same seam)
   getRetheme: () => RethemeWiring;
   // fallback drag (no-mouse terminals): a long-press picks up the selection
@@ -64,7 +68,8 @@ export const wireGrid = (deps: {
   // which is built AFTER the grid, so the grid reads it at press time.
   getFallbackDrag: () => { pickupMs(): number } | null;
 }) => {
-  const { core, nav, chrome, gridFoundation, fileops, plugins, getPick, getRetheme, getFallbackDrag } = deps;
+  const { core, nav, chrome, gridFoundation, fileops, plugins, getPick, getKeyRouter, getRetheme, getFallbackDrag } =
+    deps;
   const { selection, selections, rename } = gridFoundation;
   const { byId, stripSelectable } = core.lookup;
   const { themeGet, home, state } = core;
@@ -93,7 +98,6 @@ export const wireGrid = (deps: {
     // effective width is 0 then, and the work is invisible native churn
     visible: () => core.geometry.previewEff > 0 && core.config.ui.previewEnabled && !core.config.ui.infoSidebar,
     termH: () => chrome.renderer.terminalHeight,
-    cellMetrics: core.slots.cellMetrics,
     focusKey,
     tileRefs: selection.tileRefs,
     pushThumbJob: core.slots.pushThumbJob,
@@ -265,6 +269,9 @@ export const wireGrid = (deps: {
       setStatusMsg: nav.setStatusMsg,
       focusPane: () => focusPane(id),
       blurTerminal: () => fileops.terminal.blurTerminal(),
+      // the sidebar swallows every key while it holds keyboard focus — a
+      // click on a file takes the keyboard back
+      blurSidebar: () => getKeyRouter().leaveSidebarToGrid(),
       hoverAnim: (key: string, hovered: boolean) => {
         const a = hoverAnims.get(id);
         if (!a) throw new Error(`no hover anim for pane ${id}`);

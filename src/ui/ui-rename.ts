@@ -2,7 +2,7 @@
 // Factory with injected ctx (renderer/colors/refs are live getters); the
 // renameEdit state lives HERE behind getters so the keyboard router and
 // renderGrid read it without a module-level import from index. ---
-import { type CliRenderer, InputRenderable, type KeyEvent, Text } from "@opentui/core";
+import { type CliRenderer, InputRenderable, type KeyEvent } from "@opentui/core";
 import { existsSync } from "node:fs";
 import { link, mkdir, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -13,7 +13,7 @@ import type { Theme } from "../config/config";
 import type { MaybeNode } from "../lib/node-like";
 import type { PointerStyle } from "../lib/pointer";
 
-type RenameEdit = { key: string; inputId: string; createKind?: "file" | "folder"; labelIdx?: number };
+type RenameEdit = { key: string; inputId: string; createKind?: "file" | "folder" };
 
 export type RenameCtx = {
   // per-pane id prefix ("tfm-p0-"/"tfm-p1-") — the inline rename input is
@@ -25,7 +25,7 @@ export type RenameCtx = {
   byId(id: string): MaybeNode;
   colors(): Theme;
   tileW(): number;
-  tileRefs: Map<string, { tileId: string; labelId: string; baseFg: string }>;
+  tileRefs: Map<string, { tileId: string; labelId: string; baseFg: string; renameWidth?: number }>;
   stripSelectable(): void;
   renderAll(): void;
   renderGrid(): void | Promise<void>;
@@ -89,29 +89,15 @@ export const makeRename = (ctx: RenameCtx) => {
       } catch {}
     }
     const refs = ctx.tileRefs.get(edit.key);
-    const tile = refs ? ctx.byId(refs.tileId) : null;
-    if (refs && tile && !ctx.byId(refs.labelId)) {
-      const labelText = Text({
-        id: refs.labelId,
-        content: tileLabelFor(path.basename(edit.key), ctx.tileW()),
-        fg: refs.baseFg,
-      });
-      // restore at the label's ORIGINAL index, not via add(): in list rows
-      // (icon | name | … | size | date) an append drops the name after the
-      // date — the same-name create path never rebuilds, so it stayed there
-      // the tile is a mounted renderable, so its children are readable
-      const kids = [...tile.getChildren()];
-      const at = edit.labelIdx !== undefined && edit.labelIdx <= kids.length ? edit.labelIdx : kids.length;
-      const before = kids[at];
-      if (before) {
-        try {
-          tile.insertBefore(labelText, before);
-        } catch {
-          tile.add(labelText);
-        }
-      } else {
-        tile.add(labelText);
-      }
+    const label = refs ? ctx.byId(refs.labelId) : null;
+    if (label) {
+      // The original label stays mounted (display:none while the editor is
+      // open). Restoring THAT node preserves its exact content and layout:
+      // rebuilding it from the basename used the grid tile width in list
+      // view, leaving a cancelled rename visibly truncated.
+      try {
+        label.visible = true;
+      } catch {}
     }
     ctx.stripSelectable();
     if (!commit || !value) {
@@ -208,14 +194,6 @@ export const makeRename = (ctx: RenameCtx) => {
       ctx.notify("Can't rename here (source gone)", "rename", "error");
       return;
     }
-    // remember where the label sits so finishInlineRename can restore it in
-    // place (grid tile: below the icon; list row: right after it — an append
-    // would drop the name after the size/date columns)
-    let labelIdx: number | undefined;
-    try {
-      labelIdx = [...tile.getChildren()].indexOf(label);
-    } catch {}
-    if (labelIdx === -1) labelIdx = undefined;
     // real class instance — mounts into the already-mounted tile
     const inputId = `${ctx.prefix()}rename-input`;
     const stale = ctx.byId(inputId);
@@ -226,7 +204,10 @@ export const makeRename = (ctx: RenameCtx) => {
     }
     const input = new InputRenderable(ctx.renderer(), {
       id: inputId,
-      width: ctx.tileW() - 2,
+      // Grid tiles publish their label width; list rows publish the name
+      // column's width. The grid tile-width setting must not constrain an
+      // editor that lives in a list row.
+      width: Math.max(1, refs.renameWidth ?? ctx.tileW() - 2),
       value: path.basename(key),
       backgroundColor: ctx.colors().hoverBg,
       focusedBackgroundColor: ctx.colors().accentBg,
@@ -238,9 +219,11 @@ export const makeRename = (ctx: RenameCtx) => {
       tile.add(input);
     }
     try {
-      tile.remove(label);
+      // Keep the label mounted but take it out of layout. Restoring this
+      // exact node keeps the original text, truncation and centering intact.
+      label.visible = false;
     } catch {}
-    renameEdit = { key, inputId, labelIdx, ...(createKind ? { createKind } : {}) };
+    renameEdit = { key, inputId, ...(createKind ? { createKind } : {}) };
     // the editor owns the keyboard now — text pointer until it lands
     ctx.setPointer?.("text");
     input.on?.("enter", () => finishInlineRename(true));

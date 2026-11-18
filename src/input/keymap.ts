@@ -36,6 +36,9 @@ import type { MaybeNode } from "../lib/node-like";
 type KeyPressEvent = KeyEventLike & {
   control?: boolean;
   repeated?: boolean;
+  // OpenTUI's KeyEvent carries this; the fallback shape does not, so the
+  // router only ever calls it optionally (tests pass bare objects).
+  preventDefault?(): void;
 };
 
 // structural subset of index's AppState — the router only touches these
@@ -237,9 +240,12 @@ export type KeyRouterCtx = {
 export const makeKeyRouter = (ctx: KeyRouterCtx) => {
   const { selection } = ctx;
 
-  // sidebar keyboard focus
-  let sidebarActive = false;
-  let placeIdx = -1;
+  // sidebar keyboard focus — ONE explicit value: the keyboard is either in
+  // the grid or on a place row. The old pair (a boolean "active" + a row
+  // index) could disagree — "active" with NO row — and that combination
+  // swallowed EVERY key (the sidebar handler returns true for anything).
+  type SidebarFocus = { kind: "grid" } | { kind: "places"; index: number };
+  let sidebarFocus: SidebarFocus = { kind: "grid" };
   // terminal-hint throttle: the "click the grid to leave" status shows once
   // per terminal focus visit, not on every swallowed keypress
   let termHintShown = false;
@@ -284,14 +290,16 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
   };
 
   const setSidebarFocus = (idx: number): boolean => {
+    // an out-of-range index is REJECTED: the focus stays where it was.
     if (idx < 0 || idx >= ctx.placesHost.length) return false;
-    placeIdx = idx;
+    sidebarFocus = { kind: "places", index: idx };
     ctx.normalizePlaces();
     return true;
   };
 
   const leaveSidebarToGrid = () => {
-    sidebarActive = false;
+    // the row index goes WITH the focus — there is no "focused on nothing"
+    sidebarFocus = { kind: "grid" };
     ctx.normalizePlaces();
   };
 
@@ -525,11 +533,12 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
   };
 
   const activateSidebarPlace = (): void => {
-    const rec = ctx.placesHost[placeIdx];
+    if (sidebarFocus.kind !== "places") return;
+    const rec = ctx.placesHost[sidebarFocus.index];
     if (!rec) return;
     ctx.closeFileMenu();
-    sidebarActive = false;
-    placeIdx = -1;
+    // the keyboard leaves the sidebar with the focus
+    sidebarFocus = { kind: "grid" };
     const target =
       rec.place.scheme === "recent" ? RECENT_URI : rec.place.scheme === "starred" ? STARRED_URI : rec.place.path;
     if (rec.place.action === "connect") ctx.connectServer();
@@ -544,7 +553,8 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
   // esc-menu opener); left/right hand focus back to the grid without touching
   // the selection.
   const handleSidebarKeys = (ev: KeyPressEvent): boolean => {
-    if (!sidebarActive) return false;
+    if (sidebarFocus.kind !== "places") return false;
+    const idx = sidebarFocus.index;
     // the sidebar may disappear while it owns keyboard focus (ctrl+b toggle,
     // hover-drawer collapse): never keep driving an invisible place cursor
     if (ctx.sidebarVisible && !ctx.sidebarVisible()) {
@@ -552,8 +562,8 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       return false;
     }
     if (ev.name === "escape") leaveSidebarToGrid();
-    else if (hitDir(ev, "moveUp", "extendUp")) setSidebarFocus(placeIdx - 1);
-    else if (hitDir(ev, "moveDown", "extendDown")) setSidebarFocus(placeIdx + 1);
+    else if (hitDir(ev, "moveUp", "extendUp")) setSidebarFocus(idx - 1);
+    else if (hitDir(ev, "moveDown", "extendDown")) setSidebarFocus(idx + 1);
     else if (hitDir(ev, "moveLeft", "extendLeft") || hitDir(ev, "moveRight", "extendRight")) {
       leaveSidebarToGrid();
       selection.ensureCursor();
@@ -577,16 +587,18 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
 
   // sidebar keyboard focus is only enterable while the sidebar is on screen
   // (a hidden sidebar would paint a keyboard cursor nowhere)
-  const enterSidebarFromGrid = (): void => {
-    if (ctx.sidebarVisible && !ctx.sidebarVisible()) return;
+  const enterSidebarFromGrid = (): boolean => {
+    if (ctx.sidebarVisible && !ctx.sidebarVisible()) return false;
+    // an EMPTY sidebar cannot take the focus: entering it would swallow
+    // every key with nowhere to go, so the keyboard stays in the grid
+    if (ctx.placesHost.length === 0) return false;
     const selRec = ctx.placesHost.findIndex((place) => place.selected);
     const pressedKey = selection.focusIdx() >= 0 ? selection.focusKeys()[selection.focusIdx()] : undefined;
     if (pressedKey !== undefined) {
       const pressedRef = selection.tileRefs.get(pressedKey);
       if (pressedRef && !pressedRef.selected) selection.setTileVisual(pressedKey, TileVisual.Rest);
     }
-    sidebarActive = true;
-    setSidebarFocus(selRec >= 0 ? selRec : 0);
+    return setSidebarFocus(selRec >= 0 ? selRec : 0);
   };
 
   // Grid nav: move*/openSelected/page*/first/last binds. Returns true when the
@@ -732,8 +744,8 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       ctx.escMenu.moveMenu(-1);
       return;
     }
-    if (sidebarActive) {
-      setSidebarFocus(placeIdx - 1);
+    if (sidebarFocus.kind === "places") {
+      setSidebarFocus(sidebarFocus.index - 1);
       return;
     }
     selection.moveFocus(0, -1);
@@ -749,8 +761,8 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       ctx.escMenu.moveMenu(1);
       return;
     }
-    if (sidebarActive) {
-      setSidebarFocus(placeIdx + 1);
+    if (sidebarFocus.kind === "places") {
+      setSidebarFocus(sidebarFocus.index + 1);
       return;
     }
     selection.moveFocus(0, 1);
@@ -765,7 +777,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       ctx.escMenu.adjustSelectedSetting(-1);
       return;
     }
-    if (sidebarActive) {
+    if (sidebarFocus.kind === "places") {
       leaveSidebarToGrid();
       selection.ensureCursor();
       return;
@@ -784,7 +796,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       ctx.escMenu.adjustSelectedSetting(1);
       return;
     }
-    if (sidebarActive) {
+    if (sidebarFocus.kind === "places") {
       leaveSidebarToGrid();
       selection.ensureCursor();
       return;
@@ -805,7 +817,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       commitSearch();
       return;
     }
-    if (sidebarActive) {
+    if (sidebarFocus.kind === "places") {
       activateSidebarPlace();
       return;
     }
@@ -868,7 +880,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     {
       action: "toggleSidebar",
       run: () => {
-        if (sidebarActive) leaveSidebarToGrid();
+        if (sidebarFocus.kind === "places") leaveSidebarToGrid();
         ctx.toggleSidebar();
       },
     },
@@ -941,11 +953,31 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       run,
     }));
 
+  // A key tfm consumed must be marked handled so OpenTUI does NOT also hand it
+  // to the focused renderable: a focused ScrollBox/ScrollBar turns arrows into
+  // a 1/5-viewport self-scroll. EXCEPT while a focused editor owns typing —
+  // there the router only DELEGATES, so marking the key handled would starve
+  // the Input/EmbeddedTerminal. Snapshot BEFORE routing: a branch may close the
+  // very surface it was decided on (esc clears the search box).
+  const focusedEditorOwnsKeys = (): boolean =>
+    ctx.prompt?.isOpen() === true ||
+    ctx.bulkRename.isOpen() ||
+    ctx.pick.isOpen() ||
+    ctx.isRenaming() ||
+    ctx.searchVisible() ||
+    ctx.pathInputVisible() ||
+    ctx.pathEditMode() ||
+    ctx.termOwnsKeyboard();
+
   const handleKey = (ev: KeyPressEvent): void => {
+    const keepForEditor = focusedEditorOwnsKeys();
+    if (routeKey(ev) && !keepForEditor) ev.preventDefault?.();
+  };
+  const routeKey = (ev: KeyPressEvent): boolean => {
     const ctrl = !!ev.ctrl || !!ev.control;
     // keybind capture in the settings panel is the ONE state above quit:
     // recording ctrl+q must not quit the app mid-capture
-    if (ctx.escMenu.captureKey(ev)) return;
+    if (ctx.escMenu.captureKey(ev)) return true;
     // the embedded shell owns the keyboard while focused — even the quit and
     // restart chords belong to it (ctrl+q must reach a running REPL; quit stays
     // reachable once the terminal is left). Toast once per focus visit, not per
@@ -955,7 +987,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
         termHintShown = true;
         ctx.notify("Terminal owns keyboard — click the grid to leave", "terminal", "info");
       }
-      return;
+      return true;
     }
     termHintShown = false;
     // any non-copy key ends the ctrl+c streak (and re-arms the quit hint);
@@ -965,25 +997,25 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       copyQuitStreak = 0;
       quitHintShown = false;
     }
-    if (hit(ev, "quit") && runAction("quit")) return;
+    if (hit(ev, "quit") && runAction("quit")) return true;
     // held restart must not queue overlapping teardown/spawn pairs
-    if (hit(ev, "restart") && ev.repeated !== true && runAction("restart")) return;
+    if (hit(ev, "restart") && ev.repeated !== true && runAction("restart")) return true;
     // a true modal open above the pick overlay keeps its keys (see
     // handleOverlayModalKeys) — esc must reach a confirm opened over pick.
-    if (handleOverlayModalKeys(ev)) return;
+    if (handleOverlayModalKeys(ev)) return true;
     // pick overlay (command palette) open: it swallows everything below
     // (typing reaches its focused Input natively, like type-to-search)
     if (ctx.pick.isOpen()) {
       ctx.pick.handleKey(ev);
-      return;
+      return true;
     }
-    if (handleModalKeys(ev)) return;
+    if (handleModalKeys(ev)) return true;
 
     // file context menu open: arrows/enter navigate it, esc closes.
     // getFileMenuState() returns the LIVE state object — mutating fmenu.idx
     // below updates the menu module's state in place.
-    if (handleFileMenuKeys(ev)) return;
-    if (handleSearchKeys(ev)) return;
+    if (handleFileMenuKeys(ev)) return true;
+    if (handleSearchKeys(ev)) return true;
 
     // quicklook float open: esc closes it and the scroll keys drive its body
     // instead of the grid (left/right still move the grid). Everything else
@@ -991,89 +1023,89 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     if (ctx.quicklook?.isOpen()) {
       if (ev.name === "escape") {
         ctx.quicklook.close();
-        return;
+        return true;
       }
       if (hit(ev, "moveUp")) {
         ctx.quicklook.scroll(-1);
-        return;
+        return true;
       }
       if (hit(ev, "moveDown")) {
         ctx.quicklook.scroll(1);
-        return;
+        return true;
       }
       if (hit(ev, "pageUp")) {
         ctx.quicklook.page(-1);
-        return;
+        return true;
       }
       if (hit(ev, "pageDown")) {
         ctx.quicklook.page(1);
-        return;
+        return true;
       }
     }
 
     // columns (Miller/Finder) view: claim arrows/enter/backspace BEFORE the
     // remapped-action block so a backspace doesn't fire parentDir first
-    if (ctx.columns?.isActive() && ctx.columns.handleKey(ev)) return;
+    if (ctx.columns?.isActive() && ctx.columns.handleKey(ev)) return true;
 
     // toolbar editor (stage B3): same claim slot as columns — BEFORE the
     // remapped-action block, because alt+left/right are histBack/histForward
     // binds and backspace is parentDir. Returns false when inactive, so a
     // non-editing router is byte-identical.
-    if (ctx.toolbarEdit?.isActive() && ctx.toolbarEdit.handleKey(ev)) return;
+    if (ctx.toolbarEdit?.isActive() && ctx.toolbarEdit.handleKey(ev)) return true;
 
     // --- remappable action keys that grid nav would otherwise swallow:
     // handleGridNavKeys consumes bare arrows/return regardless of modifiers,
     // so alt+arrows and alt+enter must dispatch BEFORE it (plain arrows and
     // return are unaffected — they match no bind unless remapped onto one) ---
-    if (hit(ev, "histBack") && ev.repeated !== true && runAction("histBack")) return;
-    if (hit(ev, "histForward") && ev.repeated !== true && runAction("histForward")) return;
-    if (hit(ev, "goHome") && runAction("goHome")) return;
-    if (hit(ev, "showProps") && runAction("showProps")) return;
-    if (hit(ev, "newFolder") && ev.repeated !== true && runAction("newFolder")) return;
-    if (hit(ev, "newFile") && ev.repeated !== true && runAction("newFile")) return;
-    if (hit(ev, "pathEdit") && runAction("pathEdit")) return;
-    if (hit(ev, "goToFolder") && ev.repeated !== true && runAction("goToFolder")) return;
-    if (hit(ev, "togglePreview") && ev.repeated !== true && runAction("togglePreview")) return;
-    if (hit(ev, "toggleInfoSidebar") && ev.repeated !== true && runAction("toggleInfoSidebar")) return;
-    if (hit(ev, "toggleQuicklook") && ev.repeated !== true && runAction("toggleQuicklook")) return;
-    if (hit(ev, "toggleSidebar") && ev.repeated !== true && runAction("toggleSidebar")) return;
-    if (hit(ev, "nextTheme") && ev.repeated !== true && runAction("nextTheme")) return;
-    if (hit(ev, "nextKeymap") && ev.repeated !== true && runAction("nextKeymap")) return;
-    if (hit(ev, "openTerminal") && runAction("openTerminal")) return;
-    if (hit(ev, "connectServer") && runAction("connectServer")) return;
-    if (hit(ev, "toggleView") && runAction("toggleView")) return;
-    if (hit(ev, "refresh") && ev.repeated !== true && runAction("refresh")) return;
-    if (hit(ev, "cycleSort") && ev.repeated !== true && runAction("cycleSort")) return;
-    if (hit(ev, "reverseSort") && ev.repeated !== true && runAction("reverseSort")) return;
-    if (hit(ev, "zoomIn") && runAction("zoomIn")) return;
-    if (hit(ev, "zoomOut") && runAction("zoomOut")) return;
-    if (hit(ev, "toggleDualPane") && ev.repeated !== true && runAction("toggleDualPane")) return;
-    if (hit(ev, "toggleSyncBrowsing") && ev.repeated !== true && runAction("toggleSyncBrowsing")) return;
-    if (hit(ev, "splitPaneHorizontal") && ev.repeated !== true && runAction("splitPaneHorizontal")) return;
-    if (hit(ev, "splitPaneVertical") && ev.repeated !== true && runAction("splitPaneVertical")) return;
-    if (hit(ev, "closePane") && ev.repeated !== true && runAction("closePane")) return;
-    if (hit(ev, "presetSingle") && ev.repeated !== true && runAction("presetSingle")) return;
-    if (hit(ev, "presetTwoCol") && ev.repeated !== true && runAction("presetTwoCol")) return;
-    if (hit(ev, "presetTwoRow") && ev.repeated !== true && runAction("presetTwoRow")) return;
-    if (hit(ev, "presetThreePane") && ev.repeated !== true && runAction("presetThreePane")) return;
-    if (hit(ev, "switchPane") && ev.repeated !== true && runAction("switchPane")) return;
-    if (hit(ev, "focusPaneLeft") && ev.repeated !== true && runAction("focusPaneLeft")) return;
-    if (hit(ev, "focusPaneRight") && ev.repeated !== true && runAction("focusPaneRight")) return;
-    if (hit(ev, "focusPaneUp") && ev.repeated !== true && runAction("focusPaneUp")) return;
-    if (hit(ev, "focusPaneDown") && ev.repeated !== true && runAction("focusPaneDown")) return;
-    if (hit(ev, "copyToOtherPane") && ev.repeated !== true && runAction("copyToOtherPane")) return;
-    if (hit(ev, "moveToOtherPane") && ev.repeated !== true && runAction("moveToOtherPane")) return;
-    if (hit(ev, "startSearch") && runAction("startSearch")) return;
-    if (hit(ev, "editToolbar") && ev.repeated !== true && runAction("editToolbar")) return;
+    if (hit(ev, "histBack") && ev.repeated !== true && runAction("histBack")) return true;
+    if (hit(ev, "histForward") && ev.repeated !== true && runAction("histForward")) return true;
+    if (hit(ev, "goHome") && runAction("goHome")) return true;
+    if (hit(ev, "showProps") && runAction("showProps")) return true;
+    if (hit(ev, "newFolder") && ev.repeated !== true && runAction("newFolder")) return true;
+    if (hit(ev, "newFile") && ev.repeated !== true && runAction("newFile")) return true;
+    if (hit(ev, "pathEdit") && runAction("pathEdit")) return true;
+    if (hit(ev, "goToFolder") && ev.repeated !== true && runAction("goToFolder")) return true;
+    if (hit(ev, "togglePreview") && ev.repeated !== true && runAction("togglePreview")) return true;
+    if (hit(ev, "toggleInfoSidebar") && ev.repeated !== true && runAction("toggleInfoSidebar")) return true;
+    if (hit(ev, "toggleQuicklook") && ev.repeated !== true && runAction("toggleQuicklook")) return true;
+    if (hit(ev, "toggleSidebar") && ev.repeated !== true && runAction("toggleSidebar")) return true;
+    if (hit(ev, "nextTheme") && ev.repeated !== true && runAction("nextTheme")) return true;
+    if (hit(ev, "nextKeymap") && ev.repeated !== true && runAction("nextKeymap")) return true;
+    if (hit(ev, "openTerminal") && runAction("openTerminal")) return true;
+    if (hit(ev, "connectServer") && runAction("connectServer")) return true;
+    if (hit(ev, "toggleView") && runAction("toggleView")) return true;
+    if (hit(ev, "refresh") && ev.repeated !== true && runAction("refresh")) return true;
+    if (hit(ev, "cycleSort") && ev.repeated !== true && runAction("cycleSort")) return true;
+    if (hit(ev, "reverseSort") && ev.repeated !== true && runAction("reverseSort")) return true;
+    if (hit(ev, "zoomIn") && runAction("zoomIn")) return true;
+    if (hit(ev, "zoomOut") && runAction("zoomOut")) return true;
+    if (hit(ev, "toggleDualPane") && ev.repeated !== true && runAction("toggleDualPane")) return true;
+    if (hit(ev, "toggleSyncBrowsing") && ev.repeated !== true && runAction("toggleSyncBrowsing")) return true;
+    if (hit(ev, "splitPaneHorizontal") && ev.repeated !== true && runAction("splitPaneHorizontal")) return true;
+    if (hit(ev, "splitPaneVertical") && ev.repeated !== true && runAction("splitPaneVertical")) return true;
+    if (hit(ev, "closePane") && ev.repeated !== true && runAction("closePane")) return true;
+    if (hit(ev, "presetSingle") && ev.repeated !== true && runAction("presetSingle")) return true;
+    if (hit(ev, "presetTwoCol") && ev.repeated !== true && runAction("presetTwoCol")) return true;
+    if (hit(ev, "presetTwoRow") && ev.repeated !== true && runAction("presetTwoRow")) return true;
+    if (hit(ev, "presetThreePane") && ev.repeated !== true && runAction("presetThreePane")) return true;
+    if (hit(ev, "switchPane") && ev.repeated !== true && runAction("switchPane")) return true;
+    if (hit(ev, "focusPaneLeft") && ev.repeated !== true && runAction("focusPaneLeft")) return true;
+    if (hit(ev, "focusPaneRight") && ev.repeated !== true && runAction("focusPaneRight")) return true;
+    if (hit(ev, "focusPaneUp") && ev.repeated !== true && runAction("focusPaneUp")) return true;
+    if (hit(ev, "focusPaneDown") && ev.repeated !== true && runAction("focusPaneDown")) return true;
+    if (hit(ev, "copyToOtherPane") && ev.repeated !== true && runAction("copyToOtherPane")) return true;
+    if (hit(ev, "moveToOtherPane") && ev.repeated !== true && runAction("moveToOtherPane")) return true;
+    if (hit(ev, "startSearch") && runAction("startSearch")) return true;
+    if (hit(ev, "editToolbar") && ev.repeated !== true && runAction("editToolbar")) return true;
 
     // --- keyboard navigation: sidebar <-> grid ---
     // sidebar focus swallows ALL keys — it must precede shift-extend or
     // shift+arrows would mutate the grid selection while the sidebar is
     // focused (it returns false when inactive, so grid extend is unchanged)
-    if (handleSidebarKeys(ev)) return;
-    if (handleShiftExtend(ev)) return;
-    if (handleGridNavKeys(ev)) return;
-    if (hit(ev, "parentDir") && runAction("parentDir")) return;
+    if (handleSidebarKeys(ev)) return true;
+    if (handleShiftExtend(ev)) return true;
+    if (handleGridNavKeys(ev)) return true;
+    if (hit(ev, "parentDir") && runAction("parentDir")) return true;
     // type-to-search catch-all: gated on the [ui] knob (the yazi preset
     // flips it off — bound bare keys already dispatched above regardless)
     if (
@@ -1088,25 +1120,25 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
       /[a-z0-9._-]/i.test(ev.name)
     ) {
       ctx.beginTypeToSearch(ev.name);
-      return;
+      return true;
     }
 
-    if (hit(ev, "openMenu") && runAction("openMenu")) return;
-    if (hit(ev, "toggleHelp") && runAction("toggleHelp")) return;
-    if (hit(ev, "toggleHidden") && ev.repeated !== true && runAction("toggleHidden")) return;
-    if (hit(ev, "reloadPlaces") && ev.repeated !== true && runAction("reloadPlaces")) return;
+    if (hit(ev, "openMenu") && runAction("openMenu")) return true;
+    if (hit(ev, "toggleHelp") && runAction("toggleHelp")) return true;
+    if (hit(ev, "toggleHidden") && ev.repeated !== true && runAction("toggleHidden")) return true;
+    if (hit(ev, "reloadPlaces") && ev.repeated !== true && runAction("reloadPlaces")) return true;
 
     // --- tabs (kitty needs map no_op for ctrl+tab / ctrl+shift+tab — its
     // default next_tab/previous_tab eat the keys before they reach us) ---
-    if (hit(ev, "newTab") && runAction("newTab")) return;
-    if (hit(ev, "closeTab") && runAction("closeTab")) return;
-    if (hit(ev, "prevTab") && runAction("prevTab")) return;
-    if (hit(ev, "nextTab") && runAction("nextTab")) return;
+    if (hit(ev, "newTab") && runAction("newTab")) return true;
+    if (hit(ev, "closeTab") && runAction("closeTab")) return true;
+    if (hit(ev, "prevTab") && runAction("prevTab")) return true;
+    if (hit(ev, "nextTab") && runAction("nextTab")) return true;
 
     // --- file operations ---
-    if (hit(ev, "selectAll") && runAction("selectAll")) return;
-    if (hit(ev, "toggleFocused") && runAction("toggleFocused")) return;
-    if (hit(ev, "invertSelection") && runAction("invertSelection")) return;
+    if (hit(ev, "selectAll") && runAction("selectAll")) return true;
+    if (hit(ev, "toggleFocused") && runAction("toggleFocused")) return true;
+    if (hit(ev, "invertSelection") && runAction("invertSelection")) return true;
     const selected = selection.selPaths();
     // terminal autorepeat (ev.repeated) must never enqueue fs work: holding
     // ctrl+d used to start one real copy per keypress until the native
@@ -1114,8 +1146,8 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
     // stay reachable on repeat (idempotent clipboard writes); rename is
     // already guarded by the inline-edit modal swallowing keys.
     const repeated = ev.repeated === true;
-    if (hit(ev, "trash") && selected.length && !repeated && runAction("trash")) return;
-    if (hit(ev, "renameOrRestore") && selected.length && runAction("renameOrRestore")) return;
+    if (hit(ev, "trash") && selected.length && !repeated && runAction("trash")) return true;
+    if (hit(ev, "renameOrRestore") && selected.length && runAction("renameOrRestore")) return true;
     // third consecutive copy key (with or without a selection — an empty
     // selection is a silent no-op otherwise) hints at the quit bind once per
     // streak, for the SIGINT habit
@@ -1128,12 +1160,12 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
         ctx.notify(`ctrl+c copies · ${quitBinds} to quit`, "quit", "info");
       }
     }
-    if (isCopyKey && selected.length && runAction("copy")) return;
-    if (hit(ev, "cut") && selected.length && runAction("cut")) return;
-    if (hit(ev, "duplicate") && selected.length && !repeated && runAction("duplicate")) return;
-    if (hit(ev, "paste") && !repeated && runAction("paste")) return;
-    if (hit(ev, "redo") && runAction("redo")) return;
-    if (hit(ev, "undo") && runAction("undo")) return;
+    if (isCopyKey && selected.length && runAction("copy")) return true;
+    if (hit(ev, "cut") && selected.length && runAction("cut")) return true;
+    if (hit(ev, "duplicate") && selected.length && !repeated && runAction("duplicate")) return true;
+    if (hit(ev, "paste") && !repeated && runAction("paste")) return true;
+    if (hit(ev, "redo") && runAction("redo")) return true;
+    if (hit(ev, "undo") && runAction("undo")) return true;
 
     // --- plugin commands: LAST, after every core action — "core wins ties"
     // means a plugin defaultBind colliding with ctrl+t/ctrl+c/ctrl+z must NOT
@@ -1150,7 +1182,7 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
         // silent swallow — route it through the same log path every other
         // plugin failure uses
         ctx.log?.(`plugin commands failed: ${err instanceof Error ? err.message : String(err)}`);
-        return;
+        return true;
       }
       for (const cmd of cmds) {
         if (cmd.binds.length && hitBinds(ev, cmd.binds)) {
@@ -1161,18 +1193,19 @@ export const makeKeyRouter = (ctx: KeyRouterCtx) => {
             () => cmd.run(),
             (err) => ctx.log?.(`plugin command ${cmd.id} failed: ${err instanceof Error ? err.message : String(err)}`),
           );
-          return;
+          return true;
         }
       }
     }
+    return false;
   };
 
   return {
     handleKey,
     commands,
     // kb-focus highlight read by makeChrome
-    sidebarActive: (): boolean => sidebarActive,
-    placeIdx: (): number => placeIdx,
+    sidebarActive: (): boolean => sidebarFocus.kind === "places",
+    placeIdx: (): number => (sidebarFocus.kind === "places" ? sidebarFocus.index : -1),
     setSidebarFocus,
     leaveSidebarToGrid,
   };

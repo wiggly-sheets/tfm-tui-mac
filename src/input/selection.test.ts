@@ -409,20 +409,22 @@ describe("updateSelectionStatusReal", () => {
     (h.ctx as { onSelection?: (paths: string[]) => void }).onSelection = (paths) => seen.push(paths);
     h.addTile("/a");
     h.sel.setFocusKeys(["/a"]);
+    // selectTileAt clears first: the first observation (empty) reaches the
+    // stream because "nothing emitted yet" is not the empty signature
     h.sel.selectTileAt(0);
     h.sel.updateSelectionStatusReal();
-    expect(seen).toEqual([["/a"]]);
+    expect(seen).toEqual([[], ["/a"]]);
     // rebuilds/rubber-band moves re-call with unchanged paths — silent
     h.sel.updateSelectionStatusReal();
     h.sel.updateSelectionStatusReal();
-    expect(seen).toEqual([["/a"]]);
+    expect(seen).toEqual([[], ["/a"]]);
     // real changes fire (selectTileAt clears first — the empty intermediate
     // is a genuine change, not spam)
     h.addTile("/b");
     h.sel.setFocusKeys(["/a", "/b"]);
     h.sel.selectTileAt(1);
     h.sel.updateSelectionStatusReal();
-    expect(seen).toEqual([["/a"], [], ["/b"]]);
+    expect(seen).toEqual([[], ["/a"], [], ["/b"]]);
   });
 
   test("link+target total is on-disk cost (link bytes, not double target)", async () => {

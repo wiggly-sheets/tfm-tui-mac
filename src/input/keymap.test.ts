@@ -591,6 +591,30 @@ describe("sidebar keyboard focus", () => {
     expect(h.calls).toContain("mount:sda9");
   });
 
+  test("left on an EMPTY sidebar keeps the keyboard in the grid", () => {
+    // an empty sidebar cannot take the focus: the old code set the "active"
+    // flag BEFORE validating the index, so the sidebar swallowed EVERY key
+    // with nowhere to go (the whole keyboard went dead)
+    const h = makeHarness({ placesHost: [] });
+    h.key("left");
+    expect(h.router.sidebarActive()).toBe(false);
+    expect(h.router.placeIdx()).toBe(-1);
+    // the grid still answers
+    const before = h.selection.focusIdx();
+    h.key("down");
+    expect(h.selection.focusIdx()).toBe(before + 1);
+  });
+
+  test("leaving the sidebar clears the place index", () => {
+    const h = makeHarness();
+    h.key("left");
+    expect(h.router.placeIdx()).toBe(0);
+    h.router.leaveSidebarToGrid();
+    expect(h.router.sidebarActive()).toBe(false);
+    // the index is GONE with the focus — there is no "focused on nothing"
+    expect(h.router.placeIdx()).toBe(-1);
+  });
+
   test("left/right inside the sidebar return to the grid", () => {
     const h = makeHarness();
     h.key("left");
@@ -1606,5 +1630,22 @@ describe("dual-pane actions", () => {
     expect(h.calls).toEqual([]);
     h.key("u", { ctrl: true });
     expect(h.calls).toEqual(["pane:switch"]);
+  });
+});
+
+describe("consumed keys are marked handled", () => {
+  test("a routed grid key preventDefaults the renderer default", () => {
+    const h = makeHarness();
+    let prevented = 0;
+    h.router.handleKey({ name: "down", preventDefault: () => prevented++ });
+    expect(h.selection.focusIdx()).toBe(0);
+    expect(prevented).toBe(1);
+  });
+
+  test("an editor-owned key is delegated, never marked handled", () => {
+    const h = makeHarness({ pathInputVisible: () => true });
+    let prevented = 0;
+    h.router.handleKey({ name: "b", preventDefault: () => prevented++ });
+    expect(prevented).toBe(0);
   });
 });
