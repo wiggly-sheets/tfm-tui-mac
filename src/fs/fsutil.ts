@@ -378,7 +378,58 @@ const FS_ERR_TEXT: Record<string, string> = {
   EMFILE: "too many open files",
 };
 
+// A trash move that could NOT be rolled back leaves the file in the trash
+// root with no usable .trashinfo: tfm can neither restore it (no mapping)
+// nor attribute it to the original path. The error NAMES the stranded path —
+// the file is the user's only copy, and a silent "FAILED" would hide it.
+export class TrashStrandedError extends Error {
+  readonly strandedPath: string;
+  readonly rollbackError: unknown;
+  constructor(strandedPath: string, rollbackError: unknown) {
+    super(`file stranded in the trash root · ${strandedPath}`);
+    this.name = "TrashStrandedError";
+    this.strandedPath = strandedPath;
+    this.rollbackError = rollbackError;
+  }
+}
+
+// A trash move that LANDED but could not remove the SOURCE: the file is
+// complete in the trash root and its .trashinfo was KEPT (the entry is the
+// user's data and must stay restorable), but the original path still holds
+// leftovers. The error names the trash path — the user has to know where
+// their data is (and that the source is not fully gone).
+export class TrashPartialMoveError extends Error {
+  readonly trashPath: string;
+  readonly removalError: unknown;
+  constructor(trashPath: string, removalError: unknown) {
+    super(`source partially removed: ${fsErrText(removalError)} · ${trashPath}`);
+    this.name = "TrashPartialMoveError";
+    this.trashPath = trashPath;
+    this.removalError = removalError;
+  }
+}
+
+// A move that LANDED its destination but could not remove the SOURCE: the
+// destination holds the only complete copy, so the caller must keep it and
+// report the partial state (the message text is what
+// `isPrivilegeError` matches, so it stays "source partially removed: <text>").
+export class SourceRemovalFailedError extends Error {
+  readonly destPath: string;
+  readonly removalError: unknown;
+  constructor(destPath: string, removalError: unknown) {
+    super(`source partially removed: ${fsErrText(removalError)}`);
+    this.name = "SourceRemovalFailedError";
+    this.destPath = destPath;
+    this.removalError = removalError;
+  }
+}
+
 export const fsErrText = (err: unknown): string => {
+  // a stranded trash file names its path — the whole message IS the report
+  // (the generic branch would cut it at the first colon)
+  if (err instanceof TrashStrandedError) return err.message;
+  // a partial move names the trash path AND the reason — same rule
+  if (err instanceof TrashPartialMoveError) return err.message;
   const code = errCode(err);
   if (typeof code === "string") return FS_ERR_TEXT[code] ?? code.toLowerCase();
   return err instanceof Error ? (err.message.split(":")[0]?.toLowerCase() ?? "unknown error") : "unknown error";
@@ -469,7 +520,7 @@ export const fsMove = async (src: string, dest: string): Promise<void> => {
     } catch (err) {
       // partial source deletion; the complete copy in dest is the only intact
       // data now — keep it and say what actually happened instead of a bare errno
-      throw new Error(`source partially removed: ${fsErrText(err)}`);
+      throw new SourceRemovalFailedError(dest, err);
     }
   }
   // a file leaving a trash root (cut/paste out, drag out, Finder Put Back via
@@ -624,6 +675,65 @@ const trashRootsFor = (target: string, platform: string = process.platform): str
 // sidebar, listing, count and empty passes) points at the XDG tree, so darwin
 // uses the XDG lane there too: a native move would land in a directory nothing
 // else looks at.
+// What a trash move reports back. A move can land the file in the trash root
+// and STILL fail to remove the source (a cross-device copy whose source
+// removal failed). The entry is then the user's ONLY complete copy, so its
+// .trashinfo MUST be kept and the caller must say "source partially removed"
+// with the trash path.
+export type TrashMoveOutcome = { kind: "moved" } | { kind: "landed"; sourceRemovalFailed: unknown };
+
+export type MoveFn = (src: string, dest: string) => Promise<TrashMoveOutcome>;
+
+// The default move seam: a plain rename (same device) or fsMove's EXDEV
+// fallback. It either lands the file or throws — it never reports a partial
+// move (fsMove's own fallback reports "source partially removed" as an
+// error, and the caller keeps the copy).
+const defaultTrashMove: MoveFn = async (src, dest) => {
+  await fsMove(src, dest);
+  return { kind: "moved" };
+};
+
+// The XDG trash move's ONE explicit phase. The claim → move → finalize
+// sequence fails in different ways, and each failure has a DIFFERENT remedy:
+//
+//   claimed    — the .trashinfo placeholder owns the name, the file is
+//                STILL at the source (a failure here only cleans up the
+//                placeholder; the source is intact)
+//   landed     — the file IS in the trash root, but the SOURCE removal
+//                failed. The entry is the user's only complete copy: the
+//                .trashinfo must be KEPT and the caller must report it.
+//   moved      — the file is in the trash root, the info is still the
+//                placeholder (a failure here must roll the file back)
+//   finalized  — the file is in the trash root and its info is durable
+type TrashPhase =
+  | { kind: "claimed"; infoPath: string; trashPath: string }
+  | { kind: "landed"; infoPath: string; trashPath: string }
+  | { kind: "moved"; infoPath: string; trashPath: string }
+  | { kind: "finalized"; infoPath: string; trashPath: string };
+
+// drop a .trashinfo (best effort): a stale info file is an orphan entry —
+// tfm's trash view would list a file it cannot restore
+const dropTrashInfo = async (infoPath: string, what: string): Promise<void> => {
+  try {
+    await rm(infoPath, { force: true });
+  } catch (cleanupErr) {
+    swallow(what, cleanupErr);
+  }
+};
+
+// make the .trashinfo durable (best effort): the claim already wrote the
+// real content, so this only re-writes + fsyncs it. Never throws — the
+// caller is reporting a partial move, and the report must not be replaced
+// by a cleanup error.
+const finalizeTrashInfo = async (infoPath: string, content: string): Promise<void> => {
+  try {
+    await writeFile(infoPath, content);
+    await fsyncPath(infoPath);
+  } catch (err) {
+    swallow("trash info finalize", err);
+  }
+};
+
 export const xdgTrashMove = async (p: string, platform: string = process.platform): Promise<string> => {
   const absSrc = path.resolve(p);
   if (isDarwin(platform) && !process.env.XDG_DATA_HOME) {
@@ -638,6 +748,14 @@ export const xdgTrashMove = async (p: string, platform: string = process.platfor
       return await xdgTrashMoveToRoot(absSrc, root, undefined, platform);
     } catch (err) {
       lastErr = err;
+      // A STRANDED file is NOT a "try the next root" failure: the source is
+      // GONE (the file sits in this root's files dir), so the next root
+      // would fail with ENOENT and MASK the real error — the user would
+      // never learn where their file is.
+      if (err instanceof TrashStrandedError) throw err;
+      // A LANDED file (the copy landed, the source removal failed) is the
+      // same: the file is in THIS root's files dir.
+      if (err instanceof TrashPartialMoveError) throw err;
       // topdir may be read-only/unwritable — fall through to home trash
     }
   }
@@ -700,7 +818,7 @@ export const xdgTrashMoveToRoot = async (
   root: string,
   // injectable move (default fsMove): the sudo replace-stash runs the SAME
   // claim/rename/finalize loop with sudo-mv — one loop, not a near-clone.
-  move: (src: string, dest: string) => Promise<void> = fsMove,
+  move: MoveFn = defaultTrashMove,
   platform: string = process.platform,
 ): Promise<string> => {
   // Layout follows the root's shape: a native darwin trash keeps Finder's flat
@@ -715,6 +833,7 @@ export const xdgTrashMoveToRoot = async (
   const base = path.basename(absSrc);
   const stamp = new Date().toISOString().replace(/\.\d+Z$/, "Z");
   const encoded = encodeTrashPath(absSrc);
+  const content = `[Trash Info]\nPath=${encoded}\nDeletionDate=${stamp}\n`;
   let name = base;
   for (let i = 2; ; i++) {
     // never claim a name whose landing already exists without a sidecar (a
@@ -728,7 +847,7 @@ export const xdgTrashMoveToRoot = async (
     const infoPath = path.join(infoDir, `${name}.trashinfo`);
     // atomic claim: fails with EEXIST when another trasher owns this name
     try {
-      await writeFile(infoPath, `[Trash Info]\nPath=${encoded}\nDeletionDate=${stamp}\n`, { flag: "wx" });
+      await writeFile(infoPath, content, { flag: "wx" });
     } catch (err) {
       if (errCode(err) === "EEXIST") {
         name = `${base}.${i}`;
@@ -736,21 +855,21 @@ export const xdgTrashMoveToRoot = async (
       }
       throw err;
     }
-    // claimed — now move, then finalize the info (overwrite placeholder)
+    // --- phase: claimed (the info placeholder owns the name) ---
     const finalPath = path.join(filesDir, name);
+    let phase: TrashPhase = { kind: "claimed", infoPath, trashPath: finalPath };
     try {
-      await move(absSrc, finalPath);
-    } catch (moveErr) {
-      try {
-        await rm(infoPath, { force: true });
-      } catch (cleanupErr) {
-        // a leftover .trashinfo for a file that never moved is an orphan entry
-        swallow("trash info cleanup after failed move", cleanupErr);
+      const outcome = await move(absSrc, finalPath);
+      if (outcome.kind === "landed") {
+        // the file IS in the trash root; only the SOURCE removal failed —
+        // keep the info and report the partial state with the trash path
+        phase = { kind: "landed", infoPath, trashPath: finalPath };
+        await finalizeTrashInfo(infoPath, content);
+        throw new TrashPartialMoveError(finalPath, outcome.sourceRemovalFailed);
       }
-      throw moveErr;
-    }
-    try {
-      await writeFile(infoPath, `[Trash Info]\nPath=${encoded}\nDeletionDate=${stamp}\n`);
+      // --- phase: moved (the file is in the trash root) ---
+      phase = { kind: "moved", infoPath, trashPath: finalPath };
+      await writeFile(infoPath, content);
       // best-effort durability: info + dir fsync so a crash doesn't lose the
       // restore mapping for a file that already moved
       try {
@@ -759,25 +878,48 @@ export const xdgTrashMoveToRoot = async (
         swallow("trash info fsync", syncErr);
       }
     } catch (err) {
-      // put the file back — a source-less trash entry is worse than no entry
+      // THE PHASE PICKS THE REMEDY:
+      if (phase.kind === "claimed" && err instanceof SourceRemovalFailedError) {
+        // the move seam LANDED the file and then failed to remove the source
+        // (fsMove's EXDEV fallback throws exactly that): the .trashinfo must
+        // be KEPT and the report must name the trash path
+        phase = { kind: "landed", infoPath, trashPath: finalPath };
+        await finalizeTrashInfo(infoPath, content);
+        throw new TrashPartialMoveError(finalPath, err.removalError);
+      }
+      if (phase.kind === "landed") {
+        // the file is in the trash root and its info was kept — the only
+        // failure is the source removal. Dropping the info would make the
+        // entry unrestorable.
+        throw err instanceof TrashPartialMoveError ? err : new TrashPartialMoveError(phase.trashPath, err);
+      }
+      if (phase.kind === "claimed") {
+        // the file never moved — the source is intact, so only the
+        // placeholder needs cleanup (no orphan entry)
+        await dropTrashInfo(phase.infoPath, "trash info cleanup after failed move");
+        throw err;
+      }
+      // phase: moved — the file IS in the trash root now, so put it back.
+      // The rollback is the only way out; if IT fails, the file is stranded
+      // and the error must say where it is.
       try {
-        await move(finalPath, absSrc);
+        await move(phase.trashPath, absSrc);
       } catch (undoErr) {
-        if (err instanceof Error) {
-          const e: Error & { rollbackFailed?: unknown } = err;
-          e.rollbackFailed = undoErr;
-        }
+        // THE ROLLBACK FAILED: the file stays in the trash root. Its
+        // .trashinfo is untrustworthy (the write that just failed may have
+        // truncated it), so drop it — a half-written info would
+        // mis-attribute the entry — and REPORT the stranded path.
+        await dropTrashInfo(phase.infoPath, "trash info cleanup after failed rollback");
+        throw new TrashStrandedError(phase.trashPath, undoErr);
       }
-      try {
-        await rm(infoPath, { force: true });
-      } catch (cleanupErr) {
-        // failed rollback of the .trashinfo: the file is back but the entry
-        // would linger without this line in the log
-        swallow("trash info cleanup after failed write", cleanupErr);
-      }
+      // rolled back: the file is back at the source, so the info (which
+      // points into the trash) is invalid — drop it
+      await dropTrashInfo(phase.infoPath, "trash info cleanup after failed write");
       throw err;
     }
-    return finalPath;
+    // --- phase: finalized (the file is in the trash root, the info durable) ---
+    phase = { kind: "finalized", infoPath, trashPath: finalPath };
+    return phase.trashPath;
   }
 };
 
@@ -885,6 +1027,40 @@ export const atomicWriteFile = async (p: string, data: Uint8Array | string): Pro
 // DIR is a separate dot-prefixed shape, anchored by its own regex.)
 export const tmpName = (base: string): string =>
   `${base}.tfm-part-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+
+// The extraction stage dir's name shape (`.tfm-extract-<pid>-<rand8>`). The
+// crash-orphan sweep anchors to this EXACT shape, so the name and the test
+// live together: a substring match would delete real user files.
+export const extractStageName = (): string => `.tfm-extract-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+
+// Is this name a CRASHED extraction stage (safe debris to delete)? The test
+// is anchored to the exact shape — a stage that still holds a member the
+// user needs is renamed to the KEPT shape below, which does NOT match.
+export const isCrashedExtractStage = (name: string): boolean => /^\.tfm-extract-\d+-[0-9a-z]{8}$/.test(name);
+
+// The KEPT stage shape (`.tfm-extract-kept-<pid>-<rand8>`): outside the
+// swept shape, so the data survives the next transfer's crash sweep.
+const keptExtractStageName = (): string =>
+  `.tfm-extract-kept-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+
+// Rename an extraction stage that still holds members OUT of the swept temp
+// shape and return its new path. The stage holds the USER'S data (a member
+// that could not be moved into the destination), so it must not keep the
+// name the crash-orphan sweep deletes — the next transfer would remove it
+// and the content would be gone with no trace.
+export const keepExtractStage = async (stage: string): Promise<string> => {
+  const dir = path.dirname(stage);
+  for (let i = 0; i < 10; i++) {
+    const cand = path.join(dir, keptExtractStageName());
+    try {
+      await fsRename(stage, cand);
+      return cand;
+    } catch (err) {
+      if (errCode(err) !== "EEXIST") throw err;
+    }
+  }
+  throw new Error(`cannot keep extract stage ${path.basename(stage)}`);
+};
 
 // Exclusive claim of a sibling tmp: the rand name is 64-bit, but two live ops
 // on the same dest (or a planted name) would otherwise share one tmp and

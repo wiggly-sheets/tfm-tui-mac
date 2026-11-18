@@ -65,7 +65,9 @@ export const loadSystemPlaces = async (): Promise<void> => {
   ]);
   sysUserDirs = dirs;
   sysBookmarks = marks;
-  sysMounts = mounts;
+  // a FAILED mount probe is UNKNOWN, not "no devices": keep the last list so
+  // one wedged diskutil/lsblk does not empty the Devices section
+  sysMounts = mounts ?? sysMounts;
   sysNetwork = network;
   // The Trash row shows as soon as [ui] sidebar-show-trash is on, even before
   // the first item is trashed — make sure its FILES dir exists so the view is
@@ -275,9 +277,12 @@ export function parseLsblk(json: unknown): MountEntry[] {
   return out;
 }
 
-async function listMounts(): Promise<MountEntry[]> {
+// The device list has THREE states: a list ("here they are"), [] ("the probe
+// succeeded, there are no devices"), null ("the probe FAILED" — a wedged
+// helper, a missing binary, garbage output — UNKNOWN, not empty).
+async function listMounts(): Promise<MountEntry[] | null> {
   // darwin: diskutil labels first, `mount` fallback (lsblk/udisksctl are
-  // Linux-only). Either may fail (wedged diskutil) → sidebar shows no devices
+  // Linux-only). Either may fail (wedged diskutil) -> probe unknown.
   if (isDarwin()) {
     const dutil = diskutilBin();
     try {
@@ -295,7 +300,7 @@ async function listMounts(): Promise<MountEntry[]> {
       const { stdout } = await execFileP("mount", [], { timeout: 10_000 });
       return darwinMountEntries([], parseMountTable(String(stdout ?? "")));
     } catch {
-      return [];
+      return null;
     }
   }
   try {
@@ -305,7 +310,8 @@ async function listMounts(): Promise<MountEntry[]> {
     });
     return parseLsblk(JSON.parse(stdout));
   } catch {
-    return [];
+    // unparseable output is a failed probe, not "no devices"
+    return null;
   }
 }
 

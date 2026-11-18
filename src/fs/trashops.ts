@@ -14,6 +14,7 @@ import {
   trashDir,
   trashFilesDir,
   trashInfoPathForTrashFile,
+  TrashPartialMoveError,
   xdgTrashMove,
   safeRestoreMove,
 } from "./fsutil";
@@ -163,30 +164,52 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
       const dRedos: UndoStep[] = [];
       let ok = 0;
       const failWhy = new Set<string>();
+      // entries that landed in the trash but whose SOURCE could not be
+      // removed — the entry is restorable (its .trashinfo was kept), but the
+      // source still holds leftovers, so the report must say so and name the
+      // trash path.
+      const partial: string[] = [];
+      // the undo/journal/redo units for ONE trashed entry (the same shape for
+      // a clean trash and for a partial one — the entry is in the trash
+      // either way, so it is undoable either way)
+      const pushTrashEntry = (loc: string, orig: string): void => {
+        const hit = path.basename(loc);
+        const from = path.join(path.dirname(loc), hit);
+        units.push(async () => {
+          await safeRestoreMove(from, orig);
+          await rmTrashInfoForPath(from, sink.log?.bind(sink), platform);
+        });
+        dUnits.push({ op: "restore-move", from, to: orig });
+        dUnits.push({ op: "rm-trashinfo", name: hit, path: from });
+        redos.push(async () => {
+          try {
+            if (existsSync(orig)) await xdgTrashMove(orig, platform);
+          } catch (err) {
+            sink.log?.(`redo trash ${orig}: ${fsErrText(err)}`);
+          }
+        });
+        dRedos.push({ op: "trash-if-exists", path: orig });
+      };
       for (const p of paths) {
         // always trash via our own trash lane: we control the final name, so the
         // undo unit pairs deterministically (a before/after listing diff could
         // mis-pair when something else trashes a similar name concurrently)
         try {
           const loc = await xdgTrashMove(p, platform);
-          const hit = path.basename(loc);
-          const from = path.join(path.dirname(loc), hit);
-          units.push(async () => {
-            await safeRestoreMove(from, p);
-            await rmTrashInfoForPath(from, sink.log?.bind(sink), platform);
-          });
-          dUnits.push({ op: "restore-move", from, to: p });
-          dUnits.push({ op: "rm-trashinfo", name: hit, path: from });
-          redos.push(async () => {
-            try {
-              if (existsSync(p)) await xdgTrashMove(p, platform);
-            } catch (err) {
-              sink.log?.(`redo trash ${p}: ${fsErrText(err)}`);
-            }
-          });
-          dRedos.push({ op: "trash-if-exists", path: p });
+          pushTrashEntry(loc, p);
           ok++;
         } catch (err) {
+          if (err instanceof TrashPartialMoveError) {
+            // the copy LANDED: the file is complete in the trash root and its
+            // .trashinfo was kept (the entry is the user's only complete
+            // copy). Only the SOURCE removal failed — count the item as
+            // trashed, keep it undoable, and report the partial state with
+            // the trash path (a bare "FAILED" would hide where the data is).
+            partial.push(err.trashPath);
+            pushTrashEntry(err.trashPath, p);
+            ok++;
+            continue;
+          }
           failWhy.add(fsErrText(err));
         }
       }
@@ -194,14 +217,19 @@ export const makeTrashOps = (sink: TrashOpsSink, platform: string = process.plat
         sink.pushUndoBatch(`trash ${ok} item${ok === 1 ? "" : "s"}`, units, redos, { units: dUnits, redos: dRedos });
       sink.renderAll();
       const failed = paths.length - ok;
+      // the partial tail names the trash path — the user has to know where
+      // their data is (the source is not fully gone)
+      const partialTail = partial.length
+        ? ` · source partially removed · ${partial[0]}${partial.length > 1 ? ` (+${partial.length - 1} more)` : ""}`
+        : "";
       // full success omits the total (it equals ok); partial failures read
       // "ok of N". The undo hint shows whenever anything landed (ok > 0),
       // not just on clean sweeps.
       const summary = failed
-        ? `Trashed ${ok} of ${paths.length} · ${failSuffix(failed, failWhy)}`
-        : `Trashed ${ok} item${ok === 1 ? "" : "s"}`;
+        ? `Trashed ${ok} of ${paths.length} · ${failSuffix(failed, failWhy)}${partialTail}`
+        : `Trashed ${ok} item${ok === 1 ? "" : "s"}${partialTail}`;
       const hinted = ok > 0 ? `${summary} · ctrl+z to undo` : summary;
-      if (failed > 0) sink.notify(hinted, "trash failed", "error");
+      if (failed > 0 || partial.length > 0) sink.notify(hinted, "trash failed", "error");
       else sink.notify(hinted, "trash", "success");
       emit("trash", paths);
     });
