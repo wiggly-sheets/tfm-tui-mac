@@ -15,14 +15,16 @@ const recordingSink = (): UndoSink & { notes: string[] } => {
   };
 };
 
-// poll on observable state (sink notes / stack depths / ran[]) by yielding the
-// event loop: no fixed sleep, so parallel-suite load cannot race the check
-const settleUntil = async (cond: () => boolean): Promise<void> => {
-  for (let i = 0; i < 2000; i++) {
+// poll on observable state (sink notes / stack depths / ran[]) with a wall
+// clock budget: setImmediate alone can exhaust its turn count while a real
+// trash spawn waits on a loaded CI runner
+const settleUntil = async (cond: () => boolean, ms = 3000): Promise<void> => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
     if (cond()) return;
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 10));
   }
-  if (!cond()) throw new Error("settleUntil timeout");
+  throw new Error("settleUntil timeout");
 };
 
 describe("makeUndo", () => {
