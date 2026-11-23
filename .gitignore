@@ -4,6 +4,7 @@ opentui/
 kitty/
 .agents/
 dist/
+release/
 AGENTS.md
 skills-lock.json
 .kilo/

@@ -72,5 +72,11 @@ Pushing the tag starts `.github/workflows/release.yml`. The tag must match
 `package.json` (`v` + the version there), or the workflow fails before
 building. The workflow compiles the Linux x64/arm64 and macOS
 x64/arm64/universal artifacts, attaches the ffmpeg sidecars, and publishes the
-release with `dist/*.gz` plus a `.sha256` sidecar each and the changelog
-section of the version.
+release with `dist/*.gz` plus a `.sha256` sidecar each, the versioned
+`tfm-<version>-{arm64,x86_64}-{linux,macos}.gz` with `checksums.txt`, and the
+changelog section of the version. Every versioned archive is built on a
+runner native to its platform: each Linux matrix runner runs its own binary
+with `--version`, packages `tfm-<version>-<arch>-linux.gz` and unpacks that
+archive to run it again; the macOS runner packages the two macOS archives and
+verifies them with `make verify-macos`. The release job only downloads those
+artifacts, writes `checksums.txt` and publishes them.

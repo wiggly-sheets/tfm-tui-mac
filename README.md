@@ -151,24 +151,44 @@ of the estate.
 
 - `make help` — list every target (the default).
 - `make build` — compile the binary into `dist/tfm`.
+- `make build-arm` — cross-compile the arm64 macOS binary into
+  `dist/tfm-aarch64-macos`.
+- `make build-intel` — cross-compile the x86_64 macOS binary into
+  `dist/tfm-x86_64-macos`.
+- `make build-linux-arm` — cross-compile the arm64 Linux binary into
+  `dist/tfm-aarch64-linux`.
+- `make build-linux-intel` — cross-compile the x86_64 Linux binary into
+  `dist/tfm-x86_64-linux`.
 - `make test` — run the changelog check, the checks, the test suite and the
   version smoke test.
-- `make verify` — check the compiled binary and, when present, the release
-  checksum.
+- `make verify` — check the compiled binary, the two macOS slices against
+  their exact Mach-O architecture (and their `--version` where the host can
+  run them), the two Linux slices against their exact ELF architecture, and,
+  when present, the release checksums. Linux slices are read, never executed.
 - `make run` — run the compiled binary.
 - `make install` — install the compiled binary with `install.sh` into
   `~/.local/bin`.
-- `make release-artifacts` — build the universal macOS binary and its verified
-  checksum file.
+- `make release-artifacts VERSION=1.2.3` — build the four per-architecture
+  archives, the universal macOS binary and the verified
+  `release/checksums.txt`. The version defaults to the one in `package.json`.
 - `make release-notes VERSION=1.2.3` — print the changelog section of a version.
 - `make release VERSION=1.2.3` — move `[Unreleased]` to `1.2.3`, update
   `package.json`, test, build, verify, commit the bump and tag `v1.2.3`. It
   prints the push commands and never pushes by itself.
-- `make clean` — remove the build output.
+- `make clean` — remove the build output and the release archives.
 
-The release publishes `tfm-universal-macos.gz` and the sidecar
-`tfm-universal-macos.gz.sha256`. The Homebrew tap matches those two names, so
-they never change.
+The release publishes four per-architecture archives, one pair per platform:
+`tfm-<version>-arm64-linux.gz`, `tfm-<version>-x86_64-linux.gz`,
+`tfm-<version>-arm64-macos.gz` and `tfm-<version>-x86_64-macos.gz`, with one
+`checksums.txt` (`shasum -a 256 -c` ready from inside `release/`). Each
+platform's pair is built and smoke-tested on a runner native to it: the
+Linux x64 and arm64 runners for the `-linux` pair, the macOS runner for the
+`-macos` pair and the universal binary. The release job only downloads those
+artifacts and writes the one `checksums.txt`. It also
+keeps the unversioned `tfm-{aarch64,x86_64}-{linux,macos}.gz` that
+`install.sh` downloads, and the universal `tfm-universal-macos.gz` with its
+`tfm-universal-macos.gz.sha256` sidecar. The Homebrew tap matches those two
+universal names, so they never change.
 
 ## Updating
 

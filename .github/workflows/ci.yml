@@ -40,3 +40,18 @@ jobs:
       # binary first, so the smoke test has one to run.
       - name: Check + test
         run: make test
+
+      # The four release slices, each checked against its exact architecture,
+      # so a broken cross-compile fails here instead of at release time. The
+      # Linux slices are read, never executed, by `make verify`.
+      - name: macOS + Linux slices
+        run: make build-arm build-intel build-linux-arm build-linux-intel
+
+      - name: Verify the slices
+        run: make verify
+
+      # The one native run: the Linux x64 artifact must answer --version on
+      # the platform it targets.
+      - name: Smoke the Linux x64 binary
+        if: matrix.os == 'ubuntu-latest'
+        run: test "$(./dist/tfm-x86_64-linux --version)" = "tfm $(bun -e 'console.log(require("./package.json").version)')"

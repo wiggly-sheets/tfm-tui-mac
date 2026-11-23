@@ -4,9 +4,12 @@ name: Release
 # and tfm-{aarch64,x86_64}-macos.gz, plus a .sha256 sidecar each, AND the
 # bundled video-thumbnail ffmpeg as tfm-ffmpeg-{x86_64,aarch64}-linux.gz plus
 # tfm-ffmpeg-{aarch64,x86_64}-macos.gz, each with its own .sha256 (install.sh
-# verifies when present and warns-but-continues when absent). macOS also ships
-# a lipo'd universal tfm-universal-macos.gz and ffmpeg sidecar. Tag a version
-# to ship it:
+# verifies when present and warns-but-continues when absent). Each platform
+# also ships its per-architecture archives tfm-<version>-{arm64,x86_64}-<os>.gz,
+# each built and smoke-tested on a runner native to that platform; the release
+# job writes one checksums.txt over the four. macOS also ships the lipo'd
+# universal tfm-universal-macos.gz (the Homebrew tap installs it) and an
+# ffmpeg sidecar. Tag a version to ship it:
 #   git tag v1.0.0 && git push origin v1.0.0
 # Version must match package.json (checked below) so --version never lies.
 # Linux covers x64 + arm64; macOS covers both plus the universal binary.
@@ -35,10 +38,12 @@ jobs:
           - runner: ubuntu-latest
             target: bun-linux-x64
             arch: x86_64-linux
+            name: x86_64
             ffmpeg_asset: ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz
           - runner: ubuntu-24.04-arm
             target: bun-linux-arm64
             arch: aarch64-linux
+            name: arm64
             ffmpeg_asset: ffmpeg-n9.0-latest-linuxarm64-gpl-9.0.tar.xz
     runs-on: ${{ matrix.runner }}
     steps:
@@ -62,10 +67,29 @@ jobs:
       - name: Compile
         run: bun build --compile --target=${{ matrix.target }} src/index.ts assets/icons/*.svg --outfile dist/tfm-${{ matrix.arch }}
 
+      # The matrix runner is native to its target, so this proves the binary
+      # runs where it ships before it is packaged.
+      - name: Smoke the native binary
+        run: |
+          ./dist/tfm-${{ matrix.arch }} --version
+          test "$(./dist/tfm-${{ matrix.arch }} --version)" = "tfm $(bun -e 'console.log(require("./package.json").version)')"
+
+      # The versioned archive comes from this runner's own build: no other
+      # job produces a Linux artifact for the release.
       - name: Package + checksum
         run: |
-          gzip -kf dist/tfm-${{ matrix.arch }}
-          (cd dist && sha256sum tfm-${{ matrix.arch }}.gz > tfm-${{ matrix.arch }}.gz.sha256)
+          make package-linux VERSION="${GITHUB_REF_NAME#v}"
+          (cd dist && sha256sum "tfm-${{ matrix.arch }}.gz" > "tfm-${{ matrix.arch }}.gz.sha256")
+          cp release/*.gz dist/
+
+      # Run the packed bytes back, so the archive itself is proven, not only
+      # the bare binary.
+      - name: Smoke the packaged archive
+        run: |
+          tmp="$(mktemp -d)"
+          gzip -dc "dist/tfm-${GITHUB_REF_NAME#v}-${{ matrix.name }}-linux.gz" > "$tmp/tfm"
+          chmod +x "$tmp/tfm"
+          test "$("$tmp/tfm" --version)" = "tfm $(bun -e 'console.log(require("./package.json").version)')"
 
       # Sidecar source: BtbN versioned static builds, pinned to the n9.0
       # series below (bumping series = changing these two matrix lines).
@@ -94,6 +118,7 @@ jobs:
           path: |
             dist/tfm-${{ matrix.arch }}.gz
             dist/tfm-${{ matrix.arch }}.gz.sha256
+            dist/tfm-[0-9]*-${{ matrix.name }}-linux.gz
             dist/tfm-ffmpeg-${{ matrix.arch }}.gz
             dist/tfm-ffmpeg-${{ matrix.arch }}.gz.sha256
 
@@ -124,15 +149,20 @@ jobs:
           bun run check
           bun run test
 
-      - name: Compile (arm64 + x64 + universal)
-        run: bun run scripts/build.ts mac-arm64 mac-x64 mac-universal
+      # The two macOS slices and the universal binary, packaged as
+      # dist/tfm-{aarch64,x86_64}-macos.gz plus dist/tfm-universal-macos.gz
+      # with a sidecar each, and as the versioned macOS release/*.gz. The
+      # Linux archives are built on their own runners, never here.
+      - name: Build the macOS release artifacts
+        run: make release-artifacts-macos VERSION="${GITHUB_REF_NAME#v}"
 
-      - name: Package + checksum
-        run: |
-          for a in aarch64-macos x86_64-macos universal-macos; do
-            gzip -kf dist/tfm-$a
-            (cd dist && shasum -a 256 tfm-$a.gz > tfm-$a.gz.sha256)
-          done
+      - name: Verify the macOS artifacts
+        run: make verify-macos
+
+      # upload-artifact flattens one common root, so the versioned archives
+      # travel beside the rest in dist/.
+      - name: Stage the versioned archives for upload
+        run: cp release/*.gz dist/
 
       # the x64 ffmpeg sidecar smoke test below runs the x86_64 binary under
       # Rosetta; the command is idempotent (no-ops when Rosetta is present)
@@ -182,6 +212,8 @@ jobs:
             dist/tfm-x86_64-macos.gz.sha256
             dist/tfm-universal-macos.gz
             dist/tfm-universal-macos.gz.sha256
+            dist/tfm-[0-9]*-arm64-macos.gz
+            dist/tfm-[0-9]*-x86_64-macos.gz
             dist/tfm-ffmpeg-aarch64-macos.gz
             dist/tfm-ffmpeg-aarch64-macos.gz.sha256
             dist/tfm-ffmpeg-x86_64-macos.gz
@@ -204,8 +236,13 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Verify checksums
-        run: (cd dist && sha256sum -c *.sha256)
+      # The one checksums.txt of the release: it covers the four archives
+      # that the build jobs uploaded, and nothing else.
+      - name: Write + verify checksums.txt
+        run: |
+          (cd dist && sha256sum tfm-[0-9]*-*-*.gz > checksums.txt)
+          (cd dist && sha256sum -c ./*.sha256)
+          (cd dist && sha256sum -c checksums.txt)
 
       # The notes are the section of our own CHANGELOG for this version. A
       # version without a section fails the release, so the exit code of the
@@ -222,6 +259,12 @@ jobs:
             echo ""
             echo '```'
             cat dist/*.sha256
+            echo '```'
+            echo ""
+            echo "### Release archives"
+            echo ""
+            echo '```'
+            cat dist/checksums.txt
             echo '```'
           } >> release-notes.md
 
@@ -244,6 +287,11 @@ jobs:
             dist/tfm-x86_64-macos.gz.sha256
             dist/tfm-universal-macos.gz
             dist/tfm-universal-macos.gz.sha256
+            dist/tfm-[0-9]*-arm64-linux.gz
+            dist/tfm-[0-9]*-x86_64-linux.gz
+            dist/tfm-[0-9]*-arm64-macos.gz
+            dist/tfm-[0-9]*-x86_64-macos.gz
+            dist/checksums.txt
             dist/tfm-ffmpeg-x86_64-linux.gz
             dist/tfm-ffmpeg-x86_64-linux.gz.sha256
             dist/tfm-ffmpeg-aarch64-linux.gz
