@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The release publishes versioned archives, `tfm-<version>-{arm64,x86_64}-{linux,macos}.gz`, with `checksums.txt`. `install.sh` keeps downloading the unversioned `dist/` builds.
+
 ## [1.1.0] - 2026-11-23
 
 ### Added
