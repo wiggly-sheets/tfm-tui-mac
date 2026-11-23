@@ -167,6 +167,8 @@ export const wireCore = (deps: {
     // keeps its fill). The icon drain early-returns under TTY before ever
     // reading this, so the guard only affects the new button path.
     transparentForce: () => config.ui.transparentBg === "force" && !isTtyMode(),
+    // icon rasters also keep alpha under `on` (outline chrome has no rest fill)
+    transparentBg: () => (isTtyMode() ? "off" : config.ui.transparentBg),
     iconStyle: () => config.ui.iconStyle,
     iconCells: () => geometry.iconCells,
     modalOpen: () => floats.hasModal(),

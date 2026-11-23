@@ -17,7 +17,7 @@ import {
   type ThumbJob,
 } from "./ui-slots";
 import type { Theme } from "../config/config";
-import type { ThumbnailFitMode } from "../config/config-schema";
+import type { ThumbnailFitMode, TransparentBgMode } from "../config/config-schema";
 
 // icon rasters need one of the SVG renderers (same gate as icons.test.ts)
 const hasInproc = await import("@resvg/resvg-js").then(() => true).catch(() => false);
@@ -489,7 +489,7 @@ describe("thumbnail mount", () => {
     rmSync(cacheSandbox, { recursive: true, force: true });
   });
 
-  const mkSlots = (fit: () => ThumbnailFitMode = () => "fit") =>
+  const mkSlots = (fit: () => ThumbnailFitMode = () => "fit", transparentBg: () => TransparentBgMode = () => "off") =>
     makeSlots({
       renderer: () => t.renderer,
       byId: (id) => t.renderer.root.findDescendantById(id),
@@ -497,6 +497,7 @@ describe("thumbnail mount", () => {
       uiStyle: () => "solid",
       iconsMode: () => "opaque",
       thumbnailFit: fit,
+      transparentBg,
       iconCells: () => 4,
       modalOpen: () => false,
       glyphFor: () => "F",
@@ -794,6 +795,27 @@ describe("thumbnail mount", () => {
     // mode (no letterbox: the box aspect matches the asset now)
     const { brandPng } = await import("./icons");
     expect(Buffer.from(faithfulSrc)).toEqual(Buffer.from(await brandPng("tfm", 120, 100, BG)));
+  });
+
+  test("transparent-bg on keeps icon raster alpha outside floats", async () => {
+    // outline chrome has no rest fill: flattening an opaque icon onto the theme
+    // bg leaves a faint square over a transparent terminal
+    openResolution();
+    openCaps();
+    const slots = mkSlots(
+      () => "fit",
+      () => "on",
+    );
+    const s = slots.makeIconSlot("folder", [{ fg: FG, bg: BG }], 4, 0);
+    t.renderer.root.add(s.el as never);
+    await slots.drainIconQueue();
+    await t.renderOnce();
+    const img = t.renderer.root.findDescendantById(`${s.slotId}-s0`) as any;
+    expect(img).toBeTruthy();
+    const { iconPng } = await import("./icons");
+    expect(Buffer.from(new Uint8Array(img.source))).toEqual(
+      Buffer.from(await iconPng("folder", FG, BG, 80, 80, { transparent: true, style: "filled" })),
+    );
   });
 
   test("escHintBtn hover sets pointer, out restores (X buttons are hoverables too)", async () => {

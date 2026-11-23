@@ -22,7 +22,7 @@ import { stat } from "node:fs/promises";
 import { iconPng, brandPng, svgAspect, thumbPng, THUMB_MAX_BYTES } from "./icons";
 import { swallow } from "../app/log";
 import type { IconMode, IconStyle, Theme } from "../config/config";
-import type { ThumbnailFitMode } from "../config/config-schema";
+import type { ThumbnailFitMode, TransparentBgMode } from "../config/config-schema";
 import { intToHex } from "../config/color";
 import { applySurface, btnSurface, iconTransparent, slotBg, type UiStyle } from "./style";
 import type { MaybeNode } from "../lib/node-like";
@@ -336,6 +336,10 @@ export type SlotsCtx = {
   // so test fakes keep working; read live like iconsMode (a flip re-rasters
   // through the theme sig).
   transparentForce?(): boolean;
+  // full transparent-bg mode for icon rasters: `on` keeps alpha too, because
+  // outline chrome has no rest fill to flatten onto. Absent falls back to
+  // transparentForce (old fakes).
+  transparentBg?(): TransparentBgMode;
   // mouse pointer shape (OSC 22 via the wiring's tty-guarded setter).
   // Absent = no pointer changes (old fakes keep working).
   setPointer?(style: PointerStyle): void;
@@ -674,7 +678,7 @@ export const makeSlots = (ctx: SlotsCtx) => {
     const transparent = iconTransparent(
       ctx.iconsMode(),
       isFloatChild(mountedSlot ?? ctx.byId(slotId)),
-      ctx.transparentForce?.() ? "force" : undefined,
+      ctx.transparentBg?.() ?? (ctx.transparentForce?.() ? "force" : undefined),
     );
     const imgs: ImageRenderable[] = [];
     for (let si = 0; si < states.length; si++) {

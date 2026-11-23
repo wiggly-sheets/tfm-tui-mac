@@ -21,13 +21,14 @@ export type { UiStyle };
 
 // icon raster transparency: opaque never keeps alpha, transparent always does,
 // partial only OUTSIDE floating layers (floatChild = slot lives in a
-// menu/dialog, painted over an opaque island). transparent-bg force implies
-// alpha outside floats too (chrome rasters sit on the terminal bg), but float
-// islands stay solid so their rasters keep flattening.
+// menu/dialog, painted over an opaque island). transparent-bg on/force implies
+// alpha outside floats too, but float islands stay solid so their rasters keep
+// flattening. `on` needs this because outline chrome has no rest fill to flatten
+// onto; a theme-bg square would show over the transparent terminal.
 export const iconTransparent = (mode: IconMode, floatChild: boolean, transparentBg?: TransparentBgMode): boolean =>
   mode === "transparent" ||
   (mode === "transparent-partial" && !floatChild) ||
-  (transparentBg === "force" && !floatChild);
+  (transparentBg !== undefined && transparentBg !== "off" && !floatChild);
 
 // outline-partial shares every BACKGROUND-chrome decision with outline —
 // only floating layers differ (floatSurface below). Branch background-chrome

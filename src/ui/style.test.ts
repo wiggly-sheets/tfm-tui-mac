@@ -146,13 +146,17 @@ describe("iconTransparent", () => {
     expect(iconTransparent("transparent-partial", true)).toBe(false);
   });
 
-  test("transparent-bg force keeps alpha outside floats, never inside them", () => {
-    // chrome rasters sit on the terminal bg under force, so they must keep
-    // alpha like icons:"transparent"; float islands stay solid, so their
-    // rasters keep flattening
-    expect(iconTransparent("opaque", false, "force")).toBe(true);
-    expect(iconTransparent("opaque", true, "force")).toBe(false);
-    expect(iconTransparent("transparent", true, "force")).toBe(true);
+  test("transparent-bg on/force keeps alpha outside floats, never inside them", () => {
+    // chrome rasters sit on the terminal bg, so they must keep alpha like
+    // icons:"transparent"; float islands stay solid, so their rasters keep
+    // flattening. `on` needs this too: outline chrome paints no rest fill, so
+    // a flattened raster would show a theme-bg square.
+    for (const bg of ["on", "force"] as const) {
+      expect(iconTransparent("opaque", false, bg)).toBe(true);
+      expect(iconTransparent("opaque", true, bg)).toBe(false);
+      expect(iconTransparent("transparent", true, bg)).toBe(true);
+    }
+    expect(iconTransparent("opaque", false, "off")).toBe(false);
   });
 });
 
