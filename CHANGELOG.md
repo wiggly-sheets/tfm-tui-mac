@@ -19,7 +19,10 @@
 
 **macOS support:**
 
-- macOS is now supported with full port parity. Releases ship `aarch64-macos`; trash, servers, Finder tags and file opens go through the built-in macOS tools (`trash`, `diskutil`, `open`). macOS is added to CI.
+- macOS is supported with full port parity on Intel and Apple Silicon, plus a
+  lipo universal binary. Trash, servers, Finder tags and file opens go through
+  the built-in macOS tools (`trash`, `diskutil`, `open`); the XDG config,
+  state and cache paths apply there too. macOS builds and tests run in CI.
 
 **Keyboard and navigation:**
 
@@ -50,6 +53,13 @@
   fallback elsewhere).
 - Opt-in mouse drag-resize: `[ui] mouse-resize-sidebar`, `mouse-resize-split`
   and `mouse-resize-preview`, all off by default.
+
+**Thumbnails:**
+
+- `[ui] thumbnail-fit` chooses how thumbnails fill their box: `fit` shows the
+  whole image, `crop` fills the box and crops overflow, and `stretch` fills it
+  and distorts the source. The setting applies to grid thumbnails, the preview
+  pane and properties, and changing it re-fits images already on screen.
 
 ### Changed
 
@@ -103,6 +113,37 @@
   sixel placements reserved cell space and rendered blank. kitty, WezTerm and
   Ghostty keep color rasters; tmux, the Linux console and terminals with no
   graphics protocol keep their glyphs.
+- Icon glyphs are centered in their slot, so a list row's icon shares the row
+  with its name instead of sitting above it. Rasters are drawn on an exact cell
+  canvas, which removes the softening and sixel alpha holes caused by the
+  terminal rescaling a non-square image.
+
+**File safety and UI reliability:**
+
+- Archive extraction keeps members that could not land in a recovery folder
+  and reports its path, instead of deleting the staging directory and showing
+  only FAILED.
+- A trash move whose rollback fails reports the stranded file path. A
+  cross-device move whose source removal fails keeps the trash entry
+  restorable and reports the partial state.
+- A failed remote drop clears its in-flight state, so later drops are not
+  refused. Aborting a remote fetch rejects its pending request and removes its
+  staging directory.
+- Selection counts check that their pane is still active before writing, and a
+  transient status message is not replaced early by a selection summary.
+- Properties stats are scoped to the dialog that requested them, so a slow
+  directory walk cannot paint into the next properties dialog.
+- Sidebar focus is one validated value. Entering an empty sidebar is refused
+  and clicking the grid clears sidebar focus, so the keyboard cannot become
+  unresponsive.
+- Inline rename in list view follows the name column instead of the grid tile
+  width.
+- Arrow keys mark their keypress handled, so the focused grid scroller no
+  longer scrolls a second time.
+- A failed mount listing is reported as unknown instead of as an empty device
+  list.
+- Grid zoom uses a fixed ladder of tile triples, so zooming in and back out
+  returns to the starting size.
 
 <!-- pre-versioning -->
 

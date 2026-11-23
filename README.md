@@ -51,6 +51,11 @@ https://github.com/user-attachments/assets/b47c7136-642c-4c85-8b2a-dcab1bd0b37b
 - Trash, restore, delete forever, empty trash.
 - Undo / redo file operations.
 - Preview text, code, images, videos, folders.
+- Thumbnail fit: show the whole image, crop to fill, or stretch (`[ui] thumbnail-fit`).
+- Native macOS support: Intel, Apple Silicon and universal binaries, with Finder
+  trash, mounts, tags and file opens.
+- Recoverable file operations: a failed extraction reports where it kept the
+  files, and a partial trash move reports what remains restorable.
 - Open files + Open With app picker.
 - Properties dialog with permissions editing.
 - Tabs + panes: dual pane with sync browsing, and a mixed vertical/horizontal
@@ -260,6 +265,9 @@ See [docs/plugins.md](docs/plugins.md).
   (`[ui] mouse-resize-*`, all off by default).
 - Icons can show a black box behind open menus or while rubber-band selecting.
 - Custom kitty themes can misbehave.
+- Archive extraction that cannot land a member keeps it in a recovery folder and
+  prints the path. Trash moves that cannot remove the source report a partial
+  result instead of pretending the file vanished.
 
 ## License
 

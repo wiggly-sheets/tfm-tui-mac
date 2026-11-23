@@ -279,6 +279,15 @@ saved in config or restored on the next launch.
 default view comes from `[ui] view-mode`. The Linux text console cannot paint
 raster grids, so it falls back to list.
 
+`[ui] thumbnail-fit` controls how image and video thumbnails fill their box:
+
+- `fit` (default) keeps the source aspect ratio and shows the whole thumbnail.
+- `crop` fills the box and crops the overflow.
+- `stretch` fills the box and distorts the source.
+
+The setting applies to grid tiles, list rows, the preview pane and the
+properties dialog. Changing it re-fits thumbnails already on screen.
+
 ### Preview pane and info sidebar
 
 `f3` toggles the **preview pane** on the right. It previews text and code (with
@@ -369,7 +378,10 @@ menus work with the mouse. `invert-selection` ships unbound.
   **Rename N items…** for bulk rename.
 - **New**: `ctrl+shift+n` makes a folder, `ctrl+alt+n` makes an empty file.
   Both are created inline.
-- **Trash**: `delete` moves the selection to the trash. Inside the trash view,
+- **Trash**: `delete` moves the selection to the trash. A move that cannot
+  remove the source keeps a restorable trash entry and reports the partial
+  state, including the path. A failed rollback reports the stranded file path
+  instead of a generic failure. Inside the trash view,
   `delete` erases forever (with a confirmation), and `f2` restores. Restore
   covers items tfm itself trashed; files trashed by Finder have no Put Back
   API, so use Finder's Put Back for those. **Empty Trash** is on the trash
@@ -396,6 +408,10 @@ so they work with no external tools installed.
 entries. You can descend into nested folders inside the archive, navigate back
 out, and the breadcrumb shows the inner path. Supported formats include tar,
 tar.gz, tar.bz2, tar.xz, zip, 7z and more (same formats as extraction).
+
+If extraction cannot move a member into the destination, tfm keeps the
+extracted data in a recovery folder and reports its path. The operation is
+still marked FAILED, but no extracted member is silently deleted.
 
 ### Mouse
 

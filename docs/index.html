@@ -243,7 +243,7 @@
     </div>
     <div class="card">
       <h3>Previews &amp; thumbnails</h3>
-      <p>Image and video thumbnails (kitty graphics), tree-sitter syntax-highlighted text previews, folder stats, with a disk-cached thumbnail pipeline so folder revisits are instant.</p>
+      <p>Image and video thumbnails (kitty graphics), tree-sitter syntax-highlighted text previews, folder stats, with a disk-cached thumbnail pipeline so folder revisits are instant. Thumbnails can fit, crop or stretch to their cell.</p>
     </div>
     <div class="card">
       <h3>Dual pane</h3>
@@ -366,7 +366,7 @@ quit <span class="c">=</span> [<span class="s">"ctrl+q"</span>]    <span class="
     <div>
       <h4>Requirements</h4>
       <ul>
-        <li>Linux</li>
+        <li>Linux (x86_64 / arm64) or macOS (Intel / Apple Silicon, plus a universal binary)</li>
         <li>any terminal (need image support for the full experience)</li>
       </ul>
     </div>
@@ -375,8 +375,8 @@ quit <span class="c">=</span> [<span class="s">"ctrl+q"</span>]    <span class="
       <ul>
         <li>icons render in-process (no setup); <code>magick</code> covers extra raster formats as fallback</li>
         <li>video thumbnails use the bundled <code>tfm-ffmpeg</code> sidecar (no system <code>ffmpeg</code> needed)</li>
-        <li><code>gio</code>: starred-file metadata and network locations (trash is built-in XDG), <code>xdg-open</code> / <code>udisksctl</code>: default apps / mounts</li>
-        <li><code>wl-paste</code> / <code>wl-copy</code> or <code>xclip</code>: clipboard bridge</li>
+        <li>Linux: <code>gio</code>: starred-file metadata and network locations (trash is built-in XDG), <code>xdg-open</code> / <code>udisksctl</code>: default apps / mounts, <code>wl-paste</code> / <code>wl-copy</code> or <code>xclip</code>: clipboard bridge</li>
+        <li>macOS: built-in <code>open</code>, <code>diskutil</code> and <code>pbcopy</code> / <code>pbpaste</code>; optional <code>tag</code> for Finder tags</li>
         <li><code>tar</code> / <code>unzip</code> / <code>zip</code> / <code>7z</code>: archives</li>
       </ul>
     </div>
